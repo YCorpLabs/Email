@@ -80,6 +80,15 @@ For each shared UI change:
 OS window chrome, modifier conventions and compositor-provided blur can differ;
 these exceptions do not excuse inconsistent application layout or behavior.
 
+## Running the macOS app
+
+- Launch the development build with `scripts/open-macos.sh`, not `open -a Email`
+  or a release bundle. The script checks which build it opens.
+- Keep the local signing identity stable. Don't change Keychain access
+  settings, remove credentials or weaken trust to get rid of prompts.
+- After changing credential or MCP code, rebuild and restart any MCP server
+  processes that are still running.
+
 ## Related services
 
 Scheduling (the hosted booking service) and the ycorplabs.com website are
