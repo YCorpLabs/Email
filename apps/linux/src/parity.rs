@@ -1391,7 +1391,15 @@ impl Ui {
             let remove = gtk::Button::with_label("Remove");
             let ui = self.clone();
             let parent = dialog.clone();
-            remove.connect_clicked(move |_|{let confirm=gtk::AlertDialog::builder().message("Remove this account from Email?").detail("This removes its local cache and credentials. Your provider mailbox is unchanged.").buttons(["Cancel","Remove account"]).cancel_button(0).default_button(0).build();let ui=ui.clone();let id=account.id.clone();let parent=parent.clone();confirm.choose(Some(&parent.clone()),None::<&gtk::gio::Cancellable>,move |result|{if result==Ok(1){match ui.request(json!({"op":"remove_account","account_id":id})){Ok(_)=>{parent.close();ui.set_view(MailView::Inbox);},Err(e)=>ui.status.set_text(&e)}}});});
+            remove.connect_clicked(move |button|{let confirm=gtk::AlertDialog::builder().message("Remove this account from Email?").detail("This removes its local cache and credentials. Your provider mailbox is unchanged.").buttons(["Cancel","Remove account"]).cancel_button(0).default_button(0).build();let ui=ui.clone();let id=account.id.clone();let parent=parent.clone();let button=button.clone();confirm.choose(Some(&parent.clone()),None::<&gtk::gio::Cancellable>,move |result|{
+                if result!=Ok(1){return;}
+                // Removal can wait a few seconds on Google's token revoke; run it off the main loop.
+                button.set_sensitive(false);
+                workflows::request_async(ui.database_path.clone(),json!({"op":"remove_account","account_id":id}),move |result| match result {
+                    Ok(_)=>{parent.close();ui.set_view(MailView::Inbox);},
+                    Err(e)=>{button.set_sensitive(true);ui.status.set_text(&e);}
+                });
+            });});
             line.append(&remove);
             box_.append(&line);
         }
