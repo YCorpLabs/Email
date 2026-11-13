@@ -1,18 +1,22 @@
-# Maintainer: Y Corp AS <set the AUR maintainer name and address before publishing>
+# Maintainer: <set the AUR maintainer name and address before publishing>
 #
-# AUR source package. It builds the GTK shell from the tagged GitHub release
-# tarball on the user's machine. scripts/prepare-aur-package.sh fills in
-# sha256sums for a tag and writes .SRCINFO; see docs/linux-aur.md.
+# AUR source package. It builds the GTK shell on the user's machine from the
+# source tarball attached to the GitHub release: a `git archive` of the release
+# commit with the Email-<version>/ prefix. A release asset has a fixed checksum
+# before the tag exists, which GitHub's generated tag archive does not
+# guarantee. scripts/prepare-aur-package.sh writes that tarball, fills in
+# sha256sums and writes .SRCINFO; see docs/linux-aur.md.
 #
 # A user-side build is a local build: linux-build-config.sh refuses
 # distribution profiles here, and no OAuth application values are embedded
 # unless the builder supplies them. The default is the neutral profile.
-pkgname=email-linux
+# email-ycorp-bin installs the official prebuilt build instead.
+pkgname=email-ycorp
 pkgver=0.1.0beta1
 # The release tag; Arch versions cannot contain '-'.
 _tag=v0.1.0-beta.1
 pkgrel=1
-pkgdesc='Keyboard-first, local-first desktop email client (beta)'
+pkgdesc='Keyboard-first, local-first desktop email client (beta, built from source)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/YCorpLabs/Email'
 license=('MIT')
@@ -23,8 +27,8 @@ depends=('cairo' 'dbus' 'gcc-libs' 'glib2' 'glibc' 'graphene' 'gtk4' 'hicolor-ic
 makedepends=('cargo' 'pkgconf' 'python')
 optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
 options=('!lto')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
-# Replaced by scripts/prepare-aur-package.sh for the published tag.
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/$_tag/Email-${_tag#v}.tar.gz")
+# Replaced by scripts/prepare-aur-package.sh for the published release.
 sha256sums=('SKIP')
 
 _src() { printf '%s' "$srcdir/Email-${_tag#v}"; }

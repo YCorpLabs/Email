@@ -108,7 +108,7 @@ apt-get install -y --no-install-recommends file xvfb x11-utils xdotool imagemagi
 cat /etc/os-release > /results/os-release.txt
 pacman --disable-sandbox-syscalls -Syu --noconfirm > /results/upgrade.log 2>&1
 pacman --disable-sandbox-syscalls -U --noconfirm /arch-package/package.pkg.tar.zst > /results/install.log 2>&1
-pacman -Qi email-linux > /results/installed.txt
+pacman -Qi "$(pacman -Qqo /usr/bin/email-linux)" > /results/installed.txt
 # Test tooling and a font; not package dependencies. The standalone mail-mcp
 # is built on Ubuntu and links OpenSSL 3, which Arch ships as openssl-3.
 pacman --disable-sandbox-syscalls -S --noconfirm --needed file xorg-server-xvfb xorg-xdpyinfo xdotool imagemagick dbus ttf-dejavu sqlite procps-ng openssl-3 > /results/tools.log 2>&1' \

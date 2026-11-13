@@ -1,0 +1,64 @@
+# Maintainer: <set the AUR maintainer name and address before publishing>
+#
+# AUR binary package. It installs the prebuilt Linux app attached to the GitHub
+# release: the .deb for each architecture, which scripts/package-linux-release.sh
+# builds in Ubuntu 24.04 containers with the official distribution profile
+# (app ID and data directory com.ycorplabs.Mail). email-ycorp builds the same
+# source on the user's machine with the neutral profile instead, so the two
+# keep separate data directories and credentials.
+# scripts/prepare-aur-package.sh fills in the checksums and writes .SRCINFO;
+# see docs/linux-aur.md.
+pkgname=email-ycorp-bin
+pkgver=0.1.0beta1
+# The release tag; Arch versions cannot contain '-'.
+_tag=v0.1.0-beta.1
+# The package version inside the .deb file names (apps/linux/Cargo.toml).
+_debver=0.1.0
+_appid=com.ycorplabs.Mail
+pkgrel=1
+pkgdesc='Keyboard-first, local-first desktop email client (beta, prebuilt)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/YCorpLabs/Email'
+license=('MIT')
+# Libraries the Ubuntu-built binary links directly (readelf, namcap), plus the
+# icon theme it installs into. It links OpenSSL 3, which Arch ships as
+# openssl-3. The aarch64 build also links Pango, GdkPixbuf and libsoup itself.
+depends=('cairo' 'dbus' 'gcc-libs' 'glib2' 'glibc' 'graphene' 'gtk4' 'hicolor-icon-theme'
+         'openssl-3' 'webkitgtk-6.0')
+depends_aarch64=('gdk-pixbuf2' 'libsoup3' 'pango')
+optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
+provides=("email-ycorp=$pkgver")
+conflicts=('email-ycorp')
+# The release binary is already stripped.
+options=('!strip' '!debug')
+source_x86_64=("$pkgname-$pkgver-amd64.deb::$url/releases/download/$_tag/email-linux_${_debver}_amd64.deb")
+source_aarch64=("$pkgname-$pkgver-arm64.deb::$url/releases/download/$_tag/email-linux_${_debver}_arm64.deb")
+noextract=("$pkgname-$pkgver-amd64.deb" "$pkgname-$pkgver-arm64.deb")
+# Replaced by scripts/prepare-aur-package.sh for the published release.
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+prepare() {
+  # makepkg links only this architecture's .deb into $srcdir.
+  local debs=("$srcdir"/*.deb)
+  if [[ ${#debs[@]} -ne 1 || ! -e ${debs[0]} ]]; then
+    error "Expected one .deb in $srcdir"
+    return 1
+  fi
+  rm -rf "$srcdir/deb"
+  mkdir "$srcdir/deb"
+  bsdtar -xOf "${debs[0]}" 'data.tar.*' | bsdtar -xf - -C "$srcdir/deb"
+}
+
+package() {
+  local root="$srcdir/deb"
+  install -Dm755 "$root/usr/bin/email-linux" "$pkgdir/usr/bin/email-linux"
+  install -Dm644 "$root/usr/share/applications/$_appid.desktop" -t "$pkgdir/usr/share/applications"
+  install -Dm644 "$root/usr/share/metainfo/$_appid.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
+  install -Dm644 "$root/usr/share/icons/hicolor/1024x1024/apps/$_appid.png" \
+    -t "$pkgdir/usr/share/icons/hicolor/1024x1024/apps"
+  install -Dm644 "$root/usr/share/doc/email-linux/"{LICENSE,THIRD_PARTY_NOTICES.md,RELEASE-CHANNEL.txt} \
+    -t "$pkgdir/usr/share/licenses/$pkgname"
+  # The .deb's AppArmor profile is for Ubuntu's user-namespace restriction,
+  # which Arch does not apply by default; it is left out.
+}

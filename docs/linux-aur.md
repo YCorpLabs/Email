@@ -1,17 +1,40 @@
-# AUR package
+# AUR packages
 
-`apps/linux/packaging/aur/PKGBUILD` is the Arch User Repository source package
-`email-linux`. It downloads the release tag's tarball (`_tag`, for example
-`v0.1.0-beta.1`) from the public repository
-[YCorpLabs/Email](https://github.com/YCorpLabs/Email), builds the
-GTK shell with the Arch `cargo`/`rust` toolchain on the user's machine, and
-installs the binary, desktop entry, AppStream metadata, icon and license
-notices. It declares `x86_64` and `aarch64`.
+Email has two Arch packages. Their PKGBUILDs live in this repository and both
+declare `x86_64` and `aarch64`:
 
-Publishing to the AUR is a maintainer action. Nothing in this repository pushes to
-the AUR.
+| Package | PKGBUILD | Installs |
+| --- | --- | --- |
+| `email-ycorp` | `apps/linux/packaging/aur/PKGBUILD` | The GTK shell, built on the user's machine from the release's source tarball, with the neutral profile |
+| `email-ycorp-bin` | `apps/linux/packaging/aur-bin/PKGBUILD` | The release's prebuilt `.deb` for the user's CPU, with the official profile. Provides and conflicts with `email-ycorp` |
 
-## What an AUR build is
+Publishing to the AUR is a maintainer action. Nothing in this repository pushes
+to the AUR.
+
+## Installing before the AUR packages exist
+
+New AUR account registration was closed when the first beta shipped, so the
+packages are not on the AUR yet. Until they are, build them from a clone of
+this repository:
+
+```sh
+git clone https://github.com/YCorpLabs/Email
+cd Email/apps/linux/packaging/aur-bin   # or aur, to build from source
+makepkg -si
+```
+
+This needs the PKGBUILDs on `main` to carry the release's checksums (step 5
+below) and the release to be published, because both PKGBUILDs download their
+sources from the GitHub release.
+
+## email-ycorp: built from source
+
+The source is `Email-<version>.tar.gz`, attached to the GitHub release: a
+`git archive` of the release commit with the prefix `Email-<version>/`, the
+same layout as GitHub's tag archive. It is a release asset rather than
+GitHub's generated `archive/refs/tags/...` download because its checksum is
+known before the tag exists and never depends on how GitHub generates archives.
+`scripts/prepare-aur-package.sh` writes it.
 
 An AUR build runs on the user's machine, so it is a local build:
 `scripts/linux-build-config.sh` refuses distribution profiles there and embeds
@@ -24,63 +47,91 @@ selection, the package builds the neutral `unofficial` distribution profile
 - no Google OAuth client, so one-click Google sign-in is unavailable. Gmail via
   an app password over IMAP, iCloud and other IMAP/SMTP accounts work.
 
-**Open decision before publishing:** whether the AUR package should be this
-neutral source build, or an `email-linux-bin` package that repackages the
-official x86_64 `.deb` from a GitHub release (built with the `official`
-profile and production OAuth configuration). The second keeps the official
-identity on Arch but needs a release `.deb` and a separate PKGBUILD; it is
-not prepared here.
+## email-ycorp-bin: prebuilt
+
+It repackages `email-linux_<version>_amd64.deb` or `email-linux_<version>_arm64.deb`
+from the release: the binary, desktop entry, AppStream metadata, icon and
+license notices. It leaves out the `.deb`'s AppArmor profile, which exists for
+Ubuntu's user-namespace restriction. `_debver` is the version in the `.deb`
+file names, the `version` in `apps/linux/Cargo.toml`.
+
+The `.deb` files come from `scripts/package-linux-release.sh` with the
+`official` profile and the `distribution` channel, built in Ubuntu 24.04
+containers. That is the official identity: app ID and data directory
+`com.ycorplabs.Mail`, the production Google desktop client (Google sign-in stays
+off until Google's review passes), the support address and Scheduling. The
+binary links OpenSSL 3, which Arch ships as `openssl-3`.
+
+The two packages use different app IDs, data directories and Secret Service
+collections. Switching between them means adding accounts again.
 
 ## Publish a release
 
-1. Set `_tag` in the PKGBUILD to the release tag, `v` plus the `version` in
-   `apps/linux/Cargo.toml` and any pre-release suffix (for example
-   `v0.1.0-beta.1`). Set `pkgver` to the same version in Arch form, without
-   `-` (`0.1.0beta1`), and `pkgrel=1`. Set the `# Maintainer:` line to the
-   AUR account's name and address.
-2. Merge the release source into `main` of YCorpLabs/Email, where the AUR
-   downloads the tarball.
-3. Tag and push from a clone of YCorpLabs/Email:
-   `git tag v0.1.0-beta.1 && git push origin v0.1.0-beta.1`.
-4. Run `scripts/prepare-aur-package.sh --build`. In a clean Arch x86_64
-   container it downloads the tag tarball, writes its SHA-256 into the
-   PKGBUILD (`updpkgsums`), writes `.SRCINFO`, runs `namcap`, and builds the
-   package with dependencies from the Arch repositories. The files to publish
-   are `dist-linux/aur/PKGBUILD` and `dist-linux/aur/.SRCINFO`. Commit the
-   updated `sha256sums` line back to this repository as well.
-5. Optional: install-test the package it built in a clean Arch container.
-   `verify-linux-packages.sh` also re-checks the x86_64 `.deb`, so run
-   `scripts/package-linux-release.sh x86_64` first, then:
+1. In both PKGBUILDs, set `_tag` to the release tag (`v` plus the `version` in
+   `apps/linux/Cargo.toml` and any pre-release suffix, for example
+   `v0.1.0-beta.1`), `pkgver` to the same version in Arch form without `-`
+   (`0.1.0beta1`) and `pkgrel=1`. In `aur-bin`, set `_debver` to the Cargo
+   version. Set the `# Maintainer:` lines to the AUR account's name and
+   address. The script refuses mismatched values.
+2. Build the Linux release from the release commit, with the production Google
+   desktop client values in the environment
+   ([Linux release packages](../apps/linux/README.md#release-packages-for-x86_64-and-arm64-from-one-machine)):
 
    ```sh
-   EMAIL_LINUX_ARCH_PACKAGE=$PWD/dist-linux/aur/email-linux-0.1.0beta1-1-x86_64.pkg.tar.zst \
-   scripts/verify-linux-packages.sh x86_64
+   EMAIL_DISTRIBUTION_PROFILE=official EMAIL_LINUX_RELEASE_CHANNEL=distribution \
+     scripts/package-linux-release.sh
    ```
-6. Create an account on <https://aur.archlinux.org>, add an SSH public key under
-   *My Account*, then:
+3. Run `scripts/prepare-aur-package.sh --ref <release commit> --build --update-repo`.
+   In a clean Arch x86_64 container it writes the source tarball
+   `dist-linux/aur/Email-<version>.tar.gz`, records its SHA-256 and those of
+   the two `.deb` files in the PKGBUILDs, writes `.SRCINFO`, verifies every
+   source against its checksum, runs `namcap`, builds `email-ycorp-bin` for
+   both architectures and `email-ycorp` for x86_64 with dependencies from the
+   Arch repositories, and runs `namcap` on the packages. The files to publish
+   are in `dist-linux/aur/` and `dist-linux/aur-bin/`; `--update-repo` also
+   copies them into `apps/linux/packaging/`. After the tag exists, `--ref` can
+   be left out.
+4. Attach the source tarball and both `.deb` files to the GitHub release, with
+   `SHA256SUMS`, and publish it. The PKGBUILDs download from
+   `releases/download/<tag>/`.
+5. Commit the updated PKGBUILDs and `.SRCINFO` files to `main`.
+6. Optional: install-test the built packages in a clean Arch container.
+   `verify-linux-packages.sh` also re-checks the x86_64 `.deb`:
 
    ```sh
-   git clone ssh://aur@aur.archlinux.org/email-linux.git aur-email-linux
-   cp dist-linux/aur/PKGBUILD dist-linux/aur/.SRCINFO aur-email-linux/
-   cd aur-email-linux
+   EMAIL_LINUX_ARCH_PACKAGE=$PWD/dist-linux/aur-bin/email-ycorp-bin-0.1.0beta1-1-x86_64.pkg.tar.zst \
+     scripts/verify-linux-packages.sh x86_64
+   EMAIL_LINUX_ARCH_PACKAGE=$PWD/dist-linux/aur/email-ycorp-0.1.0beta1-1-x86_64.pkg.tar.zst \
+     scripts/verify-linux-packages.sh x86_64
+   ```
+7. Create an account on <https://aur.archlinux.org> and add an SSH public key
+   under *My Account*. Then, for each package:
+
+   ```sh
+   git clone ssh://aur@aur.archlinux.org/email-ycorp.git aur-email-ycorp
+   cp dist-linux/aur/PKGBUILD dist-linux/aur/.SRCINFO aur-email-ycorp/
+   cd aur-email-ycorp
    git add PKGBUILD .SRCINFO
-   git commit -m "Initial import: email-linux 0.1.0beta1"
+   git commit -m "Initial import: email-ycorp 0.1.0beta1"
    git push origin master
    ```
 
-   The first push creates the package. The AUR repository must contain only
-   PKGBUILD, `.SRCINFO` and files the PKGBUILD references.
-7. On a real Arch or Omarchy x86_64 machine, install it the way users will
-   (`yay -S email-linux` or `git clone` plus `makepkg -si`) and check the
-   launcher and icon, Wayland rendering, keyboard
-   navigation, Secret Service storage across a relaunch and account sign-in.
+   and the same for `email-ycorp-bin` with `dist-linux/aur-bin/`. The first
+   push creates the package. An AUR repository must contain only `PKGBUILD`,
+   `.SRCINFO` and files the PKGBUILD references.
+8. On a real Arch or Omarchy machine, install it the way users will
+   (`yay -S email-ycorp-bin` or `git clone` plus `makepkg -si`) and check the
+   launcher and icon, Wayland rendering, keyboard navigation, Secret Service
+   storage across a relaunch and account sign-in.
 
-For later releases, bump `_tag` and `pkgver` (or `pkgrel` for packaging-only changes),
-tag in YCorpLabs/Email, rerun step 4 and push the new PKGBUILD and `.SRCINFO`.
+For later releases, bump `_tag`, `pkgver` and `_debver` (or `pkgrel` for
+packaging-only changes), rerun steps 2 to 5 and push the new PKGBUILD and
+`.SRCINFO` to both AUR repositories.
 
-## Verification without a tag
+## Verification without a release
 
-`scripts/prepare-aur-package.sh --local` builds the same PKGBUILD from
-`git archive HEAD` instead of the tag tarball, in a clean Arch x86_64
-container, and writes to `dist-linux/aur-check/`. Its PKGBUILD carries the
-local archive's checksum and must never be published.
+`scripts/prepare-aur-package.sh --local` checks and builds the same PKGBUILDs
+from `git archive HEAD` instead of a release commit, in a clean Arch x86_64
+container, and writes to `dist-linux/aur-check/`. It includes
+`email-ycorp-bin` when `dist-linux` holds the two `.deb` files. Its
+checksums are for local files: never publish or commit them.

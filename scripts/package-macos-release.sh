@@ -9,9 +9,15 @@ export EMAIL_UPDATE_FIXTURE_BUNDLE_ID
 require_package_notices "$repo_root"
 mode="${1:---local-alpha}"
 case "$mode" in
-  --local-alpha|--distribute|--fixture) ;;
-  *) echo "Usage: $0 [--local-alpha|--distribute|--fixture]" >&2; exit 2 ;;
+  --local-alpha|--distribute|--beta|--fixture) ;;
+  *) echo "Usage: $0 [--local-alpha|--distribute|--beta|--fixture]" >&2; exit 2 ;;
 esac
+stage=""
+on_exit() {
+  if [[ -n "$stage" ]]; then rm -rf "$stage"; fi
+  if declare -F email_beta_signing_lock >/dev/null; then email_beta_signing_lock; fi
+}
+trap on_exit EXIT
 # Fixture bundles are disposable acceptance tests: neutral identity and no
 # OAuth application values. Other modes use the selected distribution profile.
 if [[ "$mode" == --fixture ]]; then export EMAIL_DISTRIBUTION_PROFILE=unofficial; fi
@@ -55,19 +61,13 @@ if [[ "$mode" != --fixture && -n "$EMAIL_UPDATE_FEED_URL" && -z "$EMAIL_UPDATE_A
   exit 2
 fi
 export EMAIL_UPDATE_FIXTURE=0
-if [[ "$mode" == --distribute ]]; then
+if [[ "$mode" == --distribute || "$mode" == --beta ]]; then
   if [[ "$EMAIL_PROFILE_DISTRIBUTION" != true ]]; then
     echo "The $EMAIL_PROFILE_PROFILE distribution profile is not for distribution. Select official, or your fork's own profile." >&2
     exit 2
   fi
-  : "${EMAIL_RELEASE_CODESIGN_IDENTITY:?Set a Developer ID Application identity for distribution}"
-  : "${EMAIL_NOTARY_PROFILE:?Set the existing notarytool Keychain profile name for distribution}"
   : "${EMAIL_RELEASE_GOOGLE_CLIENT_ID:?Set the production Google OAuth desktop client ID}"
   : "${EMAIL_RELEASE_GOOGLE_CLIENT_SECRET:?Set the production Google desktop token-exchange value}"
-  # A profile with update hosts must ship its feed; one without has no updater.
-  if [[ -n "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
-    : "${EMAIL_UPDATE_FEED_URL:?Set the production HTTPS appcast URL (UPDATE_FEED_URL in the profile or EMAIL_UPDATE_FEED_URL)}"
-  fi
   if ! EMAIL_RELEASE_GOOGLE_CLIENT_ID="$EMAIL_RELEASE_GOOGLE_CLIENT_ID" \
     python3 "$repo_root/scripts/distribution-profile.py" --root "$repo_root" check-release-google-client; then
     echo "Distribution cannot use the development Google OAuth project." >&2
@@ -75,9 +75,35 @@ if [[ "$mode" == --distribute ]]; then
   fi
   export EMAIL_GOOGLE_CLIENT_ID="$EMAIL_RELEASE_GOOGLE_CLIENT_ID"
   export EMAIL_GOOGLE_CLIENT_SECRET="$EMAIL_RELEASE_GOOGLE_CLIENT_SECRET"
-  signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
   export EMAIL_RELEASE_BUNDLE_ID="$EMAIL_PROFILE_MACOS_BUNDLE_ID"
+fi
+if [[ "$mode" == --distribute ]]; then
+  : "${EMAIL_RELEASE_CODESIGN_IDENTITY:?Set a Developer ID Application identity for distribution}"
+  : "${EMAIL_NOTARY_PROFILE:?Set the existing notarytool Keychain profile name for distribution}"
+  # A profile with update hosts must ship its feed; one without has no updater.
+  if [[ -n "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
+    : "${EMAIL_UPDATE_FEED_URL:?Set the production HTTPS appcast URL (UPDATE_FEED_URL in the profile or EMAIL_UPDATE_FEED_URL)}"
+  fi
+  signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
   channel=distribution
+elif [[ "$mode" == --beta ]]; then
+  # Unnotarized beta, until the project has an Apple Developer ID: the
+  # distribution profile, bundle ID and production Google client of
+  # --distribute, signed with the project's persistent self-signed beta
+  # certificate (scripts/macos-beta-signing.sh). No hardened runtime,
+  # notarization or update feed. The launcher's same-signer library checks
+  # apply unchanged; an ad-hoc signature cannot pass them.
+  if [[ -n "${EMAIL_RELEASE_CODESIGN_IDENTITY:-}" || -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then
+    echo "Beta builds sign only with the identity from scripts/macos-beta-signing.sh; unset EMAIL_RELEASE_CODESIGN_IDENTITY and EMAIL_RELEASE_CODESIGN_KEYCHAIN." >&2
+    exit 2
+  fi
+  if [[ -n "$EMAIL_UPDATE_FEED_URL" ]]; then
+    echo "Beta builds are not notarized and have no updater; unset EMAIL_UPDATE_FEED_URL." >&2
+    exit 2
+  fi
+  source "$repo_root/scripts/macos-beta-signing.sh"
+  email_beta_signing_check || exit 2
+  channel=beta
 elif [[ "$mode" == --fixture ]]; then
   # Acceptance-test bundles: separate identifier, disposable signing keychain,
   # loopback feed only. The updater refuses fixture settings on any other ID.
@@ -97,7 +123,8 @@ fi
 # builds omit development-only Google scopes and Outlook. Google sign-in follows
 # the profile's GOOGLE_OAUTH_PUBLIC: off in the official profile until maintainers
 # turn it on there after Google approves the restricted-scope review.
-export EMAIL_RELEASE_CHANNEL="$channel"
+# A beta is a public build and compiles with the distribution feature set.
+if [[ "$channel" == beta ]]; then export EMAIL_RELEASE_CHANNEL=distribution; else export EMAIL_RELEASE_CHANNEL="$channel"; fi
 email_resolve_google_oauth_public || exit 2
 output="${EMAIL_RELEASE_OUTPUT_DIR:-$repo_root/dist-release/$channel}"
 cargo_bin="$(command -v cargo || true)"
@@ -121,7 +148,6 @@ if [[ "$sparkle_built" != "$EMAIL_SPARKLE_VERSION" ]]; then
 fi
 mkdir -p "$output"
 stage="$(mktemp -d "$output/.stage.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
 app="$stage/Email.app"
 mkdir -p "$app/Contents/"{MacOS,Frameworks,Helpers,Resources}
 install_package_notices "$repo_root" "$app/Contents/Resources/Legal"
@@ -196,6 +222,11 @@ if [[ "$mode" == --distribute && -n "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
 else
   "$policy_check" --validate-info "$app/Contents/Info.plist" --allow-unconfigured
 fi
+if [[ "$mode" == --beta ]]; then
+  # Unlocked only for signing; the keychain locks again on exit.
+  email_beta_signing_unlock || exit 2
+  signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
+fi
 sign_args=(--force --sign "$signing_identity")
 if [[ -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then sign_args+=(--keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN"); fi
 if [[ "$mode" == --distribute ]]; then sign_args+=(--options runtime --timestamp); else sign_args+=(--timestamp=none); fi
@@ -210,6 +241,11 @@ for binary in "$app/Contents/Frameworks/libEmailUI.dylib" "$app/Contents/Framewo
 done
 codesign "${sign_args[@]}" "$app"
 codesign --verify --deep --strict "$app"
+if [[ "$mode" == --beta ]]; then
+  # Fail closed: the app must carry the beta certificate, never an ad-hoc signature.
+  codesign --verify --strict -R "=certificate leaf = H\"$EMAIL_BETA_CERTIFICATE_SHA1\"" "$app"
+  email_beta_signing_lock
+fi
 if [[ "$mode" == --distribute ]]; then
   # Fail closed: local/ad-hoc signing must never masquerade as a public release.
   codesign --verify --strict -R '=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists' "$app"
@@ -225,10 +261,18 @@ mv "$app" "$output/Email.app"
 app="$output/Email.app"
 # Sparkle update archive: the signed (and, for distribution, stapled) app.
 update_archive="$output/Email-$EMAIL_VERSION-$EMAIL_BUILD_NUMBER-$(uname -m).zip"
-rm -f "$output"/Email-*.zip
+rm -f "$output"/Email-*.zip "$output"/Email-*.zip.sha256
 ditto -c -k --sequesterRsrc --keepParent "$app" "$update_archive"
 if [[ "$mode" == --fixture ]]; then
   printf 'UPDATE FIXTURE ONLY: disposable signature, loopback feed, not for distribution.\n' > "$output/STATUS.txt"
+  printf 'Built %s\n' "$update_archive"
+  exit 0
+fi
+if [[ "$mode" == --beta ]]; then
+  # The zip is the beta download. Testers install new betas by hand.
+  (cd "$output" && shasum -a 256 "$(basename "$update_archive")") > "$update_archive.sha256"
+  printf 'BETA, NOT NOTARIZED: signed with the self-signed beta certificate (SHA-1 %s), not with an Apple Developer ID. Gatekeeper blocks the first launch until the user chooses Open Anyway in System Settings > Privacy & Security. No automatic updates.\n' \
+    "$EMAIL_BETA_CERTIFICATE_SHA1" > "$output/STATUS.txt"
   printf 'Built %s\n' "$update_archive"
   exit 0
 fi

@@ -60,6 +60,62 @@ The script packages **the architecture it is built on**. Intel and Apple Silicon
 
 These artifacts are installer preparation, not a finished release. [Signed automatic updates](macos-updates.md) also need production signing and update hosting. Do not publish the local-alpha artifacts as a release.
 
+## Unnotarized beta
+
+Until the project has an Apple Developer ID, betas are built with `--beta`. It
+builds the official app, with the `official` profile, bundle ID
+`com.ycorplabs.mail` and the production Google desktop client, and signs it with
+the project's self-signed beta certificate instead of a Developer ID. It is not
+notarized, has no hardened runtime and no update feed. The launcher's checks are
+unchanged: every bundled library must carry the same signature as the launcher.
+Ad-hoc signing cannot pass them, because an ad-hoc designated requirement is
+the launcher's own code hash, and no library has that hash.
+
+Create the signing identity once:
+
+```sh
+./scripts/macos-beta-signing.sh create   # needs OpenSSL 3 on PATH
+./scripts/macos-beta-signing.sh status   # keychain path and certificate SHA-1
+```
+
+It writes `email-macos-beta-signing.keychain-db` and
+`email-macos-beta-signing.password`, both mode 600, to `~/.config/ycorp-release/`
+(`EMAIL_BETA_SIGNING_DIR` selects another directory). The keychain is a
+standalone file. It is never added to the keychain search list or made the
+default, the login keychain is not touched, and codesign reads the file with
+`--keychain`. The password reaches `security` on standard input, never as an
+argument. Back up both files together, outside source control.
+
+Build and check each beta:
+
+```sh
+export EMAIL_DISTRIBUTION_PROFILE=official
+export EMAIL_RELEASE_GOOGLE_CLIENT_ID='your-production-desktop-client-id'
+# Supply EMAIL_RELEASE_GOOGLE_CLIENT_SECRET through your release environment.
+export EMAIL_VERSION='0.1.0'
+export EMAIL_BUILD_NUMBER='1'   # raise it for every beta
+./scripts/package-macos-release.sh --beta
+./scripts/verify-macos-release.sh dist-release/beta/Email.app
+```
+
+Output goes to `dist-release/beta/`: `Email.app`, the download
+`Email-<version>-<build>-<arch>.zip` with its `.sha256`, and `STATUS.txt`,
+which says the build is not notarized. There is no DMG. The zip can be renamed
+for the release, for example `Email-0.1.0-beta.1-macos-arm64.zip`. Like
+`--distribute`, it packages the architecture of the Mac it runs on.
+
+Later betas reuse the same identity: run the build again. The packager unlocks
+the keychain from its password file only to sign, and locks it again
+afterwards. Don't run `create` again. Keychain items that a beta creates trust
+this certificate, so a new certificate would make macOS ask every tester again
+for each account. When a Developer ID build replaces the beta, macOS asks once
+per account, and testers choose **Always Allow**.
+
+Testers open an unnotarized beta the first time with System Settings → Privacy
+& Security → **Open Anyway**, or by running
+`xattr -dr com.apple.quarantine /Applications/Email.app` before opening it.
+Betas have no automatic updates; testers download new betas by hand.
+
 ## Keychain items and repeated password prompts
 
 macOS checks each item's access requirements against the requesting program.
