@@ -22,6 +22,6 @@ pkgbase = email-ycorp
 	optdepends = gnome-keyring: Secret Service credential storage (or another Secret Service provider)
 	options = !lto
 	source = email-ycorp-0.1.0beta1.tar.gz::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.1/Email-0.1.0-beta.1.tar.gz
-	sha256sums = SKIP
+	sha256sums = 57eddd196c1bb9ab2e39774314541978c4e7cc79495c1fe7a100414e8ec1a67a
 
 pkgname = email-ycorp

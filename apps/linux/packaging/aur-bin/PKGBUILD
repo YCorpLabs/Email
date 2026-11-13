@@ -35,8 +35,8 @@ source_x86_64=("$pkgname-$pkgver-amd64.deb::$url/releases/download/$_tag/email-l
 source_aarch64=("$pkgname-$pkgver-arm64.deb::$url/releases/download/$_tag/email-linux_${_debver}_arm64.deb")
 noextract=("$pkgname-$pkgver-amd64.deb" "$pkgname-$pkgver-arm64.deb")
 # Replaced by scripts/prepare-aur-package.sh for the published release.
-sha256sums_x86_64=('SKIP')
-sha256sums_aarch64=('SKIP')
+sha256sums_x86_64=('af5be9eb32aa8c4adda7be4780ad1f2d6712e1d3d15869d15fd9031206531bb0')
+sha256sums_aarch64=('c48e7aac0cba0016cd3d96b8f19c76f4a36ab4ab1daf618628e884ac38c2cf2a')
 
 prepare() {
   # makepkg links only this architecture's .deb into $srcdir.
