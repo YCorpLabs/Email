@@ -183,6 +183,13 @@ PY
   fi
 }
 
+# Agent access's Connect registers this helper; a release bundles its own.
+export_mcp_helper() {
+  "$cargo_bin" build -p mail-mcp "${cargo_args[@]}"
+  EMAIL_MCP_HELPER="$(target_directory)/$profile/mail-mcp"
+  export EMAIL_MCP_HELPER
+}
+
 case "$(uname -s)" in
   Darwin)
     "$cargo_bin" build -p mail-service "${cargo_args[@]}"
@@ -201,6 +208,7 @@ case "$(uname -s)" in
     export MAIL_SERVICE_LIBRARY="$target_dir/$profile/libmail_service.dylib"
     prepare_demo_store
     if [[ "$smoke" == true ]]; then exec "$bin_dir/email-desktop" --smoke-service; fi
+    export_mcp_helper
     echo "Starting Email with store $store (close the window or press Ctrl+C here to quit)."
     exec "$bin_dir/email-desktop"
     ;;
@@ -211,6 +219,7 @@ case "$(uname -s)" in
     export EMAIL_GOOGLE_CLIENT_ID EMAIL_GOOGLE_CLIENT_SECRET EMAIL_MICROSOFT_CLIENT_ID
     "$cargo_bin" build --manifest-path apps/linux/Cargo.toml "${cargo_args[@]}"
     prepare_demo_store
+    export_mcp_helper
     echo "Starting Email with store $store (close the window or press Ctrl+C here to quit)."
     target_dir="$(target_directory --manifest-path apps/linux/Cargo.toml)"
     exec "$target_dir/$profile/email-linux"

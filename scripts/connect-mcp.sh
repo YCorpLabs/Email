@@ -26,6 +26,10 @@ Usage: scripts/connect-mcp.sh [--codex | --claude | --both] [--db PATH] [--build
        [--allow-draft] [--allow-triage] [--allow-sync] [--allow-send | --allow-write]
        [--allow-booking-settings] [--account ID ...] [--name NAME] [--dry-run]
 
+For source builds. Packaged apps connect from Agent access (Connect), which
+registers the app's own helper under the same name with every mail permission
+flag and leaves the per-account choices to the app.
+
 Registers Email's local MCP server in installed clients. The default server is
 read-only and is named by the distribution profile's MCP_SERVER_NAME ("email"
 for official builds, "email-unofficial" otherwise). --allow-write registers a

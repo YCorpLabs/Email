@@ -25,9 +25,9 @@ use uuid::Uuid;
 mod access;
 mod agent;
 pub use agent::{
-    AGENT_APPROVAL_KINDS, AGENT_DISCLOSURE_VERSION, AGENT_GRANTS, AgentAction,
-    AgentApprovalRequest, AgentConsent, DEFAULT_APPROVAL_UNDO_SECONDS, agent_grant_for,
-    agent_grant_label, agent_quoted_subject,
+    AGENT_APPROVAL_KINDS, AGENT_DISCLOSURE_MIN_VERSION, AGENT_DISCLOSURE_VERSION, AGENT_GRANTS,
+    AgentAction, AgentApprovalRequest, AgentConsent, DEFAULT_APPROVAL_UNDO_SECONDS,
+    agent_grant_for, agent_grant_label, agent_quoted_subject,
 };
 mod agenda;
 pub use agenda::{AgendaAttendee, AgendaEvent, AvailabilitySlot, CalendarCollection};

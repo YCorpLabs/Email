@@ -17,6 +17,7 @@
 //! Network operations block and belong on a worker thread. Account passwords
 //! and OAuth tokens go only to the OS credential store, never to SQLite or logs.
 mod agent_access;
+mod agent_clients;
 mod agenda;
 #[cfg(any(target_os = "macos", test))]
 mod credential_access;
@@ -173,6 +174,17 @@ enum Request {
         limit: Option<u32>,
     },
     AgentPendingSummary,
+    /// Connect an agent: the Claude Code and Codex CLIs, whether Email is
+    /// registered in each, and a configuration for other MCP clients.
+    /// `helper_path` is the app bundle's helper on macOS.
+    AgentClients {
+        helper_path: Option<String>,
+    },
+    /// Register Email's MCP helper in `client` ("claude" or "codex").
+    ConnectAgentClient {
+        client: String,
+        helper_path: Option<String>,
+    },
     ApproveAgentAction {
         id: String,
         undo_seconds: Option<u32>,
@@ -1008,6 +1020,14 @@ impl MailService {
                     .list_agent_actions(status.as_deref(), limit.unwrap_or(200)),
             ),
             Request::AgentPendingSummary => self.value(self.store.agent_pending_summary()),
+            Request::AgentClients { helper_path } => Ok(agent_clients::overview(
+                &self.database_path,
+                helper_path.as_deref(),
+            )),
+            Request::ConnectAgentClient {
+                client,
+                helper_path,
+            } => agent_clients::connect(&self.database_path, helper_path.as_deref(), &client),
             Request::ApproveAgentAction { id, undo_seconds } => {
                 self.value(self.store.approve_agent_action(
                     &id,
@@ -2752,17 +2772,28 @@ mod tests {
             .request_json(r#"{"op":"agent_access_disclosure","account_id":"demo:personal"}"#)
             .unwrap();
         assert_eq!(disclosure["version"], mail_core::AGENT_DISCLOSURE_VERSION);
-        assert!(disclosure["title"].as_str().unwrap().contains("alex@example.com"));
+        assert_eq!(disclosure["title"], "Let agents use alex@example.com?");
         assert_eq!(disclosure["grants"].as_array().unwrap().len(), 5);
-        assert!(disclosure["provider_terms"].as_str().unwrap().contains("provider's terms"));
+        assert_eq!(disclosure["grants"][4]["id"], "calendar_write");
+        assert_eq!(disclosure["grants"][4]["warning"], true);
+        // The sheet names what agents read, the provider's terms and how to
+        // turn access off, with the full list one click away.
+        assert!(disclosure["lead"].as_str().unwrap().contains("mail, drafts and calendar"));
+        assert!(disclosure["provider_terms"].as_str().unwrap().contains("AI provider"));
+        assert!(disclosure["revoke"].as_str().unwrap().contains("turn this off"));
+        let details = disclosure["details"].as_array().unwrap();
+        for fragment in ["attachments", "Drafts and labels", "queued mail", "Calendar invitations", "Recipient suggestions", "Open-tracking", "bookings", "untrusted", "MCP registration"] {
+            assert!(details.iter().any(|d| d.as_str().unwrap().contains(fragment)), "{fragment}");
+        }
         assert!(service
             .request_json(r#"{"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":0}"#)
             .is_err());
         service
-            .request_json(r#"{"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":1}"#)
+            .request_json(&json!({"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":mail_core::AGENT_DISCLOSURE_VERSION}).to_string())
             .unwrap();
         let status = service.request_json(r#"{"op":"agent_access_status"}"#).unwrap();
-        assert_eq!(status["accounts"][0]["grant_labels"], json!(["Read", "Send requests"]));
+        assert_eq!(status["accounts"][0]["grant_labels"], json!(["Read", "Ask to send"]));
+        assert_eq!(status["accounts"][0]["grant_summary"], "Read · Ask to send");
         let overview = service.request_json(r#"{"op":"agent_access_overview"}"#).unwrap();
         assert_eq!(overview["requests"], json!([]));
         assert_eq!(overview["history"][0]["kind"], "consent_granted");

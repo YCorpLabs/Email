@@ -7,49 +7,97 @@
 use mail_core::{AGENT_DISCLOSURE_VERSION, AGENT_GRANTS, MailStore, agent_grant_label as grant_label};
 use serde_json::{Value, json};
 
-fn grant_detail(grant: &str) -> &'static str {
+/// "this Mac" in the macOS engine, "this computer" elsewhere.
+const THIS_COMPUTER: &str = if cfg!(target_os = "macos") { "this Mac" } else { "this computer" };
+
+/// The checkbox for a grant in the turn-on sheet: its label, a short note shown
+/// after it, whether the note is a warning, and the full explanation (tooltip
+/// and accessibility description).
+fn grant_checkbox(grant: &str) -> (&'static str, Option<&'static str>, bool, &'static str) {
     match grant {
-        "draft" => "Create and edit local drafts, draft attachments, snippets and signatures. Snippets are shared by all accounts.",
-        "triage" => {
-            "Archive, mark read or unread, snooze and set reminders. Bulk changes wait for your approval."
-        }
-        "send" => "Ask to send or schedule drafts; every send waits for your approval. Also lets agents cancel a scheduled send, including one you scheduled, which returns it to Drafts.",
-        "sync" => "Fetch new mail from the provider and upload changes already queued.",
-        "calendar_write" => {
-            "Create and edit events and reply to invitations. Guests are notified, and these changes do not wait for approval."
-        }
-        _ => "",
+        "draft" => (
+            "Write drafts",
+            None,
+            false,
+            "Create and edit local drafts, draft attachments, snippets and signatures. Snippets are shared by all accounts.",
+        ),
+        "triage" => (
+            "Archive, mark read and snooze",
+            Some("you approve bulk changes"),
+            false,
+            "Archive, mark read or unread, snooze and set reminders one conversation at a time. Changes to many conversations wait for your approval.",
+        ),
+        "send" => (
+            "Ask to send mail",
+            Some("you approve each one"),
+            false,
+            "Ask to send or schedule drafts; every send waits for your approval. Agents can also cancel a scheduled send, including one you scheduled, which returns it to Drafts.",
+        ),
+        "sync" => (
+            "Fetch new mail",
+            None,
+            false,
+            "Fetch new mail from your provider and upload changes already queued.",
+        ),
+        "calendar_write" => (
+            "Change calendar events",
+            Some("no approval; guests get notified"),
+            true,
+            "Create and edit events and reply to invitations. Guests are notified, and these changes don't wait for your approval.",
+        ),
+        _ => ("", None, false, ""),
     }
 }
 
-/// The disclosure shown before agent access is turned on for one account.
+/// The turn-on sheet shown before agent access is turned on for one account,
+/// and again when its permissions are edited. Every optional grant starts
+/// unchecked: reading is the only default. The sheet names what agents can
+/// read (the lead, and the full list under `details`), says the AI provider's
+/// terms apply, and says how to turn access off.
 pub(crate) fn disclosure(email: &str) -> Value {
     json!({
         "version": AGENT_DISCLOSURE_VERSION,
-        "title": format!("Turn on agent access for {email}?"),
-        "change_title": format!("Change agent access for {email}?"),
-        "intro": "AI agents and other tools that you connect to Email's local MCP server, such as Codex or Claude Code, will be able to read this account's data stored on this computer:",
-        "shared_note": "While any account has agent access, agents can also read your snippets and saved splits, and your bookings if Scheduling is connected.",
-        "data_categories": [
-            "Messages: senders, recipients, subjects, bodies and attachments. An attachment not yet on this computer is downloaded from your mail provider when an agent asks for it.",
-            "Drafts, labels, and snoozed, scheduled and queued mail",
-            "Calendar invitations and connected calendar events",
-            "Recipient suggestions, follow-up reminders and signatures",
-            "Open-tracking activity for messages you chose to track",
+        "title": format!("Let agents use {email}?"),
+        "lead": format!("Agents can read this account's mail, drafts and calendar on {THIS_COMPUTER}."),
+        "read": {"label": "Read mail and calendar", "note": "required"},
+        "grants": AGENT_GRANTS.iter().map(|grant| {
+            let (label, note, warning, detail) = grant_checkbox(grant);
+            json!({
+                "id": grant,
+                "label": label,
+                "note": note,
+                "warning": warning,
+                "detail": detail,
+                "short_label": grant_label(grant),
+            })
+        }).collect::<Vec<_>>(),
+        "provider_terms": "What an agent reads goes to its AI provider, such as Anthropic or OpenAI, under their terms.",
+        "revoke": "You can turn this off anytime in Agent access.",
+        "details_title": "What exactly can agents see?",
+        "details": [
+            format!("Messages: senders, recipients, subjects, bodies and attachments. An attachment that isn't on {THIS_COMPUTER} yet is downloaded from your mail provider when an agent asks for it."),
+            "Drafts and labels".to_string(),
+            "Snoozed, scheduled and queued mail".to_string(),
+            "Calendar invitations and connected calendar events".to_string(),
+            "Recipient suggestions, follow-up reminders and signatures".to_string(),
+            "Open-tracking activity for messages you chose to track".to_string(),
+            "While any account is on: your snippets and saved splits, and your bookings if Scheduling is connected".to_string(),
+            "Email marks mail content as untrusted when it hands it to an agent, but an agent can still be misled by what it reads.".to_string(),
+            "Email's developer never receives any of it. Once an agent reads something, its provider's terms and privacy policy apply, not Email's.".to_string(),
+            "An agent's own MCP registration can limit it further. Agents connected from Agent access can do what you allow here.".to_string(),
         ],
-        "provider_terms": "Anything an agent reads is sent to that agent and to the AI provider behind it. From then on, that provider's terms and privacy policy apply to the data, not Email's privacy policy. Email's developer never receives it.",
-        "safeguards": "Sending mail and bulk changes always wait for your approval in Agent access. Email marks message content as untrusted when it passes it to an agent, but an agent can still be misled by what it reads.",
-        "grants_heading": "Also allow agents to:",
-        "read_label": "Read this account's data (required)",
-        "grants": AGENT_GRANTS.iter().map(|grant| json!({
-            "id": grant,
-            "label": grant_label(grant),
-            "detail": grant_detail(grant),
-        })).collect::<Vec<_>>(),
-        "revoke": "You can turn agent access off at any time in Agent access. It applies to the agent's next request. The permissions in each MCP registration still apply as well.",
-        "confirm": "Turn On Agent Access",
+        "cancel": "Cancel",
+        "confirm": "Turn on",
         "change_confirm": "Save",
     })
+}
+
+/// "Read · Drafts · Ask to send": the account row's summary of a consent.
+fn grant_summary(grants: &[String]) -> String {
+    std::iter::once("Read")
+        .chain(grants.iter().map(|g| grant_label(g)))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Everything the Agent access window shows, in one read.
@@ -92,6 +140,7 @@ pub(crate) fn status(store: &MailStore) -> Result<Value, String> {
                 "consent": consent,
                 "current": consent.is_some_and(|c| c.is_current()),
                 "grant_labels": labels,
+                "grant_summary": consent.map(|c| grant_summary(&c.grants)),
             })
         })
         .collect::<Vec<_>>();

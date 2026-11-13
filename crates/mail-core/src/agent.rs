@@ -18,9 +18,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-/// Bump when the in-app disclosure changes materially. Consents recorded for an
-/// older disclosure stop authorizing MCP access until the user reviews it again.
-pub const AGENT_DISCLOSURE_VERSION: i64 = 1;
+/// The disclosure the app shows now. A new consent records this version, so
+/// each grant says which text the user saw. Bump it whenever that text changes.
+///
+/// 2: the Agent access redesign. Shorter sheet, the full list one click away,
+/// same data, grants and safeguards as version 1.
+pub const AGENT_DISCLOSURE_VERSION: i64 = 2;
+/// The oldest disclosure whose consents still authorize MCP access. Raise it
+/// (to the current version) only when a change widens what agents can read or
+/// do, or weakens a safeguard: older consents then stop working until the user
+/// reviews the new text. Rewording alone keeps it, so version 1 consents stay
+/// valid under version 2.
+pub const AGENT_DISCLOSURE_MIN_VERSION: i64 = 1;
 /// Optional grants. Consent itself authorizes reading the account's cached data.
 pub const AGENT_GRANTS: [&str; 5] = ["draft", "triage", "send", "sync", "calendar_write"];
 /// Agent requests that never take effect until the user approves them in the app.
@@ -50,9 +59,9 @@ pub struct AgentConsent {
     pub disclosure_version: i64,
 }
 impl AgentConsent {
-    /// Consent recorded for the current disclosure.
+    /// Consent recorded for a disclosure that still authorizes access.
     pub fn is_current(&self) -> bool {
-        self.disclosure_version >= AGENT_DISCLOSURE_VERSION
+        self.disclosure_version >= AGENT_DISCLOSURE_MIN_VERSION
     }
     pub fn allows(&self, grant: &str) -> bool {
         self.is_current() && self.grants.iter().any(|g| g == grant)
@@ -453,13 +462,16 @@ fn recipient_label(addresses: &[String]) -> String {
     }
 }
 
-/// The label both shells, the disclosure and MCP refusals use for a grant.
+/// The short name both shells, the account summary ("Read · Drafts · Ask to
+/// send"), the history and MCP refusals use for a grant. Each is the start of
+/// the matching checkbox in the turn-on sheet, so an agent's "ask the user to
+/// allow Ask to send" points at a box the user can find.
 pub fn agent_grant_label(grant: &str) -> &'static str {
     match grant {
         "draft" => "Drafts",
-        "triage" => "Triage",
-        "send" => "Send requests",
-        "sync" => "Sync",
+        "triage" => "Archive and snooze",
+        "send" => "Ask to send",
+        "sync" => "Fetch mail",
         "calendar_write" => "Calendar changes",
         _ => "this permission",
     }
@@ -836,7 +848,7 @@ fn blocked_summary(db: &Connection) -> Result<Option<Value>> {
             "SELECT account_id,granted_at_ms FROM agent_consents WHERE disclosure_version>=?1",
         )?;
         query
-            .query_map([AGENT_DISCLOSURE_VERSION], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([AGENT_DISCLOSURE_MIN_VERSION], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?
     };
     // Accounts still off take priority over missing grants, so the banner's
@@ -1790,7 +1802,31 @@ mod tests {
             vec!["consent_revoked", "consent_granted"]
         );
         assert!(history[1].summary.contains("alex@example.com"));
-        assert!(history[1].summary.ends_with("Read, Drafts, Send requests"), "{}", history[1].summary);
+        assert!(history[1].summary.ends_with("Read, Drafts, Ask to send"), "{}", history[1].summary);
+    }
+
+    #[test]
+    fn consent_for_an_older_reworded_disclosure_keeps_working() {
+        let store = store();
+        // A consent recorded before the redesign, under disclosure version 1.
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_consents(account_id,granted_at_ms,grants_json,disclosure_version) VALUES('demo:personal',1,'[\"draft\"]',?1)",
+                [AGENT_DISCLOSURE_MIN_VERSION],
+            )
+            .unwrap();
+        let consent = store.agent_consents().unwrap().remove(0);
+        assert!(AGENT_DISCLOSURE_MIN_VERSION < AGENT_DISCLOSURE_VERSION);
+        assert!(consent.is_current() && consent.allows("draft") && !consent.allows("send"));
+        // New consents must still come from the text the app shows now.
+        assert!(store
+            .grant_agent_access("demo:personal", &[], AGENT_DISCLOSURE_MIN_VERSION)
+            .is_err());
+        // Below the minimum, a consent stops authorizing until reviewed again.
+        let stale = AgentConsent { disclosure_version: AGENT_DISCLOSURE_MIN_VERSION - 1, ..consent };
+        assert!(!stale.is_current() && !stale.allows("draft"));
     }
 
     #[test]
@@ -1996,7 +2032,7 @@ mod tests {
             .execute("UPDATE agent_consents SET grants_json='[]'", [])
             .unwrap();
         let error = store.approve_agent_action(&request.id, 10).unwrap_err().to_string();
-        assert!(error.contains("no longer includes Send requests"), "{error}");
+        assert!(error.contains("no longer includes Ask to send"), "{error}");
         assert!(store.list_outbox().unwrap().is_empty());
     }
 
@@ -2110,7 +2146,7 @@ mod tests {
         // A later refusal for a missing grant is shown, but access is on.
         std::thread::sleep(std::time::Duration::from_millis(2));
         store
-            .record_agent_block(&["demo:personal".into()], "send_draft", "Agent access for this account does not include Send requests", None)
+            .record_agent_block(&["demo:personal".into()], "send_draft", "Agent access for this account does not include “Ask to send”", None)
             .unwrap();
         let summary = store.agent_pending_summary().unwrap();
         assert_eq!(summary["blocked"]["needs_access"], false);
@@ -2388,7 +2424,7 @@ mod tests {
         assert_eq!(store.agent_action(&undo.id).unwrap().unwrap().details["closed_by"], "system");
         store.record_agent_block(&["demo:personal".into()], "get_message", "Agent access is off", None).unwrap();
         store
-            .record_agent_block(&["demo:personal".into()], "send_draft", "does not include Send requests", None)
+            .record_agent_block(&["demo:personal".into()], "send_draft", "does not include “Ask to send”", None)
             .unwrap();
         assert_eq!(store.list_agent_actions(Some("blocked"), 10).unwrap().len(), 2);
         assert_eq!(sanitize_client(Some("\u{202e}liamE")), Some("liamE".into()));
