@@ -27,7 +27,7 @@ shell and the scripts always read the same file. Check a selection with
 
 | | `development` | `official` | `unofficial` (default) |
 | --- | --- | --- | --- |
-| Use | Maintainers' dev build and local alpha | Signed production releases | Self-builds, forks, validation |
+| Use | Maintainers' dev build and local alpha | Signed production releases and unnotarized betas | Self-builds, forks, validation |
 | `DISTRIBUTION` | `false` | `true` | `false` |
 | macOS bundle ID | `dev.email.client` | `com.ycorplabs.mail` | `invalid.email.unofficial` |
 | macOS data directory | `Email` | `com.ycorplabs.mail` | `invalid.email.unofficial` |
@@ -69,7 +69,8 @@ Derived production identifiers:
   `com.ycorplabs.mail.v2` on Linux, which is new because no production build
   has shipped;
 - Sparkle defaults domain and update-policy bundle check: `com.ycorplabs.mail`;
-- `--distribute` packaging and production publishing require this bundle ID.
+- `--distribute` and `--beta` packaging and production publishing require this
+  bundle ID ([unnotarized beta](macos-release.md#unnotarized-beta)).
 
 The bundle ID cannot change after release without breaking Keychain access,
 stored data and Sparkle updates. No OAuth redirect depends on it: Google uses a

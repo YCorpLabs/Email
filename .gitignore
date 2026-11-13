@@ -41,5 +41,16 @@ token.json
 /apps/linux/packaging/arch-binary/pkg/
 /apps/linux/packaging/arch-binary/src/
 /apps/linux/packaging/arch-binary/*.log
+# makepkg in a clone (docs/linux-aur.md): downloads and build output.
+/apps/linux/packaging/aur/src/
+/apps/linux/packaging/aur/pkg/
+/apps/linux/packaging/aur/*.tar.gz
+/apps/linux/packaging/aur/*.pkg.tar.*
+/apps/linux/packaging/aur/*.log
+/apps/linux/packaging/aur-bin/src/
+/apps/linux/packaging/aur-bin/pkg/
+/apps/linux/packaging/aur-bin/*.deb
+/apps/linux/packaging/aur-bin/*.pkg.tar.*
+/apps/linux/packaging/aur-bin/*.log
 
 apps/macos/Sources/EmailUI/BuildIdentity.generated.swift
