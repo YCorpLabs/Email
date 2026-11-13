@@ -47,6 +47,11 @@ from a link (Evolution and KMail CVEs), so this is defence in depth:
   (empty or only Unicode White_Space), has invalid percent encoding or UTF-8,
   or has a control character. CR, LF and tab are allowed in `body` only.
 - `+` is kept as a plus sign; mailto has no form encoding.
+- Percent escapes are decoded byte by byte by the shell's own code, not by a
+  platform URL library, and every decoded character is kept, including a
+  leading U+FEFF (byte-order mark). Foundation's `removingPercentEncoding`
+  drops that character on macOS 26 but not on later versions, so macOS doesn't
+  use it and gives the same result on every supported version.
 
 Both implementations split the raw string on ASCII `#`, `?`, `&` and `=` and
 check the same 34-case table (`mailtoCases` in
