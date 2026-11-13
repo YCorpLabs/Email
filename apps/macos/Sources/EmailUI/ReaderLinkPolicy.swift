@@ -57,15 +57,15 @@ enum ReaderLinkPolicy {
         if let hash = link.firstIndex(of: UInt8(ascii: "#")) { link = link[..<hash] }
         let question = link.firstIndex(of: UInt8(ascii: "?"))
         let rawQuery = question.map { link[link.index(after: $0)...] } ?? []
-        guard let recipient = String(decoding: link[..<(question ?? link.endIndex)], as: UTF8.self).removingPercentEncoding,
+        guard let recipient = percentDecoded(link[..<(question ?? link.endIndex)]),
               !hasControl(recipient, allowingLineBreaks: false) else { return nil }
         var hasRecipient = !isBlank(recipient)
         var kept: [String] = []
         for pair in rawQuery.split(separator: UInt8(ascii: "&")) {
             let equals = pair.firstIndex(of: UInt8(ascii: "="))
-            let rawValue = equals.map { String(decoding: pair[pair.index(after: $0)...], as: UTF8.self) } ?? ""
-            guard let name = String(decoding: pair[..<(equals ?? pair.endIndex)], as: UTF8.self).removingPercentEncoding?.lowercased(),
-                  let field = rawValue.removingPercentEncoding else { return nil }
+            let rawValue = equals.map { pair[pair.index(after: $0)...] } ?? []
+            guard let name = percentDecoded(pair[..<(equals ?? pair.endIndex)])?.lowercased(),
+                  let field = percentDecoded(rawValue) else { return nil }
             guard mailtoFields.contains(name), !field.isEmpty else { continue }
             if hasControl(field, allowingLineBreaks: name == "body") { return nil }
             if name != "subject" && name != "body" && !isBlank(field) { hasRecipient = true }
@@ -73,6 +73,41 @@ enum ReaderLinkPolicy {
         }
         guard hasRecipient else { return nil }
         return URL(string: "mailto:" + mailtoEncoded(recipient) + (kept.isEmpty ? "" : "?" + kept.joined(separator: "&")))
+    }
+
+    /// Strict percent-decoding, the same as `percent_decoded` in
+    /// apps/linux/src/reader_links.rs: every `%` must start two hex digits and
+    /// the bytes must be UTF-8. A `+` stays a plus sign, as mailto has no form
+    /// encoding. This doesn't use Foundation's `removingPercentEncoding`, because
+    /// Foundation's UTF-8 decoding treats a leading U+FEFF (byte-order mark)
+    /// differently on different macOS versions: macOS 26 drops it from
+    /// `%EF%BB%BFHi`, later versions keep it.
+    private static func percentDecoded(_ raw: ArraySlice<UInt8>) -> String? {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(raw.count)
+        var input = raw.makeIterator()
+        while let byte = input.next() {
+            guard byte == UInt8(ascii: "%") else {
+                bytes.append(byte)
+                continue
+            }
+            guard let high = input.next().flatMap(hexValue), let low = input.next().flatMap(hexValue) else { return nil }
+            bytes.append(high << 4 | low)
+        }
+        // The standard library keeps every scalar, a leading U+FEFF included, and
+        // replaces invalid UTF-8 with U+FFFD, so a result that no longer matches
+        // the bytes means the input wasn't UTF-8.
+        let text = String(decoding: bytes, as: UTF8.self)
+        return text.utf8.elementsEqual(bytes) ? text : nil
+    }
+
+    private static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case UInt8(ascii: "0")...UInt8(ascii: "9"): return byte - UInt8(ascii: "0")
+        case UInt8(ascii: "a")...UInt8(ascii: "f"): return byte - UInt8(ascii: "a") + 10
+        case UInt8(ascii: "A")...UInt8(ascii: "F"): return byte - UInt8(ascii: "A") + 10
+        default: return nil
+        }
     }
 
     /// Percent-encodes every UTF-8 byte except ASCII letters, digits and `-._~@,`.
