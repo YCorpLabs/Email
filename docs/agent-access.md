@@ -153,9 +153,17 @@ Notification-seen state is stored in user defaults on macOS and in
 ## Verified (13 Nov 2026)
 
 Builds: the neutral `unofficial` profile, debug; disposable demo stores only.
-Connect was tested only against fake `claude`/`codex` scripts:
-`EMAIL_AGENT_CLI_PATH` limits the search to their directory, so no real CLI
-or configuration was found, run or changed.
+The window checks used fake `claude`/`codex` scripts: `EMAIL_AGENT_CLI_PATH`
+limits the search to their directory, so no real CLI or configuration was
+found, run or changed.
+
+- Real CLIs, macOS: `agent_clients` and `connect_agent_client` through the
+  engine library with the installed Claude Code and Codex, a clean
+  environment and a throwaway `HOME`. Both showed "Found on this Mac", Connect
+  registered `email-unofficial` with the expected command in each (checked
+  with `claude mcp get` and `codex mcp get` against that `HOME`), both then
+  showed connected to this helper, and a second Connect changed nothing. The
+  real configuration files have no trace of it.
 
 - macOS: `apps/macos/Tests/run-agent-access-checks.py` (the real window,
   real mail-service and real `mail-mcp`) passed in dark and in light mode:
@@ -173,7 +181,8 @@ or configuration was found, run or changed.
   three grants, account on, pending, expanded, narrow, approve and Undo send,
   reject, Recent activity, Connect, the turn-off confirmation, an attachment,
   no helper) and the main ones in light. The captures were checked by eye.
-- Not verified: a real Claude Code or Codex (only the fakes; the commands
-  match `scripts/connect-mcp.sh`), a signed release bundle's
-  `Contents/Helpers/mail-mcp` (the check used `EMAIL_MCP_HELPER`), Wayland
-  or GNOME, and keyboard-only use of the Linux sheet.
+- Not verified: Connect from the window against real CLIs (the window used
+  the fakes; the real CLIs were exercised through the same engine operations),
+  real CLIs on Linux, a signed release bundle's `Contents/Helpers/mail-mcp`
+  (the checks used `EMAIL_MCP_HELPER`), Wayland or GNOME, and keyboard-only use
+  of the Linux sheet.
