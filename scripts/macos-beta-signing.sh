@@ -10,7 +10,8 @@
 # keychain password in a sibling file. Both are mode 600, in
 # EMAIL_BETA_SIGNING_DIR (default ~/.config/ycorp-release). The keychain is
 # never added to the keychain search list or made the default, and the login
-# keychain is not touched: codesign reads the file through --keychain. The
+# keychain is not touched: codesign reads the file through --keychain and a
+# private search list (email_codesign_home in macos-updates-env.sh). The
 # password reaches `security` on standard input, never as an argument.
 #
 # Reuse the same identity for every beta. Keychain items that a beta creates

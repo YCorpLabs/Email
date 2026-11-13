@@ -127,6 +127,16 @@ and helper, then the app. Distribution adds hardened runtime and timestamps.
 sign from a disposable keychain file and may use a `http://127.0.0.1` feed.
 The updater refuses fixture settings under any other bundle identifier.
 
+When `EMAIL_RELEASE_CODESIGN_KEYCHAIN` names a keychain file (fixture and beta
+builds), the packager passes it to codesign with `--keychain` and also runs
+codesign with `HOME` set to a directory inside its staging folder. That
+directory holds only a keychain search list: the signing keychain, then the
+user's current search list. Before macOS 27, codesign finds an identity only in
+a keychain on the search list; `--keychain` only narrows that search, and
+macOS 26 reports "no identity found" without the private list. The private list
+gives codesign the keychain without changing the user's search list or login
+keychain. `email_codesign_home` in `scripts/macos-updates-env.sh` writes it.
+
 ## Publishing
 
 ```sh
@@ -166,11 +176,17 @@ swift build --package-path apps/macos --disable-sandbox --product email-update-p
 ```
 
 `test-macos-updates.sh` creates a disposable code signing identity in a
-temporary keychain file (the keychain search list is checked unchanged) and a
-disposable EdDSA key. It packages four complete fixture bundles, publishes a
-signed appcast with the real publishing script, serves it on loopback and
-drives the real Sparkle pipeline inside the shipped bundle through a fixture-only
-non-interactive driver. The fixture uses Sparkle's normal relaunch path; a bare
+temporary keychain file (the keychain search list is checked unchanged),
+checks that codesign can sign with it, and creates a disposable EdDSA key.
+It runs on macOS 26 and later; CI runs it on `macos-26` and `macos-26-intel`.
+On macOS 15, codesign refuses the self-signed fixture identity even through the
+private search list ("The specified item could not be found in the keychain"),
+so the test stops at that first check.
+
+It packages four complete fixture bundles, publishes a signed appcast with the
+real publishing script, serves it on loopback and drives the real Sparkle
+pipeline inside the shipped bundle through a fixture-only non-interactive
+driver. The fixture uses Sparkle's normal relaunch path; a bare
 fixture relaunch reports updater status and exits before mailbox
 initialization, and both successful update paths require a normal zero exit
 status. Fixture runs write Sparkle defaults and caches under the fixture bundle
