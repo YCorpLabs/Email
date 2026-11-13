@@ -42,7 +42,7 @@ prepare() {
   # makepkg links only this architecture's .deb into $srcdir.
   local debs=("$srcdir"/*.deb)
   if [[ ${#debs[@]} -ne 1 || ! -e ${debs[0]} ]]; then
-    error "Expected one .deb in $srcdir"
+    echo "Expected one .deb in $srcdir" >&2
     return 1
   fi
   rm -rf "$srcdir/deb"

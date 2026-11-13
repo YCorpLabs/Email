@@ -213,4 +213,5 @@ if [[ "$update_repo" == true ]]; then
   fi
 fi
 echo "Source tarball for the release: $output_root/aur/$tarball ($(sha256 "$output_root/aur/$tarball"))"
-echo "AUR files: $output_root/aur/{PKGBUILD,.SRCINFO}$([[ "$with_bin" == true ]] && echo " and $output_root/aur-bin/{PKGBUILD,.SRCINFO}")"
+echo "Files to publish: PKGBUILD and .SRCINFO in $output_root/aur"
+if [[ "$with_bin" == true ]]; then echo "and in $output_root/aur-bin"; fi
