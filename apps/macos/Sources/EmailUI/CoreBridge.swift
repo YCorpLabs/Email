@@ -322,6 +322,9 @@ final class CoreBridge: @unchecked Sendable {
         // Account setup can wait on a browser or a slow mail server. Run it on its
         // own handle so the window and cached reads never queue behind it.
         let isOAuth = operation == "start_oauth" || operation == "add_imap_account"
+        // Connecting an agent runs the claude or codex CLI, which can take a few
+        // seconds; give it its own handle so cached reads never wait behind it.
+        let isAgentClient = operation == "agent_clients" || operation == "connect_agent_client"
         let isPhotoOAuth = operation == "enable_google_photos"
         let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event"
         let dedicatedCalendar = isCalendarNetwork ? calendarBridge : nil
@@ -353,6 +356,12 @@ final class CoreBridge: @unchecked Sendable {
                     if let attachmentBridge { _ = try attachmentBridge.exchange(reload) }
                 }
                 return result
+            }
+            if isAgentClient {
+                guard let separateHandle = CoreBridge() else {
+                    throw MailServiceError(message: "Could not open the mail engine to check agents.")
+                }
+                return try separateHandle.exchange(data)
             }
             if isOAuth {
                 guard let separateHandle = CoreBridge() else {

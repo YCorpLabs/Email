@@ -1,10 +1,10 @@
 import AppKit
 
-/// Agent access: per-account consent for agents connected through Email's local
-/// MCP server, requests that wait for the user's approval, and agent history.
-/// The disclosure text comes from mail-service so macOS and Linux show the
-/// same words. Only this window can turn access on or approve a request; the
-/// MCP server has no code path for either.
+/// Agent access: requests waiting for the user's approval, connecting Claude
+/// Code or Codex to Email's local MCP server, per-account consent, and recent
+/// agent activity. The turn-on sheet's text comes from mail-service so macOS
+/// and Linux show the same words. Only this window can turn access on or
+/// approve a request; the MCP server has no code path for either.
 @MainActor
 final class AgentAccessController: NSWindowController, NSWindowDelegate {
     /// The composer's undo window; approved agent sends get the same one.
@@ -21,6 +21,12 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
     private var history: [[String: Any]] = []
     private var blocked: [String: Any]?
     private var expandedBodies = Set<String>()
+    private var historyExpanded = false
+    /// The `agent_clients` answer: CLIs found, registrations, the helper.
+    private var clients: [String: Any]?
+    private var clientsLoading = false
+    private var connecting: String?
+    private weak var copyButton: NSButton?
     private var busy = false
     private var renderedSignature = ""
     private var presentingDialog = false
@@ -52,7 +58,7 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         scroll.autohidesScrollers = true
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 14
+        stack.spacing = 10
         let document = AgentDocument()
         document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
@@ -83,8 +89,8 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
             document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 20),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
+            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -22),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: root.topAnchor),
@@ -107,6 +113,7 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         if firstShow { window?.center() }
         window?.makeKeyAndOrderFront(nil)
         Task { await reload(force: true) }
+        refreshClients()
     }
 
     /// Re-read state. Polls skip rendering when nothing changed, so an open
@@ -140,6 +147,39 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         return (accounts + [blocked, revision] + pending.map { "\($0["id"] ?? "")" } + history.prefix(5).map { "\($0["id"] ?? ""):\($0["status"] ?? "")" }).joined(separator: "|")
     }
 
+    /// The helper inside the app bundle. Development builds run outside a
+    /// bundle; mail-service then looks at `EMAIL_MCP_HELPER`.
+    static var bundledHelper: String? {
+        let bundle = Bundle.main.bundleURL
+        guard bundle.pathExtension == "app" else { return nil }
+        let helper = bundle.appendingPathComponent("Contents/Helpers/mail-mcp").path
+        return FileManager.default.isExecutableFile(atPath: helper) ? helper : nil
+    }
+
+    private func clientRequest(_ op: String, _ extra: [String: Any] = [:]) -> [String: Any] {
+        var payload = extra
+        payload["op"] = op
+        if let helper = Self.bundledHelper { payload["helper_path"] = helper }
+        return payload
+    }
+
+    /// Look for Claude Code and Codex again. Runs their CLIs, so only when the
+    /// window opens and after Connect, never on the five-second poll.
+    func refreshClients() {
+        guard !clientsLoading else { return }
+        clientsLoading = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                clients = try await core.callAsync(clientRequest("agent_clients")) as? [String: Any]
+            } catch {
+                setStatus(error.localizedDescription, error: true)
+            }
+            clientsLoading = false
+            render()
+        }
+    }
+
     // MARK: Rendering
 
     private func render() {
@@ -148,23 +188,37 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
             window.makeFirstResponder(doneButton)
         }
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
-        add(label("Agent access", size: 17, weight: .semibold))
-        add(label("AI agents and tools connected through Email's local MCP server. They can use only the accounts you turn on, and sending mail or bulk changes always waits for your approval here.", size: 12, muted: true))
+        add(label("Agent access", size: 20, weight: .semibold))
+        stack.setCustomSpacing(4, after: stack.arrangedSubviews.last!)
+        add(label("Let AI tools like Claude Code and Codex work with your mail. You approve every send.", size: 12.5, muted: true))
         if let blocked, let summary = blocked["summary"] as? String, let banner = blockedBanner(summary: summary, blocked: blocked) {
+            space(18)
             add(banner)
         }
-        add(sectionHeading(pending.isEmpty ? "WAITING FOR YOUR APPROVAL" : "WAITING FOR YOUR APPROVAL · \(pending.count)"))
-        if pending.isEmpty {
-            add(label("No requests are waiting. When an agent asks to send mail or change many conversations, it appears here.", size: 12, muted: true))
+        if !pending.isEmpty {
+            add(sectionHeading("Waiting for you", count: pending.count))
+            for item in pending { add(pendingCard(item)) }
         }
-        for item in pending { add(pendingCard(item)) }
-        add(sectionHeading("ACCOUNTS"))
-        if accounts.isEmpty { add(label("Add a mail account first.", size: 12, muted: true)) }
-        for account in accounts { add(accountRow(account)) }
-        add(label("Turning access off applies to the agent's next request. Each MCP registration's own permissions also still apply.", size: 11, muted: true))
-        add(sectionHeading("HISTORY"))
-        if history.isEmpty { add(label("No agent activity yet.", size: 12, muted: true)) }
-        for item in history { add(historyRow(item)) }
+        add(sectionHeading("Connect an agent"))
+        add(connectList())
+        add(connectNote())
+        add(sectionHeading("Accounts"))
+        if accounts.isEmpty {
+            add(label("Add a mail account first.", size: 12, muted: true))
+        } else {
+            add(accountList())
+        }
+        space(14)
+        let toggle = AgentDisclosureButton(title: "Recent activity", expanded: historyExpanded, size: 13) { [weak self] in
+            guard let self else { return }
+            historyExpanded.toggle()
+            render()
+        }
+        add(Self.leading(toggle))
+        if historyExpanded {
+            if history.isEmpty { add(label("Nothing yet.", size: 12, muted: true)) }
+            for item in history { add(historyRow(item)) }
+        }
     }
 
     private func add(_ view: NSView) {
@@ -172,10 +226,33 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
     }
 
-    private func sectionHeading(_ text: String) -> NSView {
-        let heading = label(text, size: 10, weight: .semibold, muted: true)
-        stack.setCustomSpacing(18, after: stack.arrangedSubviews.last ?? heading)
-        return heading
+    /// A full-width row holding `view` at its natural width on the left.
+    static func leading(_ view: NSView) -> NSView {
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [view, spacer])
+        row.spacing = 0
+        return row
+    }
+
+    private func space(_ points: CGFloat) {
+        if let last = stack.arrangedSubviews.last { stack.setCustomSpacing(points, after: last) }
+    }
+
+    private func sectionHeading(_ text: String, count: Int? = nil) -> NSView {
+        space(26)
+        let title = label(text, size: 13, weight: .semibold)
+        title.setContentHuggingPriority(.required, for: .horizontal)
+        var views: [NSView] = [title]
+        if let count { views.append(AgentBadge(text: count > 99 ? "99+" : String(count))) }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        views.append(spacer)
+        let row = NSStackView(views: views)
+        row.spacing = 7
+        row.alignment = .centerY
+        if let count { row.setAccessibilityLabel("\(text), \(count)") }
+        return row
     }
 
     private func blockedBanner(summary: String, blocked: [String: Any]) -> NSView? {
@@ -187,15 +264,20 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         let column = card.column
         column.addArrangedSubview(label("Agent access needed", size: 12.5, weight: .semibold))
         column.addArrangedSubview(label(summary, size: 12))
-        if let reason = blocked["reason"] as? String, !reason.isEmpty { column.addArrangedSubview(label(reason, size: 11, muted: true)) }
+        // The refusal is written for the agent; for a missing grant its first
+        // sentence says which one, which is all the user needs here.
+        if blocked["needs_access"] as? Bool == false, let reason = blocked["reason"] as? String,
+           let sentence = reason.components(separatedBy: ". ").first, !sentence.isEmpty {
+            column.addArrangedSubview(label(sentence.hasSuffix(".") ? sentence : sentence + ".", size: 11.5, muted: true))
+        }
         if affected.count == 1, let id = affected[0]["account_id"] as? String, let email = affected[0]["email"] as? String {
             if affected[0]["current"] as? Bool == true, let grants = (affected[0]["consent"] as? [String: Any])?["grants"] as? [String] {
-                column.addArrangedSubview(AgentButton(title: "Change Access for \(email)…") { [weak self] in self?.turnOn(accountID: id, email: email, current: grants) })
+                column.addArrangedSubview(AgentButton(title: "Change access for \(email)…") { [weak self] in self?.turnOn(accountID: id, email: email, current: grants) })
             } else {
-                column.addArrangedSubview(AgentButton(title: "Turn On for \(email)…") { [weak self] in self?.turnOn(accountID: id, email: email, current: nil) })
+                column.addArrangedSubview(AgentButton(title: "Turn on for \(email)…") { [weak self] in self?.turnOn(accountID: id, email: email, current: nil) })
             }
         } else {
-            column.addArrangedSubview(label("Turn on agent access below for each account the agent may use.", size: 11, muted: true))
+            column.addArrangedSubview(label("Turn on each account the agent may use under Accounts.", size: 11, muted: true))
         }
         return card
     }
@@ -206,77 +288,72 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         let details = item["details"] as? [String: Any] ?? [:]
         let card = AgentCard(tint: nil)
         let column = card.column
-        column.addArrangedSubview(label(Self.kindTitle(kind), size: 10, weight: .semibold, muted: true))
-        column.addArrangedSubview(label(item["summary"] as? String ?? "", size: 13.5, weight: .semibold))
-        column.addArrangedSubview(label(meta(item, details: details), size: 11, muted: true))
+        column.spacing = 5
+        column.addArrangedSubview(kindLabel(Self.kindTitle(kind)))
+        var toggle: NSButton?
         switch kind {
         case "send_draft", "queue_send_draft", "schedule_draft":
             let draft = details["draft"] as? [String: Any] ?? [:]
-            column.addArrangedSubview(field("From", draft["from"] as? String ?? ""))
+            let subject = (draft["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "(no subject)"
+            let headline = label(subject, size: 14, weight: .semibold)
+            column.addArrangedSubview(headline)
+            column.setCustomSpacing(7, after: headline)
             for (name, key) in [("To", "to"), ("Cc", "cc"), ("Bcc", "bcc"), ("Reply-To", "reply_to")] {
                 let value = Self.addresses(details, key)
                 if !value.isEmpty || key == "to" { column.addArrangedSubview(field(name, value)) }
             }
-            column.addArrangedSubview(field("Subject", (draft["subject"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "(no subject)"))
-            let files = draft["attachments"] as? [[String: Any]] ?? []
-            for file in files {
-                let filename = file["filename"] as? String ?? "file"
-                let row = NSStackView()
-                row.alignment = .centerY
-                row.distribution = .fill
-                row.spacing = 8
-                let text = field("Attachment", "\(filename) (\(Self.size(file["size"])), \(file["mime_type"] as? String ?? "file"))")
-                text.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-                row.addArrangedSubview(text)
-                let attachmentID = file["id"] as? String ?? ""
-                let save = AgentButton(title: "Save…") { [weak self] in self?.saveAttachment(actionID: id, attachmentID: attachmentID, filename: filename) }
-                save.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-                save.setAccessibilityLabel("Save a copy of \(filename)")
-                row.addArrangedSubview(save)
-                column.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-            }
-            if !files.isEmpty {
-                column.addArrangedSubview(label("The agent attached these files. Save a copy to view one before approving; never run a file you did not expect.", size: 11, muted: true))
-            }
-            column.addArrangedSubview(field("When", Self.when(kind: kind, details: details)))
+            column.addArrangedSubview(field("From", draft["from"] as? String ?? ""))
+            if kind == "schedule_draft" { column.addArrangedSubview(field("When", Self.when(kind: kind, details: details))) }
             let invisible = (details["invisible_count"] as? NSNumber)?.intValue ?? 0
             if invisible > 0 {
                 column.addArrangedSubview(label("Contains \(invisible) invisible character\(invisible == 1 ? "" : "s") used by emoji or some scripts.", size: 11, muted: true))
             }
-            let body = draft["body_plain"] as? String ?? ""
+            let files = draft["attachments"] as? [[String: Any]] ?? []
             let expanded = expandedBodies.contains(id)
-            // Count Unicode scalars and "\n"-separated lines, as Linux does.
-            let lines = body.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false)
-            let shortened = body.unicodeScalars.count > 1200 || lines.count > 14
-            // Expanded shows every character that would be sent; nothing is cut.
-            let opening = String(String.UnicodeScalarView(lines.prefix(14).joined(separator: "\n").unicodeScalars.prefix(1200)))
-            // Never clip visually: what the preview holds is shown in full, and
-            // anything left out is announced with the note and the toggle.
-            let preview = label(body.isEmpty ? "(empty message)" : (expanded ? body : opening + (shortened ? "…" : "")), size: 12)
-            preview.maximumNumberOfLines = 0
-            preview.lineBreakMode = .byWordWrapping
-            let quote = AgentCard(tint: EmailTheme.canvas)
-            quote.column.addArrangedSubview(preview)
-            column.addArrangedSubview(quote)
-            quote.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
-            if shortened && !expanded {
-                column.addArrangedSubview(label("Only the beginning is shown. Show the full message to review everything that would be sent.", size: 11, muted: true))
-            }
-            if shortened {
-                let toggle = AgentButton(title: expanded ? "Show less" : "Show full message") { [weak self] in
-                    guard let self else { return }
-                    if !self.expandedBodies.insert(id).inserted { self.expandedBodies.remove(id) }
-                    self.render()
+            if expanded {
+                let body = draft["body_plain"] as? String ?? ""
+                // Expanded shows every character that would be sent; nothing is cut.
+                let preview = label(body.isEmpty ? "(empty message)" : body, size: 12)
+                preview.maximumNumberOfLines = 0
+                preview.lineBreakMode = .byWordWrapping
+                preview.isSelectable = true
+                let quote = AgentCard(tint: EmailTheme.canvas)
+                quote.column.addArrangedSubview(preview)
+                column.setCustomSpacing(10, after: column.arrangedSubviews.last!)
+                column.addArrangedSubview(quote)
+                quote.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+                for file in files {
+                    let filename = file["filename"] as? String ?? "file"
+                    let row = NSStackView()
+                    row.alignment = .centerY
+                    row.distribution = .fill
+                    row.spacing = 8
+                    let text = field("Attachment", "\(filename) (\(Self.size(file["size"])), \(file["mime_type"] as? String ?? "file"))")
+                    text.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+                    row.addArrangedSubview(text)
+                    let attachmentID = file["id"] as? String ?? ""
+                    let save = AgentButton(title: "Save…") { [weak self] in self?.saveAttachment(actionID: id, attachmentID: attachmentID, filename: filename) }
+                    save.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+                    save.setAccessibilityLabel("Save a copy of \(filename)")
+                    row.addArrangedSubview(save)
+                    column.addArrangedSubview(row)
+                    row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
                 }
-                toggle.isBordered = false
-                toggle.contentTintColor = EmailTheme.accent
-                column.addArrangedSubview(toggle)
+                if !files.isEmpty {
+                    column.addArrangedSubview(label("The agent attached these files. Save a copy to view one before approving; never run a file you did not expect.", size: 11, muted: true))
+                }
+                if kind != "schedule_draft" { column.addArrangedSubview(field("When", Self.when(kind: kind, details: details))) }
+            }
+            let attachments = files.isEmpty ? "" : " · \(files.count) attachment\(files.count == 1 ? "" : "s")"
+            toggle = AgentDisclosureButton(title: (expanded ? "Hide message" : "Show message") + attachments, expanded: expanded, size: 12) { [weak self] in
+                guard let self else { return }
+                if !expandedBodies.insert(id).inserted { expandedBodies.remove(id) }
+                render()
             }
         case "batch_triage", "undo_triage":
+            column.addArrangedSubview(label(item["summary"] as? String ?? "", size: 14, weight: .semibold))
             let count = (details["count"] as? NSNumber)?.intValue ?? 0
             column.addArrangedSubview(field("Accounts", Self.list(details["account_emails"])))
-            column.addArrangedSubview(field("Conversations", count.formatted()))
             let threads = details["threads"] as? [[String: Any]] ?? []
             for thread in threads.prefix(8) {
                 let sender = MailNotificationPreview.senderName(thread["sender"] as? String ?? "")
@@ -290,6 +367,7 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
                 column.addArrangedSubview(label("You can undo this change after approving.", size: 11, muted: true))
             }
         case "confirm_sender_cleanup":
+            column.addArrangedSubview(label(item["summary"] as? String ?? "", size: 14, weight: .semibold))
             column.addArrangedSubview(field("Sender", details["sender"] as? String ?? ""))
             column.addArrangedSubview(field("Unread messages", ((details["matched"] as? NSNumber)?.intValue ?? 0).formatted()))
             for subject in (details["sample_subjects"] as? [String] ?? []).prefix(3) {
@@ -297,63 +375,179 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
             }
             column.addArrangedSubview(label("Only messages found in the preview are marked read in Gmail. Completed changes have no automatic undo.", size: 11, muted: true))
         default:
-            break
+            column.addArrangedSubview(label(item["summary"] as? String ?? "", size: 14, weight: .semibold))
         }
+        column.addArrangedSubview(label(meta(item), size: 11, muted: true))
         let reject = AgentButton(title: "Reject") { [weak self] in self?.reject(id: id) }
         let approve = AgentButton(title: Self.approveTitle(kind)) { [weak self] in self?.approve(item) }
         approve.applyPrimaryStyle()
-        let actions = NSStackView(views: [reject, approve])
-        actions.spacing = 8
         reject.setAccessibilityLabel("Reject: \(item["summary"] as? String ?? "")")
         approve.setAccessibilityLabel("\(Self.approveTitle(kind)): \(item["summary"] as? String ?? "")")
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let actions = NSStackView(views: [toggle, spacer, reject, approve].compactMap { $0 })
+        actions.spacing = 8
+        actions.alignment = .centerY
+        for button in [reject, approve] { button.setContentCompressionResistancePriority(.required, for: .horizontal) }
+        column.setCustomSpacing(10, after: column.arrangedSubviews.last!)
         column.addArrangedSubview(actions)
+        actions.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         return card
     }
 
-    private func accountRow(_ account: [String: Any]) -> NSView {
-        let id = account["account_id"] as? String ?? ""
-        let email = account["email"] as? String ?? id
-        let consent = account["consent"] as? [String: Any]
-        let current = account["current"] as? Bool ?? false
-        let row = NSStackView()
-        row.alignment = .centerY
-        row.distribution = .fill
-        row.spacing = 10
+    // MARK: Connect an agent
+
+    private func connectList() -> NSView {
+        let card = AgentCard(tint: nil)
+        let column = card.column
+        column.spacing = 10
+        let rows = clients?["clients"] as? [[String: Any]] ?? [
+            ["id": "claude", "name": "Claude Code"], ["id": "codex", "name": "Codex"],
+        ]
+        let helperFound = clients?["helper"] is String
+        for row in rows {
+            let id = row["id"] as? String ?? ""
+            let name = row["name"] as? String ?? id
+            let checking = clients == nil
+            let subtitle = checking ? "Checking…" : row["subtitle"] as? String ?? ""
+            var trailing: NSView?
+            if row["connected"] as? Bool == true {
+                trailing = connectedLabel()
+            } else if row["installed"] as? Bool == true {
+                let busy = connecting == id
+                let button = AgentButton(title: busy ? "Connecting…" : "Connect") { [weak self] in self?.connect(id: id, name: name) }
+                button.isEnabled = helperFound && connecting == nil
+                button.setAccessibilityLabel("Connect \(name)")
+                trailing = button
+            }
+            addListRow(column, title: name, subtitle: subtitle, trailing: trailing)
+        }
+        let copy = AgentButton(title: "Copy") { [weak self] in self?.copyManualConfig() }
+        copy.isEnabled = clients?["manual"] is [String: Any]
+        copy.setAccessibilityLabel("Copy the command and JSON config for another MCP client")
+        copyButton = copy
+        addListRow(column, title: "Other MCP client", subtitle: "Copy the command and a JSON config", trailing: copy)
+        return card
+    }
+
+    private func connectNote() -> NSView {
+        if let problem = clients?["helper_problem"] as? String {
+            return label(problem, size: 11.5, muted: true)
+        }
+        return label("Connected agents can use only the accounts you turn on below.", size: 11.5, muted: true)
+    }
+
+    private func connectedLabel() -> NSView {
+        let text = NSMutableAttributedString(string: "✓ ", attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .semibold), .foregroundColor: NSColor.systemGreen])
+        text.append(NSAttributedString(string: "Connected", attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .medium), .foregroundColor: EmailTheme.ink]))
+        let field = NSTextField(labelWithAttributedString: text)
+        field.setAccessibilityLabel("Connected")
+        return field
+    }
+
+    /// A row in a list card: title and subtitle on the left, a control on the
+    /// right, and a hairline above every row but the first.
+    private func addListRow(_ column: NSStackView, title: String, subtitle: NSView, trailing: NSView?) {
+        if !column.arrangedSubviews.isEmpty {
+            let line = NSBox()
+            line.boxType = .separator
+            column.addArrangedSubview(line)
+            line.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+        }
         let names = NSStackView()
         names.orientation = .vertical
         names.alignment = .leading
-        names.spacing = 3
-        let title = label(email, size: 13, weight: .semibold)
-        title.lineBreakMode = .byTruncatingMiddle
-        title.maximumNumberOfLines = 1
-        names.addArrangedSubview(title)
-        let state: String
-        if let consent {
-            let since = Self.date((consent["granted_at_ms"] as? NSNumber)?.doubleValue)
-            let labels = (account["grant_labels"] as? [String] ?? []).joined(separator: ", ")
-            state = current ? "On since \(since) · \(labels)" : "Needs review: the disclosure changed since \(since)"
-        } else {
-            state = "Off"
-        }
-        names.addArrangedSubview(label(state, size: 11, muted: true))
+        names.spacing = 2
+        let heading = label(title, size: 13, weight: .semibold)
+        heading.lineBreakMode = .byTruncatingMiddle
+        heading.maximumNumberOfLines = 1
+        names.addArrangedSubview(heading)
+        names.addArrangedSubview(subtitle)
         names.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         names.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        row.addArrangedSubview(names)
-        var buttons: [NSButton] = []
-        if consent == nil || !current {
-            buttons.append(AgentButton(title: "Turn On…") { [weak self] in self?.turnOn(accountID: id, email: email, current: nil) })
-        } else {
-            let grants = consent?["grants"] as? [String] ?? []
-            buttons.append(AgentButton(title: "Change…") { [weak self] in self?.turnOn(accountID: id, email: email, current: grants) })
-            buttons.append(AgentButton(title: "Turn Off") { [weak self] in self?.turnOff(accountID: id, email: email) })
+        let row = NSStackView(views: [names] + (trailing.map { [$0] } ?? []))
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 12
+        trailing?.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        trailing?.setContentCompressionResistancePriority(.required, for: .horizontal)
+        column.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
+    }
+
+    private func addListRow(_ column: NSStackView, title: String, subtitle: String, trailing: NSView?) {
+        addListRow(column, title: title, subtitle: label(subtitle, size: 11.5, muted: true), trailing: trailing)
+    }
+
+    private func connect(id: String, name: String) {
+        guard connecting == nil else { return }
+        connecting = id
+        render()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await core.callAsync(clientRequest("connect_agent_client", ["client": id])) as? [String: Any] ?? [:]
+                setStatus(result["already_registered"] as? Bool == true
+                          ? "\(name) already had Email set up."
+                          : "\(name) is connected. Start a new \(name) session to use it.")
+            } catch {
+                setStatus(error.localizedDescription, error: true)
+            }
+            connecting = nil
+            refreshClients()
         }
-        for button in buttons {
-            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-            button.setContentCompressionResistancePriority(.required, for: .horizontal)
-            button.setAccessibilityLabel("\(button.title) agent access for \(email)")
-            row.addArrangedSubview(button)
+    }
+
+    private func copyManualConfig() {
+        guard let text = (clients?["manual"] as? [String: Any])?["copy_text"] as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        setStatus("Copied the mail-mcp command and a JSON config. Paste whichever your client takes.")
+        guard let button = copyButton else { return }
+        button.title = "Copied"
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak button] in
+            MainActor.assumeIsolated { button?.title = "Copy" }
         }
-        return row
+    }
+
+    // MARK: Accounts
+
+    private func accountList() -> NSView {
+        let card = AgentCard(tint: nil)
+        card.column.spacing = 10
+        for account in accounts {
+            let id = account["account_id"] as? String ?? ""
+            let email = account["email"] as? String ?? id
+            let consent = account["consent"] as? [String: Any]
+            let on = consent != nil && account["current"] as? Bool == true
+            let subtitle: NSView
+            if on {
+                let summary = label(account["grant_summary"] as? String ?? "Read", size: 11.5, muted: true)
+                summary.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+                let grants = consent?["grants"] as? [String] ?? []
+                let edit = AgentLinkButton(title: "Edit") { [weak self] in self?.turnOn(accountID: id, email: email, current: grants) }
+                edit.setAccessibilityLabel("Edit agent access for \(email)")
+                let spacer = NSView()
+                spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+                let row = NSStackView(views: [summary, edit, spacer])
+                row.spacing = 6
+                row.alignment = .firstBaseline
+                subtitle = row
+            } else if consent != nil {
+                subtitle = label("Off · the terms changed; switch on to review them", size: 11.5, muted: true)
+            } else {
+                subtitle = label("Off", size: 11.5, muted: true)
+            }
+            let toggle = AgentSwitch()
+            toggle.state = on ? .on : .off
+            toggle.setAccessibilityLabel("Agent access for \(email)")
+            toggle.handler = { [weak self] isOn in
+                if isOn { self?.turnOn(accountID: id, email: email, current: nil) }
+                else { self?.turnOff(accountID: id, email: email) }
+            }
+            addListRow(card.column, title: email, subtitle: subtitle, trailing: toggle)
+        }
+        return card
     }
 
     private func historyRow(_ item: [String: Any]) -> NSView {
@@ -378,16 +572,21 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
         return column
     }
 
-    private func meta(_ item: [String: Any], details: [String: Any]) -> String {
+    private func meta(_ item: [String: Any]) -> String {
         var parts: [String] = []
-        if let email = details["account_email"] as? String { parts.append(email) }
-        if let client = item["client"] as? String, !client.isEmpty { parts.append("requested by \(client)") }
+        if let client = item["client"] as? String, !client.isEmpty { parts.append("Requested by \(client)") }
         parts.append(Self.dateTime((item["created_at_ms"] as? NSNumber)?.doubleValue))
         return parts.joined(separator: " · ")
     }
 
+    private func kindLabel(_ text: String) -> NSTextField {
+        let field = label("", size: 10, weight: .semibold, muted: true)
+        field.attributedStringValue = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: EmailTheme.muted, .kern: 0.6])
+        return field
+    }
+
     private func field(_ name: String, _ value: String) -> NSView {
-        let text = NSMutableAttributedString(string: "\(name)  ", attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold), .foregroundColor: EmailTheme.muted])
+        let text = NSMutableAttributedString(string: "\(name)  ", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .regular), .foregroundColor: EmailTheme.muted])
         text.append(NSAttributedString(string: value, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: EmailTheme.ink]))
         let field = NSTextField(labelWithAttributedString: text)
         field.lineBreakMode = .byWordWrapping
@@ -452,11 +651,11 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
                     onApprovedSend?(messageID, sendAt, scheduled)
                     if scheduled {
                         setStatus("Approved · scheduled for \(Self.dateTime(sendAt.timeIntervalSince1970 * 1000)) · in Outbox")
-                        showStatusAction("Cancel Send") { [weak self] in self?.cancelSend(messageID) }
+                        showStatusAction("Cancel send") { [weak self] in self?.cancelSend(messageID) }
                     } else {
                         let seconds = max(1, Int(sendAt.timeIntervalSinceNow.rounded()))
                         setStatus("Approved · sending in \(seconds) seconds")
-                        showStatusAction("Undo Send", until: sendAt) { [weak self] in self?.cancelSend(messageID) }
+                        showStatusAction("Undo send", until: sendAt) { [weak self] in self?.cancelSend(messageID) }
                     }
                 case "undo_triage":
                     let changed = (result["changed"] as? NSNumber)?.intValue ?? 0
@@ -555,34 +754,62 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
 
     // MARK: Consent
 
+    /// Opens the turn-on sheet: from the switch (`current` nil), or from Edit
+    /// with the current grants. Cancelling puts the switch back.
     private func turnOn(accountID: String, email: String, current: [String]?) {
-        guard !presentingDialog else { return }
+        guard !presentingDialog, let window else { render(); return }
         presentingDialog = true
         Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { presentingDialog = false }
+            let disclosure: [String: Any]
             do {
-                guard let disclosure = try await core.callAsync(["op": "agent_access_disclosure", "account_id": accountID]) as? [String: Any],
-                      let grants = AgentAccessDisclosure.choose(disclosure, current) else { return }
-                _ = try await core.callAsync(["op": "grant_agent_access", "account_id": accountID, "grants": grants,
-                                              "disclosure_version": disclosure["version"] ?? 0])
-                setStatus(current == nil ? "Agent access is on for \(email)" : "Agent access updated for \(email)")
-                await reload(force: true)
-                onChanged?()
-            } catch { setStatus(error.localizedDescription, error: true) }
+                disclosure = try await core.callAsync(["op": "agent_access_disclosure", "account_id": accountID]) as? [String: Any] ?? [:]
+            } catch {
+                presentingDialog = false
+                setStatus(error.localizedDescription, error: true)
+                render()
+                return
+            }
+            AgentAccessDisclosure.choose(disclosure, current, window) { [weak self] grants in
+                guard let self else { return }
+                presentingDialog = false
+                guard let grants else { render(); return }
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        _ = try await core.callAsync(["op": "grant_agent_access", "account_id": accountID, "grants": grants,
+                                                      "disclosure_version": disclosure["version"] ?? 0])
+                        setStatus(current == nil ? "Agent access is on for \(email)" : "Agent access updated for \(email)")
+                        await reload(force: true)
+                        onChanged?()
+                    } catch {
+                        setStatus(error.localizedDescription, error: true)
+                        render()
+                    }
+                }
+            }
         }
     }
 
     private func turnOff(accountID: String, email: String) {
-        guard AgentAccessDisclosure.confirmTurnOff(email) else { return }
-        Task { @MainActor [weak self] in
+        guard !presentingDialog, let window else { render(); return }
+        presentingDialog = true
+        AgentAccessDisclosure.confirmTurnOff(email, window) { [weak self] confirmed in
             guard let self else { return }
-            do {
-                _ = try await core.callAsync(["op": "revoke_agent_access", "account_id": accountID])
-                setStatus("Agent access is off for \(email)")
-                await reload(force: true)
-                onChanged?()
-            } catch { setStatus(error.localizedDescription, error: true) }
+            presentingDialog = false
+            guard confirmed else { render(); return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try await core.callAsync(["op": "revoke_agent_access", "account_id": accountID])
+                    setStatus("Agent access is off for \(email)")
+                    await reload(force: true)
+                    onChanged?()
+                } catch {
+                    setStatus(error.localizedDescription, error: true)
+                    render()
+                }
+            }
         }
     }
 
@@ -600,8 +827,8 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
     }
     static func approveTitle(_ kind: String) -> String {
         switch kind {
-        case "send_draft", "queue_send_draft": return "Approve and Send"
-        case "schedule_draft": return "Approve and Schedule"
+        case "send_draft", "queue_send_draft": return "Approve and send"
+        case "schedule_draft": return "Approve and schedule"
         default: return "Approve"
         }
     }
@@ -644,10 +871,6 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
     static func size(_ value: Any?) -> String {
         ByteCountFormatter.string(fromByteCount: (value as? NSNumber)?.int64Value ?? 0, countStyle: .file)
     }
-    static func date(_ ms: Double?) -> String {
-        guard let ms else { return "" }
-        return Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted)
-    }
     static func dateTime(_ ms: Double?) -> String {
         guard let ms else { return "" }
         return Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .shortened)
@@ -656,85 +879,208 @@ final class AgentAccessController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { showStatusAction(nil) }
 }
 
-/// The consent disclosure. Read access is required and always on; every other
-/// grant is opt-in. Returns the chosen grants, or nil when cancelled.
+/// The turn-on sheet and the turn-off confirmation. Read is required and
+/// always on; every other grant starts unchecked.
 @MainActor
 enum AgentAccessDisclosure {
-    /// Replaceable only by the AppKit check harness, which cannot click a modal alert.
-    static var choose: ([String: Any], [String]?) -> [String]? = { present($0, changing: $1) }
-    static var confirmTurnOff: (String) -> Bool = { email in
+    /// Replaceable only by the AppKit check harness. `done` gets the chosen
+    /// grants, or nil when cancelled.
+    static var choose: (_ disclosure: [String: Any], _ current: [String]?, _ parent: NSWindow, _ done: @escaping ([String]?) -> Void) -> Void = { disclosure, current, parent, done in
+        let sheet = AgentAccessSheet(disclosure: disclosure, changing: current)
+        sheet.present(on: parent, done: done)
+    }
+    static var confirmTurnOff: (_ email: String, _ parent: NSWindow, _ done: @escaping (Bool) -> Void) -> Void = { email, parent, done in
+        let alert = makeTurnOffAlert(email)
+        alert.beginSheetModal(for: parent) { done($0 == .alertSecondButtonReturn) }
+    }
+
+    static func makeTurnOffAlert(_ email: String) -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "Turn off agent access for \(email)?"
-        alert.informativeText = "Agents lose access to this account on their next request. Requests waiting for your approval are rejected. Mail you already approved stays in the Outbox, where you can cancel it."
+        alert.informativeText = "Agents lose access on their next request, and requests waiting for you are rejected. Mail you already approved stays in the Outbox."
         // Cancel first: Escape cancels and Return never confirms. Turning off needs a click.
         alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Turn Off")
-        return alert.runModal() == .alertSecondButtonReturn
+        alert.addButton(withTitle: "Turn off")
+        return alert
     }
+}
 
-    static func present(_ disclosure: [String: Any], changing current: [String]?) -> [String]? {
-        let (alert, boxes) = makeAlert(disclosure, changing: current)
-        guard alert.runModal() == .alertSecondButtonReturn else { return nil }
-        return boxes.filter { $0.1.state == .on }.map(\.0)
-    }
+/// "Let agents use {email}?": the grants, the provider-terms callout, how to
+/// turn access off, and the full list of what agents can read one click away.
+@MainActor
+final class AgentAccessSheet: NSObject, NSWindowDelegate {
+    /// The sheet being shown; it owns itself until it closes.
+    private(set) static var presented: AgentAccessSheet?
+    let panel: NSWindow
+    private(set) var boxes: [(String, NSButton)] = []
+    let cancelButton: AgentButton
+    let confirmButton: AgentButton
+    private let content = NSStackView()
+    private let details = NSStackView()
+    private let scroll = NSScrollView()
+    private var detailsToggle: AgentDisclosureButton?
+    private(set) var detailsExpanded = false
+    private var done: (([String]?) -> Void)?
+    private weak var parent: NSWindow?
+    private static let width: CGFloat = 460
 
-    static func makeAlert(_ disclosure: [String: Any], changing current: [String]?) -> (NSAlert, [(String, NSButton)]) {
-        let width: CGFloat = 430
-        let alert = NSAlert()
-        alert.messageText = (current == nil ? disclosure["title"] : disclosure["change_title"]) as? String ?? "Agent access"
-        alert.informativeText = ""
-        let column = NSStackView()
-        column.orientation = .vertical
-        column.alignment = .leading
-        column.spacing = 8
-        func text(_ value: String, size: CGFloat = 12, weight: NSFont.Weight = .regular, muted: Bool = false) -> NSTextField {
+    init(disclosure: [String: Any], changing current: [String]?) {
+        panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        cancelButton = AgentButton(title: disclosure["cancel"] as? String ?? "Cancel") {}
+        confirmButton = AgentButton(title: (current == nil ? disclosure["confirm"] : disclosure["change_confirm"]) as? String ?? "Turn on") {}
+        super.init()
+        panel.title = "Agent access"
+        panel.backgroundColor = EmailTheme.reader
+        panel.delegate = self
+        let root = AgentRoot()
+        panel.contentView = root
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 8
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let document = AgentDocument()
+        document.translatesAutoresizingMaskIntoConstraints = false
+        document.addSubview(content)
+        scroll.documentView = document
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+
+        func text(_ value: String, size: CGFloat = 12.5, weight: NSFont.Weight = .regular, color: NSColor = EmailTheme.ink) -> NSTextField {
             let field = NSTextField(wrappingLabelWithString: value)
             field.font = .systemFont(ofSize: size, weight: weight)
-            field.textColor = muted ? .secondaryLabelColor : .labelColor
-            field.preferredMaxLayoutWidth = width
+            field.textColor = color
             field.isSelectable = false
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             return field
         }
-        column.addArrangedSubview(text(disclosure["intro"] as? String ?? ""))
-        for category in disclosure["data_categories"] as? [String] ?? [] {
-            column.addArrangedSubview(text("•  \(category)"))
+        func add(_ view: NSView, after spacing: CGFloat? = nil) {
+            if let spacing, let last = content.arrangedSubviews.last { content.setCustomSpacing(spacing, after: last) }
+            content.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: content.widthAnchor).isActive = true
         }
-        if let note = disclosure["shared_note"] as? String { column.addArrangedSubview(text(note, muted: true)) }
-        column.addArrangedSubview(text(disclosure["provider_terms"] as? String ?? "", weight: .semibold))
-        column.addArrangedSubview(text(disclosure["safeguards"] as? String ?? ""))
-        column.addArrangedSubview(text(disclosure["grants_heading"] as? String ?? "", weight: .semibold))
-        let read = NSButton(checkboxWithTitle: disclosure["read_label"] as? String ?? "Read this account's data (required)", target: nil, action: nil)
-        read.state = .on
-        read.isEnabled = false
-        column.addArrangedSubview(read)
-        var boxes: [(String, NSButton)] = []
+        func checkbox(_ label: String, note: String?, warning: Bool) -> NSButton {
+            let box = NSButton(checkboxWithTitle: label, target: nil, action: nil)
+            let title = NSMutableAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: EmailTheme.ink])
+            if let note {
+                title.append(NSAttributedString(string: "  ·  \(note)", attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: warning ? EmailTheme.warning : EmailTheme.muted]))
+            }
+            box.attributedTitle = title
+            return box
+        }
+
+        add(text(disclosure["title"] as? String ?? "Agent access", size: 16, weight: .semibold))
+        add(text(disclosure["lead"] as? String ?? "", color: EmailTheme.muted), after: 4)
+        let read = disclosure["read"] as? [String: Any] ?? [:]
+        let readBox = checkbox(read["label"] as? String ?? "Read mail and calendar", note: read["note"] as? String, warning: false)
+        readBox.state = .on
+        readBox.isEnabled = false
+        readBox.setAccessibilityHelp("Required. Agents can read this account's data stored on this Mac.")
+        add(readBox, after: 16)
         for grant in disclosure["grants"] as? [[String: Any]] ?? [] {
             guard let id = grant["id"] as? String else { continue }
-            let box = NSButton(checkboxWithTitle: grant["label"] as? String ?? id, target: nil, action: nil)
+            let box = checkbox(grant["label"] as? String ?? id, note: grant["note"] as? String, warning: grant["warning"] as? Bool == true)
+            // Reading is the only default: every optional grant starts off.
             box.state = current?.contains(id) == true ? .on : .off
+            box.toolTip = grant["detail"] as? String
             box.setAccessibilityHelp(grant["detail"] as? String)
-            column.addArrangedSubview(box)
-            let detail = text(grant["detail"] as? String ?? "", size: 11, muted: true)
-            column.addArrangedSubview(detail)
-            column.setCustomSpacing(10, after: detail)
+            add(box, after: 9)
             boxes.append((id, box))
         }
-        column.addArrangedSubview(text(disclosure["revoke"] as? String ?? "", size: 11, muted: true))
-        column.translatesAutoresizingMaskIntoConstraints = false
-        column.widthAnchor.constraint(equalToConstant: width).isActive = true
-        column.layoutSubtreeIfNeeded()
-        column.frame = NSRect(origin: .zero, size: column.fittingSize)
-        column.translatesAutoresizingMaskIntoConstraints = true
-        alert.accessoryView = column
-        // Cancel first: Escape cancels and Return never confirms. Consent needs a deliberate click.
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: (current == nil ? disclosure["confirm"] : disclosure["change_confirm"]) as? String ?? "Turn On Agent Access")
-        return (alert, boxes)
+        let callout = AgentCard(tint: EmailTheme.accentSoft)
+        callout.column.addArrangedSubview(text(disclosure["provider_terms"] as? String ?? "", size: 12))
+        add(callout, after: 16)
+        add(text(disclosure["revoke"] as? String ?? "", size: 11.5, color: EmailTheme.muted), after: 10)
+        let toggle = AgentDisclosureButton(title: disclosure["details_title"] as? String ?? "What exactly can agents see?", expanded: false, size: 12) {}
+        toggle.handler = { [weak self] in self?.toggleDetails() }
+        detailsToggle = toggle
+        add(AgentAccessController.leading(toggle), after: 10)
+        details.orientation = .vertical
+        details.alignment = .leading
+        details.spacing = 6
+        let bullet = NSMutableParagraphStyle()
+        bullet.headIndent = ("•  " as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 11.5)]).width
+        for item in disclosure["details"] as? [String] ?? [] {
+            let row = text("", size: 11.5)
+            row.attributedStringValue = NSAttributedString(string: "•  \(item)", attributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: EmailTheme.ink, .paragraphStyle: bullet])
+            details.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
+        }
+        details.isHidden = true
+        add(details, after: 6)
+
+        // Neither button is the default: Return never turns access on.
+        cancelButton.keyEquivalent = "\u{1b}"
+        cancelButton.handler = { [weak self] in self?.finish(nil) }
+        confirmButton.applyPrimaryStyle()
+        confirmButton.handler = { [weak self] in
+            guard let self else { return }
+            finish(boxes.filter { $0.1.state == .on }.map(\.0))
+        }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let buttons = NSStackView(views: [spacer, cancelButton, confirmButton])
+        buttons.spacing = 8
+        buttons.alignment = .centerY
+        for view in [scroll, buttons] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            root.addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            content.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 24),
+            content.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -24),
+            content.topAnchor.constraint(equalTo: document.topAnchor, constant: 22),
+            content.bottomAnchor.constraint(equalTo: document.bottomAnchor, constant: -8),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: root.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -12),
+            buttons.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            buttons.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            buttons.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+        ])
+        panel.initialFirstResponder = cancelButton
+        fit(animate: false)
+    }
+
+    /// Size the sheet to its content, up to what fits under the parent window.
+    private func fit(animate: Bool) {
+        content.layoutSubtreeIfNeeded()
+        let maximum = max(380, (parent?.frame.height ?? 720) - 40)
+        let height = min(content.fittingSize.height + 30 + 62, maximum)
+        var frame = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.width, height: height))
+        frame.origin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY - frame.height)
+        panel.setFrame(frame, display: true, animate: animate)
+    }
+
+    func toggleDetails() {
+        detailsExpanded.toggle()
+        details.isHidden = !detailsExpanded
+        detailsToggle?.setExpanded(detailsExpanded)
+        fit(animate: panel.isVisible)
+    }
+
+    func present(on parent: NSWindow, done: @escaping ([String]?) -> Void) {
+        self.parent = parent
+        self.done = done
+        Self.presented = self
+        fit(animate: false)
+        parent.beginSheet(panel)
+        panel.makeFirstResponder(cancelButton)
+    }
+
+    private func finish(_ grants: [String]?) {
+        if let parent { parent.endSheet(panel) } else { panel.orderOut(nil) }
+        let done = self.done
+        self.done = nil
+        Self.presented = nil
+        done?(grants)
     }
 }
 
 @MainActor
-private final class AgentButton: NSButton {
+final class AgentButton: NSButton {
     var handler: () -> Void
     init(title: String, handler: @escaping () -> Void) {
         self.handler = handler
@@ -764,6 +1110,94 @@ private final class AgentButton: NSButton {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updatePrimaryColors()
+    }
+}
+
+/// A small text button in the accent color, such as an account's Edit.
+@MainActor
+private final class AgentLinkButton: NSButton {
+    private let handler: () -> Void
+    init(title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(frame: .zero)
+        self.title = title
+        isBordered = false
+        target = self
+        action = #selector(run)
+        attributedTitle = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold), .foregroundColor: EmailTheme.ink, .underlineStyle: NSUnderlineStyle.single.rawValue])
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func run() { handler() }
+}
+
+/// A disclosure row: a title with a chevron that turns when it opens.
+@MainActor
+final class AgentDisclosureButton: NSButton {
+    var handler: () -> Void
+    private let size: CGFloat
+    private let label: String
+    init(title: String, expanded: Bool, size: CGFloat, handler: @escaping () -> Void) {
+        self.handler = handler
+        self.size = size
+        self.label = title
+        super.init(frame: .zero)
+        self.title = title
+        isBordered = false
+        imagePosition = .imageTrailing
+        alignment = .left
+        target = self
+        action = #selector(run)
+        setButtonType(.momentaryChange)
+        setExpanded(expanded)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func run() { handler() }
+    func setExpanded(_ expanded: Bool) {
+        attributedTitle = NSAttributedString(string: label, attributes: [.font: NSFont.systemFont(ofSize: size, weight: .semibold), .foregroundColor: EmailTheme.ink])
+        let configuration = NSImage.SymbolConfiguration(pointSize: size - 2, weight: .semibold)
+        image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(configuration)
+        contentTintColor = EmailTheme.muted
+        setAccessibilityValue(expanded ? "expanded" : "collapsed")
+    }
+}
+
+/// The on/off switch on an account row.
+@MainActor
+private final class AgentSwitch: NSSwitch {
+    var handler: (Bool) -> Void = { _ in }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        target = self
+        action = #selector(changed)
+        controlSize = .small
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    @objc private func changed() { handler(state == .on) }
+}
+
+/// The count next to "Waiting for you".
+private final class AgentBadge: NSView {
+    private let text: String
+    init(text: String) {
+        self.text = text
+        super.init(frame: .zero)
+        setContentHuggingPriority(.required, for: .horizontal)
+        setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    private var attributes: [NSAttributedString.Key: Any] {
+        [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: EmailTheme.canvas]
+    }
+    override var intrinsicContentSize: NSSize {
+        let size = (text as NSString).size(withAttributes: attributes)
+        return NSSize(width: max(18, ceil(size.width) + 12), height: 18)
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        EmailTheme.accent.setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+        let size = (text as NSString).size(withAttributes: attributes)
+        (text as NSString).draw(at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2), withAttributes: attributes)
     }
 }
 

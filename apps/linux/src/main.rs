@@ -227,6 +227,8 @@ fn appearance_css(dark: bool) -> String {
         css.push_str(&format!("@define-color {name} {value};\n"));
     }
     css.push_str(&format!("@define-color problem {};\n", if dark { "#ff6961" } else { "#c4161c" }));
+    // Cautions, such as an agent permission that takes effect without approval.
+    css.push_str(&format!("@define-color warning {};\n", if dark { "#f2a541" } else { "#a4500c" }));
     // Links in account setup (macOS linkColor).
     css.push_str(&format!("@define-color link {};\n", if dark { "#419cff" } else { "#0068da" }));
     css.push_str(CSS);

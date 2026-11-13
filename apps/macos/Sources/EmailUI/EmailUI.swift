@@ -24,6 +24,8 @@ enum EmailTheme {
     static let accentSoft = adaptive(light: 0xEAEAEC, dark: 0x303134)
     static let line = adaptive(light: 0xE5E4E1, dark: 0x353637)
     static let compose = adaptive(light: 0xFFFFFF, dark: 0x262728)
+    /// Cautions, such as an agent permission that takes effect without approval.
+    static let warning = adaptive(light: 0xA4500C, dark: 0xF2A541)
     static func cgColor(_ color: NSColor, in appearance: NSAppearance) -> CGColor {
         var resolved = color.cgColor
         appearance.performAsCurrentDrawingAppearance { resolved = color.cgColor }
