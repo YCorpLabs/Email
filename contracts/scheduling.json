@@ -1,0 +1,165 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/YCorpLabs/Scheduling",
+  "origin": "https://meet.ycorplabs.com",
+  "google_api_scopes": [
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.freebusy"
+  ],
+  "tracking": {
+    "scope": "message",
+    "recipient_attribution": false,
+    "maximum_history_buckets": 100,
+    "grouping": "minute",
+    "retention_days": 90
+  },
+  "desktop_auth": "revocable PKCE device grant",
+  "public_profile_images": {
+    "fields": [
+      "avatarImage",
+      "bannerImage"
+    ],
+    "format": "JPEG data URLs",
+    "profile_picture_dimensions": [
+      192,
+      192
+    ],
+    "banner_dimensions": [
+      720,
+      240
+    ],
+    "maximum_jpeg_bytes": {
+      "avatarImage": 16384,
+      "bannerImage": 40960
+    },
+    "native_editing": false
+  },
+  "settings_body_limit_bytes": 196608,
+  "company_workspaces": {
+    "browser_administration": true,
+    "selection_header": "X-Scheduling-Workspace",
+    "roles": [
+      "owner",
+      "admin",
+      "member",
+      "viewer"
+    ],
+    "device_grants": "personal-only",
+    "guest_account_required": false,
+    "company_management": "authenticated membership-bound actions; no reusable guest credentials returned",
+    "member_calendar_consent": {
+      "browser_only": true,
+      "roles": [
+        "owner",
+        "admin",
+        "member"
+      ],
+      "identity": "fresh verified member consent; matching Google email",
+      "preferences": "member-owned destination, busy calendars and hours",
+      "removal": "fences new host assignments; accepted bookings retain snapshots",
+      "withdrawal": "local grant deletion; account-scoped control survives leaving; not provider token revocation",
+      "native_editing": false
+    }
+  },
+  "outbound_integrations": {
+    "kinds": [
+      "slack",
+      "discord",
+      "webhook"
+    ],
+    "delivery": "at-least-once",
+    "custom_webhook_host_approval_required": true,
+    "native_editing": false
+  },
+  "team_booking_links": {
+    "modes": [
+      "single",
+      "any",
+      "choose",
+      "all"
+    ],
+    "configuration": "per booking link",
+    "maximum_hosts": 8,
+    "calendar_authority": "explicit accounts connected to the selected profile; company membership grants no calendar access",
+    "public_host_fields": [
+      "id",
+      "name"
+    ],
+    "admission": "teamRevision and intakeRevision; teamHostId only for choose",
+    "reschedule": "retains original assigned hosts",
+    "collective_event": "one organizer event with selected staff invited as attendees",
+    "native_editing": false
+  },
+  "meeting_durations": {
+    "minimum_minutes": 5,
+    "maximum_minutes": 480,
+    "maximum_guest_choices": 4,
+    "default_required_in_choices": true,
+    "new_request_without_duration": "saved link default; older callers remain supported",
+    "reschedule": "retains accepted duration and assigned hosts, including retired choices",
+    "availability_for_accepted_booking": "guest capability or authenticated organizer action",
+    "retry_conflict_code": "idempotency_conflict",
+    "native_editing": false
+  },
+  "guest_change_policy": {
+    "notice_fields": [
+      "cancellationNoticeMinutes",
+      "rescheduleNoticeMinutes"
+    ],
+    "minimum_minutes": 0,
+    "maximum_minutes": 43200,
+    "default_minutes": 0,
+    "accepted_policy": "snapshot retained after link edits; replacement deadlines relative to new start",
+    "closed_window_code": "change_window_closed",
+    "organizer_override": "authenticated private owner/admin routes only",
+    "cancellation_reason": "optional up to 500 characters; guest and organizer only; excluded from outbound integrations",
+    "native_editing": false
+  },
+  "booking_link_access": {
+    "expiresAt": "nullable UTC epoch milliseconds; closes at equality",
+    "singleUse": "boolean; consumed by first durable new booking request",
+    "closed_codes": [
+      "link_expired",
+      "link_used"
+    ],
+    "closed_status": 410,
+    "consumption": "atomic with admission; persists after cancellation, failure, cleanup and toggles",
+    "accepted_bookings": "replay, recovery and authorized management/rescheduling continue after public closure",
+    "native_editing": false
+  },
+  "data_export": {
+    "browser_only": true,
+    "scopes": [
+      "account",
+      "workspace"
+    ],
+    "profile_roles": [
+      "owner",
+      "admin"
+    ],
+    "format": "schema-versioned paginated JSON",
+    "cursor_ttl_minutes": 15,
+    "consistency": "per-object revisions; no global atomic snapshot",
+    "excluded": "credentials, hashes, management/pixel capabilities, integration secrets and other member private calendar preferences",
+    "native_editing": false
+  },
+  "account_lifecycle_foundations": {
+    "public_deletion": true,
+    "provider_revocation": false,
+    "legacy_credentials": "generation 0 while the account is active",
+    "revoked_auth_status": 401,
+    "native_editing": false
+  },
+  "account_deletion": {
+    "browser_only": true,
+    "entry": "Manage account",
+    "authentication": "revoked browser and desktop credentials return 401",
+    "status": "operation-scoped receipt; no account access",
+    "blockers": "owned profiles, connected external calendar grants, future or unresolved bookings, unknown external writes",
+    "active_storage_deadline": "one calendar month after accepted confirmation",
+    "provider_revocation": false,
+    "retained": "minimal pseudonymous deletion fences and receipts; independent records held by other profiles",
+    "native_editing": false
+  }
+}

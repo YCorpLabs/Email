@@ -1,0 +1,59 @@
+# Maintainer: Y Corp AS <set the AUR maintainer name and address before publishing>
+#
+# AUR source package. It builds the GTK shell from the tagged GitHub release
+# tarball on the user's machine. scripts/prepare-aur-package.sh fills in
+# sha256sums for a tag and writes .SRCINFO; see docs/linux-aur.md.
+#
+# A user-side build is a local build: linux-build-config.sh refuses
+# distribution profiles here, and no OAuth application values are embedded
+# unless the builder supplies them. The default is the neutral profile.
+pkgname=email-linux
+pkgver=0.1.0beta1
+# The release tag; Arch versions cannot contain '-'.
+_tag=v0.1.0-beta.1
+pkgrel=1
+pkgdesc='Keyboard-first, local-first desktop email client (beta)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/YCorpLabs/Email'
+license=('MIT')
+# Libraries the binary links directly (namcap), plus the icon theme it installs
+# into. gcc-libs rather than libgcc: Arch Linux ARM may not have the split yet.
+depends=('cairo' 'dbus' 'gcc-libs' 'glib2' 'glibc' 'graphene' 'gtk4' 'hicolor-icon-theme'
+         'openssl' 'webkitgtk-6.0')
+makedepends=('cargo' 'pkgconf' 'python')
+optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/$_tag.tar.gz")
+# Replaced by scripts/prepare-aur-package.sh for the published tag.
+sha256sums=('SKIP')
+
+_src() { printf '%s' "$srcdir/Email-${_tag#v}"; }
+
+prepare() {
+  cd "$(_src)"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --manifest-path apps/linux/Cargo.toml \
+    --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$(_src)"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR="$(_src)/target"
+  # Selects the distribution profile and computes the build ID. Refuses a
+  # distribution profile and incomplete OAuth application values.
+  source scripts/linux-build-config.sh || return 1
+  require_linux_oauth_config || return 1
+  cargo build --frozen --release --manifest-path apps/linux/Cargo.toml
+}
+
+package() {
+  cd "$(_src)"
+  source scripts/package-notices.sh
+  source scripts/linux-desktop-entry.sh
+  install -Dm755 target/release/email-linux "$pkgdir/usr/bin/email-linux"
+  install_package_notices "$PWD" "$pkgdir/usr/share/licenses/$pkgname" || return 1
+  # package() runs in a fresh shell; resolve the profile build() compiled in.
+  local app_id
+  app_id="$(python3 scripts/distribution-profile.py --root "$PWD" get LINUX_APP_ID)" || return 1
+  install_linux_desktop_entry "$PWD" "$app_id" "$pkgdir" || return 1
+}

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Installed as <LINUX_APP_ID>.metainfo.xml. Packaging replaces @APP_ID@ with
+     the distribution profile's LINUX_APP_ID, the same ID as the GTK
+     application, the desktop entry and any Flathub manifest. It names no
+     publisher, so neutral and fork builds never claim Y Corp AS. An official
+     Flathub submission adds its <developer> element in the manifest step. -->
+<component type="desktop-application">
+  <id>@APP_ID@</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Email</name>
+  <summary>Keyboard-first, local-first desktop email</summary>
+  <description>
+    <p>A keyboard-first email client that keeps a searchable local cache and connects directly to your mail provider. Credentials stay in the system keyring.</p>
+    <p>This is beta software.</p>
+  </description>
+  <launchable type="desktop-id">@APP_ID@.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+</component>

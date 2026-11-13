@@ -1,0 +1,45 @@
+/target/
+/dist/
+/dist-linux/
+/apps/linux/target/
+**/.build/
+.DS_Store
+__pycache__/
+*.py[cod]
+*.dSYM/
+*.swp
+**/.clang-cache/
+**/.swiftpm-cache/
+*.sqlite
+*.sqlite-*
+*.accounts.json
+*.accounts.json.tmp
+*.accounts.json.tmp.*
+*.accounts.lock
+.wrangler/
+/config/oauth-desktop.local.env
+/config/distribution-profile.local
+/config/macos-signing-identity.local
+/config/macos-update-signing.local/
+# Any other local configuration, such as config/oauth.local.json.
+/config/*.local*
+# Private material the readiness check refuses to track. Ignoring it also keeps
+# it out of the files scripts/build-linux-container.sh copies.
+.env
+.dev.vars
+credentials.json
+token.json
+.secrets/
+*.p12
+*.pfx
+*.key
+
+/dist-release/
+/apps/linux/packaging/arch/pkg/
+/apps/linux/packaging/arch/src/
+/apps/linux/packaging/arch/*.log
+/apps/linux/packaging/arch-binary/pkg/
+/apps/linux/packaging/arch-binary/src/
+/apps/linux/packaging/arch-binary/*.log
+
+apps/macos/Sources/EmailUI/BuildIdentity.generated.swift

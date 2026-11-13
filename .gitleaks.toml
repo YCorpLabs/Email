@@ -1,0 +1,21 @@
+title = "Email reviewed synthetic-fixture and prose exceptions"
+
+# Keep all upstream detection rules. Exceptions apply only to generic-api-key,
+# with both an exact file path and an exact complete line. Any edited line
+# or additional credential on that line requires review rather than suppression.
+# regexTarget is Gitleaks' line-match field; an optional leading newline handles
+# its fragment location convention without allowing other surrounding content.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Reviewed synthetic test fixture; exact unchanged lines only"
+condition = "AND"
+paths = ['''(^|/)scripts/check\-release\-readiness\.test\.py$''']
+regexTarget = "line"
+regexes = [
+    '''^\n?\ \ \ \ \ \ \ \ self\.write\("config/oauth\-desktop\.local\.env",\ "SYNTHETIC_FIXTURE=placeholder\\n"\)$''',
+]

@@ -1,0 +1,26 @@
+[package]
+name = "email-linux"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/YCorpLabs/Email"
+
+[dependencies]
+webkit6 = "0.6.1"
+gtk4 = { version = "0.11", features = ["v4_10"] }
+mail-core = { path = "../../crates/mail-core" }
+mail-service = { path = "../../crates/mail-service" }
+serde_json = "1"
+base64 = "0.22"
+scraper = "0.27"
+url = "2"
+
+[build-dependencies]
+distribution-profile = { path = "../../crates/distribution-profile" }
+
+[features]
+# QA builds only: trust the synthetic Gmail fixture and honor its endpoint
+# redirect (crates/mail-imap/src/fixture.rs). Never enable for packages.
+qa-fixture = ["mail-service/test-fixture"]
+
+[workspace]

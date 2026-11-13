@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question
+    url: https://github.com/YCorpLabs/Email/discussions/categories/q-a
+    about: Ask how to use or build Email by YCorp.
+  - name: Idea or feature request
+    url: https://github.com/YCorpLabs/Email/discussions/categories/ideas
+    about: Share an idea or discuss a change before opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/YCorpLabs/Email/security/advisories/new
+    about: Report it privately.

@@ -1,0 +1,4 @@
+[workspace]
+resolver = "2"
+members = ["crates/distribution-profile", "crates/mail-core", "crates/mail-mcp", "crates/mail-imap", "crates/mail-cloud", "crates/mail-service"]
+exclude = ["apps/linux"]

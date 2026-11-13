@@ -1,0 +1,10 @@
+# Official Arch tooling runs under amd64 emulation on Apple Silicon. This image
+# packages an existing ELF binary; it does not claim to compile native ARM Arch.
+FROM archlinux:base
+
+# QEMU user emulation cannot install pacman's syscall filter. Keep download
+# filesystem isolation and package signature verification enabled.
+RUN pacman --disable-sandbox-syscalls -Syu --noconfirm --needed fakeroot binutils file zstd \
+    && useradd --create-home builder
+USER builder
+WORKDIR /src

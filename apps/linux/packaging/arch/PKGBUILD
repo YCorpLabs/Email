@@ -1,0 +1,31 @@
+# Local alpha package for Arch/Omarchy. Run scripts/package-linux-arch.sh.
+pkgname=email-linux
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Keyboard-first desktop email client (development alpha)'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+depends=('gtk4' 'webkitgtk-6.0' 'openssl' 'dbus')
+makedepends=('rust' 'pkgconf' 'gcc' 'python')
+optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
+options=('!lto')
+_repo="$(cd "$startdir/../../../.." && pwd)"
+source "$_repo/scripts/package-notices.sh"
+source "$_repo/scripts/linux-desktop-entry.sh"
+build() {
+  cd "$_repo"
+  require_package_notices "$_repo" || return 1
+  source scripts/linux-build-config.sh
+  require_linux_oauth_config || return 1
+  cargo build --manifest-path apps/linux/Cargo.toml --release --locked
+}
+package() {
+  install_package_notices "$_repo" "$pkgdir/usr/share/licenses/$pkgname" || return 1
+  printf '%s\n' "${EMAIL_LINUX_RELEASE_CHANNEL:-local-alpha}" > "$pkgdir/usr/share/licenses/$pkgname/RELEASE-CHANNEL.txt"
+  local target_dir="${CARGO_TARGET_DIR:-$_repo/apps/linux/target}"
+  install -Dm755 "$target_dir/release/email-linux" "$pkgdir/usr/bin/email-linux"
+  # package() runs in a fresh process; resolve the same profile build() used.
+  local app_id
+  app_id="$(python3 "$_repo/scripts/distribution-profile.py" --root "$_repo" get LINUX_APP_ID)" || return 1
+  install_linux_desktop_entry "$_repo" "$app_id" "$pkgdir" || return 1
+}

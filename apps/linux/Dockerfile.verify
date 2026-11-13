@@ -1,0 +1,23 @@
+FROM ubuntu:24.04
+
+# Rust compiler pinned by the repository's rust-toolchain.toml.
+# scripts/build-linux-container.sh passes it explicitly; this default lets a
+# plain `docker build` match. scripts/check-toolchain.py keeps them in sync.
+ARG RUST_VERSION=1.99.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    PATH=/opt/cargo/bin:$PATH
+
+# python3 runs the build-identity and distribution-profile helpers that the
+# package scripts source.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    ca-certificates curl build-essential dpkg-dev pkg-config libssl-dev \
+    libgtk-4-dev libwebkitgtk-6.0-dev libsecret-1-dev libdbus-1-dev python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" -c clippy -c rustfmt
+
+WORKDIR /src

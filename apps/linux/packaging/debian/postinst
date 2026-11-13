@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ]; then
+  if command -v apparmor_parser >/dev/null 2>&1 && [ -d /sys/kernel/security/apparmor ]; then
+    # A rejected profile must fail configuration, rather than silently leave a
+    # broken renderer or disable its sandbox.
+    apparmor_parser -r /etc/apparmor.d/email-linux
+  else
+    echo 'Email: AppArmor is unavailable; its executable-specific profile will load when AppArmor starts.'
+  fi
+fi

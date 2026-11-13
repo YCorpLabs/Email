@@ -1,0 +1,37 @@
+# Package an existing ELF binary. Useful for VM compatibility testing only.
+# Native source builds should use ../arch/PKGBUILD instead.
+pkgname=email-linux
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Keyboard-first email client (cross-packaged development alpha)'
+arch=('x86_64' 'aarch64')
+license=('MIT')
+# The Ubuntu 24.04 binary links OpenSSL 3. Arch's openssl is now 4.x; the
+# soname dependency resolves to openssl-3 there, or to openssl 3.x elsewhere.
+depends=('glibc>=2.39' 'gtk4>=4.10' 'webkitgtk-6.0>=2.52' 'libssl.so=3-64' 'libcrypto.so=3-64' 'dbus')
+optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
+# Tooling architecture may differ from the supplied binary. The release build
+# already strips symbols, so do not run host strip/debug extraction on it.
+options=('!strip' '!debug' '!lto')
+_repo="$(cd "$startdir/../../../.." && pwd)"
+source "$_repo/scripts/package-notices.sh"
+source "$_repo/scripts/linux-desktop-entry.sh"
+_binary="${EMAIL_LINUX_BINARY:-$_repo/apps/linux/target/release/email-linux}"
+
+package() {
+  if [[ "${EMAIL_LINUX_RELEASE_CHANNEL:-local-alpha}" != local-alpha ]]; then
+    error "Existing-binary compatibility packaging is local-alpha only. Build distribution packages from source with production OAuth configuration."
+    return 1
+  fi
+  install_package_notices "$_repo" "$pkgdir/usr/share/licenses/$pkgname" || return 1
+  printf '%s\n' local-alpha > "$pkgdir/usr/share/licenses/$pkgname/RELEASE-CHANNEL.txt"
+  local machine
+  machine="$(readelf -h "$_binary" | sed -n 's/^ *Machine: *//p')"
+  case "$CARCH:$machine" in
+    aarch64:AArch64|x86_64:*X86-64*) ;;
+    *) error "Binary machine does not match package architecture $CARCH"; return 1 ;;
+  esac
+  install -Dm755 "$_binary" "$pkgdir/usr/bin/email-linux"
+  # The supplied binary must have been built with this distribution profile.
+  install_linux_desktop_entry "$_repo" "${EMAIL_LINUX_APP_ID:?Pass the binary profile LINUX_APP_ID}" "$pkgdir" || return 1
+}

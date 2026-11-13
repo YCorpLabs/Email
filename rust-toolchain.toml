@@ -1,0 +1,9 @@
+# The Rust compiler every build uses: local scripts, CI (validate.yml) and the
+# Linux build container (apps/linux/Dockerfile.verify, RUST_VERSION). rustup
+# installs it automatically on first use. scripts/check-toolchain.py keeps the
+# copies in sync; change them together.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
+# For contributors and editors. Formatting is not enforced repository-wide.
+components = ["clippy", "rustfmt"]

@@ -1,0 +1,11 @@
+# Ubuntu 24.04+ restricts user namespaces for otherwise unconfined applications.
+# This executable-specific compatibility profile permits WebKitGTK's bubblewrap
+# sandbox to create its user namespace. It does not disable the WebKit sandbox
+# or change the system-wide namespace policy.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile email-linux /usr/bin/email-linux flags=(unconfined) {
+  userns,
+  include if exists <local/email-linux>
+}

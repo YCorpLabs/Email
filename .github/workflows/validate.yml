@@ -1,0 +1,185 @@
+name: Validate candidate
+
+# Safe for pull requests from forks: no secrets, a read-only token, pinned
+# actions, standard GitHub-hosted runner labels only, and no signing,
+# packaging or publishing step that needs credentials.
+#
+# The source job runs for pull requests and pushes only in a public repository,
+# and on manual dispatch once the workflow is enabled in settings. Every other
+# job needs it and is skipped with it. Use scripts/validate-local.py for local
+# validation. Keep these checks intact.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # The Rust compiler comes from rust-toolchain.toml; lockfiles are enforced by
+  # every Rust build and test command.
+
+jobs:
+  source:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - run: python3 scripts/check-release-readiness.py
+      - run: python3 scripts/check-toolchain.py
+      - run: python3 scripts/check-toolchain.test.py
+      - run: python3 scripts/validate-local.test.py
+      - run: python3 scripts/build-identity.test.py
+      - run: python3 scripts/check-release-readiness.test.py
+      - run: python3 scripts/linux-build-config.test.py
+      - run: python3 scripts/distribution-profile.test.py
+      - run: python3 scripts/generate-third-party-notices.py --check
+      - name: Scan complete reachable source history for secrets
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/gitleaks.tar.gz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          printf '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  %s\n' "$RUNNER_TEMP/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --log-opts='--all --full-history' --redact=100 --no-banner
+
+  dependency-audit:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust audit tool
+        if: ${{ !cancelled() }}
+        run: |
+          rustup toolchain install
+          cargo install cargo-audit --version 0.22.2 --locked
+      # Current advisory data is fetched by default. Warnings remain visible;
+      # zero vulnerabilities does not mean unsound/unmaintained warnings cleared.
+      - name: Audit Rust workspace dependency graph
+        if: ${{ !cancelled() }}
+        run: cargo audit --file Cargo.lock
+      - name: Audit independently resolved Linux dependency graph
+        if: ${{ !cancelled() }}
+        run: cargo audit --file apps/linux/Cargo.lock
+
+  linux:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libssl-dev libdbus-1-dev pkg-config
+          rustup toolchain install
+          printf 'EMAIL_BUILD_ID=%s\n' "$(python3 scripts/build-identity.py)" >> "$GITHUB_ENV"
+      - run: cargo test --workspace --locked
+      - run: cargo test --manifest-path apps/linux/Cargo.toml --locked
+      - run: cargo build --manifest-path apps/linux/Cargo.toml --release --locked
+      # Pull request builds are not retained: fork code is untrusted and
+      # artifact storage is kept small.
+      - name: Retain unsigned CI executable with identity
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          mkdir -p candidate
+          cp apps/linux/target/release/email-linux candidate/
+          printf '%s\n' "CI ONLY: unsigned, no production OAuth configuration; not a distribution package." > candidate/STATUS.txt
+          printf '%s\n' "$GITHUB_SHA" > candidate/COMMIT.txt
+          printf '%s\n' "$EMAIL_BUILD_ID" > candidate/BUILD-ID.txt
+          rustc --version > candidate/TOOLCHAIN.txt
+          cd candidate
+          sha256sum email-linux STATUS.txt COMMIT.txt BUILD-ID.txt TOOLCHAIN.txt > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          name: linux-ci-only-${{ matrix.runner }}-${{ github.sha }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 5
+
+  macos:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Select compiler
+        run: |
+          rustup toolchain install
+          swift --version
+      - run: python3 scripts/check-release-swift.py
+      - run: python3 scripts/run-macos-launcher-cache.test.py
+      - run: cargo test --workspace --locked
+      - run: cargo build --release --locked -p mail-service -p mail-mcp
+      - name: Build macOS shell and exercise isolated service bridge
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          value = subprocess.check_output(["python3", "scripts/build-identity.py"], text=True).strip()
+          Path("apps/macos/Sources/EmailUI/BuildIdentity.generated.swift").write_text(
+              'import Foundation\nenum EmailBuildIdentity { static let value = "' + value + '" }\n')
+          PY
+          swift build --package-path apps/macos --disable-sandbox -c release --only-use-versions-from-resolved-file
+          bin_dir="$(swift build --package-path apps/macos --disable-sandbox -c release --show-bin-path)"
+          "$bin_dir/email-update-policy-checks"
+          scratch="$(mktemp -d)"
+          trap 'rm -rf "$scratch"' EXIT
+          EMAIL_STORE_PATH="$scratch/smoke.sqlite" MAIL_SERVICE_LIBRARY="$PWD/target/release/libmail_service.dylib" "$bin_dir/email-desktop" --smoke-service
+          target/release/mail-mcp --help > /dev/null
+      - name: Exercise signed update fixtures without production credentials
+        timeout-minutes: 20
+        run: ./scripts/test-macos-updates.sh
+      - name: Retain unsigned CI binaries with identity
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          bin_dir="$(swift build --package-path apps/macos --disable-sandbox -c release --show-bin-path)"
+          mkdir -p candidate
+          cp "$bin_dir/email-desktop" "$bin_dir/libEmailUI.dylib" target/release/libmail_service.dylib target/release/mail-mcp candidate/
+          printf '%s\n' "CI ONLY: unsigned binaries, no production OAuth configuration; not a distribution app." > candidate/STATUS.txt
+          printf '%s\n' "$GITHUB_SHA" > candidate/COMMIT.txt
+          rustc --version > candidate/TOOLCHAIN.txt
+          swift --version >> candidate/TOOLCHAIN.txt
+          cd candidate
+          shasum -a 256 email-desktop libEmailUI.dylib libmail_service.dylib mail-mcp STATUS.txt COMMIT.txt TOOLCHAIN.txt > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ github.event_name != 'pull_request' }}
+        with:
+          name: macos-ci-only-${{ matrix.runner }}-${{ github.sha }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 5
+      # Last, so the retained candidate keeps the libraries built and tested above:
+      # building mail-service alone can resolve different features and relink it.
+      - name: Exercise the contributor demo path without signing
+        run: |
+          set -o pipefail
+          ./scripts/dev.sh --smoke --release --store "$RUNNER_TEMP/demo/mail.sqlite" | tee "$RUNNER_TEMP/demo.log"
+          grep -q 'mail-service connected: 1 accounts, 3 inbox threads' "$RUNNER_TEMP/demo.log"

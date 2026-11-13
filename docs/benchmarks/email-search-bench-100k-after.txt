@@ -1,0 +1,12 @@
+   Compiling mail-core v0.1.0 (<checkout>/crates/mail-core)
+   Compiling email-search-bench v0.0.0 (<scratch dir>/email-search-bench)
+    Finished `release` profile [optimized] target(s) in 3.91s
+     Running `<scratch dir>/email-search-bench/target/release/email-search-bench 100000`
+corpus=100000,accounts=4,seed_ms=29213.4,local SQLite only
+query="",hits=100,first_ms=0.569,warm_p50_ms=0.467,warm_p95_ms=0.483
+query="invoice",hits=100,first_ms=2.808,warm_p50_ms=2.703,warm_p95_ms=2.937
+query="newsletter",hits=100,first_ms=2.776,warm_p50_ms=2.686,warm_p95_ms=2.901
+query="from:billing@example.org",hits=100,first_ms=1.227,warm_p50_ms=0.800,warm_p95_ms=1.053
+query="is:unread subject:invoice",hits=100,first_ms=1.138,warm_p50_ms=1.503,warm_p95_ms=1.739
+query="to:alex@example.com",hits=100,first_ms=0.678,warm_p50_ms=0.535,warm_p95_ms=0.610
+query="nonexistentterm",hits=0,first_ms=0.176,warm_p50_ms=0.043,warm_p95_ms=0.048

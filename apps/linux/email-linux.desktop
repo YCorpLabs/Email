@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Email
+Comment=Keyboard-first desktop email client
+Exec=email-linux
+Icon=@APP_ID@
+Categories=Network;Email;
+Terminal=false
+StartupNotify=true
+StartupWMClass=@APP_ID@

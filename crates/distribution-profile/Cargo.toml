@@ -1,0 +1,9 @@
+[package]
+name = "distribution-profile"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/YCorpLabs/Email"
+description = "Build-time distribution profile for Email's engine and shells"
+
+[dependencies]

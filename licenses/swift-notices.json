@@ -1,0 +1,12 @@
+[
+  {
+    "identity": "sparkle",
+    "version": "2.10.1",
+    "revision": "ab7d71291238df6e0492143b120c9b696a35f603",
+    "source": "https://github.com/sparkle-project/Sparkle",
+    "license_file": "licenses/sparkle-2.10.1.txt",
+    "sha256": "816be66341dd11b22806862dffd8392b240babaced1cdf24da2ff413ef00c3fd",
+    "upstream_sha256": "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe",
+    "formatting": "Trailing line whitespace normalized; license wording unchanged."
+  }
+]

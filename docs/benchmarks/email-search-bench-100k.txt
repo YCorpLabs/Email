@@ -1,0 +1,7 @@
+corpus=100000,accounts=4,seed_ms=21003.5,local SQLite only
+query="invoice",hits=100,first_ms=265.304,warm_p50_ms=269.244,warm_p95_ms=286.037
+query="newsletter",hits=100,first_ms=265.559,warm_p50_ms=270.275,warm_p95_ms=284.393
+query="from:billing@example.org",hits=100,first_ms=103.490,warm_p50_ms=92.074,warm_p95_ms=99.888
+query="is:unread subject:invoice",hits=100,first_ms=79.149,warm_p50_ms=83.335,warm_p95_ms=86.272
+query="to:alex@example.com",hits=100,first_ms=289.336,warm_p50_ms=284.589,warm_p95_ms=293.262
+query="nonexistentterm",hits=0,first_ms=0.105,warm_p50_ms=0.027,warm_p95_ms=0.031
