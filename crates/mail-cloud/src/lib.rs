@@ -7,7 +7,8 @@
 //!
 //! [`authorize_interactive`] runs a desktop OAuth flow with PKCE, the system
 //! browser and a loopback redirect, using the [`OAuthConfig`] of an app
-//! registration you supply. It returns a [`TokenSet`]; [`refresh`] renews it.
+//! registration you supply. It returns a [`TokenSet`]; [`refresh`] renews it,
+//! and [`revoke_google_token`] ends a Google grant.
 //! The crate never persists credentials: after each API call, read
 //! [`CloudClient::tokens`] and store refreshed tokens in an OS credential store.
 //!
@@ -33,7 +34,8 @@ use serde_json::Value;
 use std::{io::Read, sync::Mutex, time::Duration};
 
 pub use oauth::{
-    authorize_google_calendar, authorize_google_photos, authorize_interactive, refresh,
+    GOOGLE_REVOKE_ENDPOINT, authorize_google_calendar, authorize_google_photos,
+    authorize_interactive, refresh, revoke_google_token,
 };
 
 pub use gmail::{GmailAttachment, GmailSendAs};

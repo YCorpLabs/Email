@@ -11,8 +11,10 @@ For each account, open **Manage accounts** in Email and remove it (on macOS
 **Remove an account…**, on Linux **Remove account**). This deletes that
 account's downloaded mail, drafts, queued mail, snoozes, reminders, signatures,
 cached calendar events and open-tracking records, and removes its password or
-token from your system's credential store. It does not revoke access at your
-provider; see section 3.
+token from your system's credential store. For an account added with Google
+sign-in, Email also asks Google to revoke its access first. If that fails, for
+example when you're offline, the account is still removed; check section 3.
+Removing other accounts does not revoke access at your provider; see section 3.
 
 ## 2. Delete everything on this computer
 
@@ -75,13 +77,13 @@ those traces and your mail while Email is installed; we recommend turning it on.
 | Account | How to revoke |
 | --- | --- |
 | Gmail with an app password | Remove the app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords). Changing your Google password also revokes every app password. |
-| Gmail with Google sign-in | Open [myaccount.google.com/connections](https://myaccount.google.com/connections), select **Email by YCorp** and remove its access. This also covers Google Calendar. |
+| Gmail with Google sign-in | Removing the account in Email does this for you. To check, or if you removed it while offline, open [myaccount.google.com/connections](https://myaccount.google.com/connections), select **Email by YCorp** and remove its access. This also covers Google Calendar. |
 | Outlook or Hotmail (personal Microsoft account) | Open [account.live.com/consent/Manage](https://account.live.com/consent/Manage) and remove Email. |
 | Microsoft 365 work or school account | Ask your IT administrator; access granted for your organization is managed in the Microsoft Entra admin center. |
 | iCloud | At [account.apple.com](https://account.apple.com), open **Sign-In and Security › App-Specific Passwords** and revoke the one you created for Email. |
 | Other IMAP providers | Revoke the app password in your provider's account settings. |
 
-Removing an account in Email does not do this for you.
+Except for Google sign-in, removing an account in Email does not do this for you.
 
 ## 4. Hosted Scheduling data
 

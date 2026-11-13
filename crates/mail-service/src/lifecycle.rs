@@ -501,18 +501,26 @@ mod tests {
         dir: PathBuf,
         service: Arc<MailService>,
         vault: Arc<FakeVault>,
+        revoke_endpoint: String,
     }
     impl Fixture {
+        /// Removal tries to revoke Google grants; by default it reaches only a
+        /// closed local port, never Google.
         fn new() -> Self {
+            Self::with_revoke_endpoint(closed_local_url())
+        }
+        fn with_revoke_endpoint(revoke_endpoint: String) -> Self {
             let dir = std::env::temp_dir().join(format!("email-lifecycle-{}", Uuid::new_v4()));
             fs::create_dir_all(&dir).unwrap();
             let vault = Arc::new(FakeVault::default());
             let mut service = MailService::open(dir.join("mail.sqlite")).unwrap();
             service.credentials = vault.clone();
+            service.google_revoke_endpoint = Some(revoke_endpoint.clone());
             Self {
                 dir,
                 service: Arc::new(service),
                 vault,
+                revoke_endpoint,
             }
         }
         fn add(&self, id: &str, label: &str) -> SavedConfig {
@@ -540,11 +548,117 @@ mod tests {
                 .unwrap();
             self.service.saved_config(id).unwrap()
         }
+        fn add_other(&self, id: &str, provider: &str, secret: &str) {
+            let account = Account {
+                id: id.into(),
+                provider: serde_json::from_value(json!(provider)).unwrap(),
+                email: format!("{id}@example.invalid"),
+                display_name: id.into(),
+            };
+            let saved: SavedConfig = serde_json::from_value(json!({"account_id":id,"provider":provider,
+                "client_id":"synthetic-client","username":account.email,"smtp_username":account.email,
+                "imap_host":"imap.example.invalid","smtp_host":"smtp.example.invalid"}))
+            .unwrap();
+            self.service
+                .persist_account(&account, saved, secret, None)
+                .unwrap();
+        }
         fn second_service(&self) -> MailService {
             let mut service = MailService::open(self.dir.join("mail.sqlite")).unwrap();
             service.credentials = self.vault.clone();
+            service.google_revoke_endpoint = Some(self.revoke_endpoint.clone());
             service
         }
+    }
+    fn closed_local_url() -> String {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        format!("http://{closed}/revoke")
+    }
+    /// A local stand-in for Google's revoke endpoint. It records each raw
+    /// request and answers all of them with the same response.
+    struct RevokeServer {
+        url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl RevokeServer {
+        fn start(response: &'static str) -> Self {
+            use std::io::{Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/revoke", listener.local_addr().unwrap());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (seen, stopped) = (requests.clone(), stop.clone());
+            let thread = std::thread::spawn(move || {
+                while !stopped.load(Ordering::Acquire) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 2048];
+                    loop {
+                        let n = stream.read(&mut buffer).unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..n]);
+                        let text = String::from_utf8_lossy(&request).to_string();
+                        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                            continue;
+                        };
+                        let length = head
+                            .to_ascii_lowercase()
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse().ok())
+                            .unwrap_or(0usize);
+                        if body.len() >= length {
+                            break;
+                        }
+                    }
+                    seen.lock()
+                        .unwrap()
+                        .push(String::from_utf8(request).unwrap());
+                    let _ = stream.write_all(response.as_bytes());
+                }
+            });
+            Self {
+                url,
+                requests,
+                stop,
+                thread: Some(thread),
+            }
+        }
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+    impl Drop for RevokeServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+    const REVOKED: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    fn assert_removed(fixture: &Fixture, id: &str) {
+        assert!(fixture.service.saved_config(id).is_err());
+        assert!(fixture.vault.read(id, false).unwrap().is_none());
+        assert!(
+            fixture
+                .vault
+                .read(&MailService::calendar_vault_id(id), false)
+                .unwrap()
+                .is_none()
+        );
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -836,5 +950,54 @@ mod tests {
         removal.join().unwrap().unwrap();
         assert!(fixture.vault.read("account", false).unwrap().is_none());
         assert!(fixture.service.saved_config("account").is_err());
+    }
+    #[test]
+    fn removing_a_google_sign_in_account_revokes_its_grant_with_the_stored_token() {
+        let google = RevokeServer::start(REVOKED);
+        let fixture = Fixture::with_revoke_endpoint(google.url.clone());
+        fixture.add("account", "old");
+        fixture.service.remove_account("account").unwrap();
+        // The token is read from the vault, so this request also shows the
+        // revoke ran before removal deleted the credentials.
+        let requests = google.requests();
+        assert_eq!(requests.len(), 1, "{requests:?}");
+        let (head, body) = requests[0].split_once("\r\n\r\n").unwrap();
+        assert!(head.starts_with("POST /revoke HTTP/1.1\r\n"), "{head}");
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded")
+        );
+        assert!(!head.contains("synthetic"), "token outside the body: {head}");
+        assert_eq!(body, "token=synthetic-refresh-old");
+        assert_removed(&fixture, "account");
+    }
+    #[test]
+    fn removal_finishes_when_google_revoke_fails_or_is_unreachable() {
+        let failing = RevokeServer::start(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        for endpoint in [failing.url.clone(), closed_local_url()] {
+            let fixture = Fixture::with_revoke_endpoint(endpoint);
+            fixture.add("account", "old");
+            fixture.service.remove_account("account").unwrap();
+            assert_removed(&fixture, "account");
+        }
+        assert_eq!(failing.requests().len(), 1);
+    }
+    #[test]
+    fn app_password_and_microsoft_accounts_are_removed_without_google_revoke() {
+        let google = RevokeServer::start(REVOKED);
+        let fixture = Fixture::with_revoke_endpoint(google.url.clone());
+        fixture.add_other("imap", "imap", "abcdefghijklmnop");
+        fixture.add_other(
+            "microsoft",
+            "microsoft",
+            &serde_json::to_string(&tokens("microsoft")).unwrap(),
+        );
+        for id in ["imap", "microsoft"] {
+            fixture.service.remove_account(id).unwrap();
+            assert_removed(&fixture, id);
+        }
+        assert!(google.requests().is_empty());
     }
 }
