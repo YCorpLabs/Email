@@ -29,7 +29,7 @@ depends_aarch64=('gdk-pixbuf2' 'libsoup3' 'pango')
 optdepends=('gnome-keyring: Secret Service credential storage (or another Secret Service provider)')
 provides=("email-ycorp=$pkgver")
 conflicts=('email-ycorp')
-# The release binary is already stripped.
+# Installs the release binary byte for byte as published in the .deb.
 options=('!strip' '!debug')
 source_x86_64=("$pkgname-$pkgver-amd64.deb::$url/releases/download/$_tag/email-linux_${_debver}_amd64.deb")
 source_aarch64=("$pkgname-$pkgver-arm64.deb::$url/releases/download/$_tag/email-linux_${_debver}_arm64.deb")
