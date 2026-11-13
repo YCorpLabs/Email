@@ -30,15 +30,24 @@ export EMAIL_TEST_FIXTURE_CA=$scratch/fixture-ca.pem
 export EMAIL_TEST_FIXTURE_ENDPOINTS="$(sed -n 's/^EMAIL_TEST_FIXTURE_ENDPOINTS=//p' $scratch/fixture.log)"
 # Without the redirects the app would sign in to the real Gmail servers.
 [[ -n "$EMAIL_TEST_FIXTURE_ENDPOINTS" ]] || { echo "The Gmail fixture did not start." >&2; exit 1; }
+# The fixture also answers for iCloud and a guessed Other server, so their
+# refusals are checked without any real provider.
+imap_port="$(sed -n 's/.*imap.gmail.com:993=localhost:\([0-9]*\).*/\1/p' <<<"$EMAIL_TEST_FIXTURE_ENDPOINTS")"
+export EMAIL_TEST_FIXTURE_ENDPOINTS="$EMAIL_TEST_FIXTURE_ENDPOINTS,imap.mail.me.com:993=localhost:$imap_port,imap.guess.example:993=localhost:$imap_port"
 shot() { sleep "${2:-1.2}"; import -window root "/shots/$1.png"; echo "shot $1"; }
+dialogs() { xdotool search --name "^Add an account$" 2>/dev/null | wc -l; }
 dialog() {
   for _ in $(seq 50); do
-    local id; id=$(xdotool search --name "Connect an account" 2>/dev/null | head -1)
+    local id; id=$(xdotool search --name "^Add an account$" 2>/dev/null | head -1)
     [[ -n "$id" ]] && { echo "$id"; return; }
     sleep 0.2
   done
   echo "account window did not open" >&2; return 1
 }
+# Focus order: email, Choose provider, the step links, then the password.
+# Gmail has two step links, iCloud one, Other none.
+email_from_password() { for _ in $(seq $(( $1 + 2 ))); do xdotool key shift+Tab; done; xdotool key ctrl+a; }
+password_from_email() { for _ in $(seq $(( $1 + 2 ))); do xdotool key Tab; done; xdotool key ctrl+a; }
 
 run() { # mode binary
   local mode=$1 binary=$2 base=$scratch/qa-$1
@@ -51,64 +60,76 @@ run() { # mode binary
   local pid; pid=$(pgrep -f "^$binary" -n)
   echo "$mode running exe sha256 $(sha256sum /proc/$pid/exe | cut -d' ' -f1) artifact $(sha256sum "$binary" | cut -d' ' -f1)"
   xdotool search --name "^Email" windowactivate --sync 2>/dev/null || true
-  xdotool key a
-  local d; d=$(dialog); xdotool windowactivate --sync "$d"
 }
+open_dialog() { xdotool key a; local d; d=$(dialog); xdotool windowactivate --sync "$d"; sleep 0.5; }
 
-# Distribution build: app password first, Outlook hidden.
+# Distribution build: one welcome, then email first; Outlook hidden.
 run distribution /out/email-linux-distribution-qa
-shot distribution-1-app-password
-xdotool key ctrl+2; shot distribution-2-icloud
+shot distribution-0-welcome
+open_dialog
+shot distribution-1-email-first
+xdotool key Return; shot distribution-1a-enter-email 0.6
+xdotool type --delay 15 "fixture.user@gmail.com"; xdotool key Return
+shot distribution-2-app-password
+xdotool key ctrl+2; shot distribution-3-icloud
+# Chosen by hand from here on, so other addresses stay on Gmail. Focus is in the password.
 xdotool key ctrl+1; sleep 0.5
-xdotool type --delay 15 "fixture.user@gmail.com"; xdotool key Tab
 xdotool type --delay 15 "my regular google password"; xdotool key Return
-shot distribution-3-regular-password 1.5
+shot distribution-4-google-password 1.5
 xdotool key ctrl+a; xdotool type --delay 15 "zzzz yyyy xxxx wwww"; xdotool key Return
-shot distribution-4-wrong-app-password 3
-xdotool key shift+Tab ctrl+a; xdotool type --delay 15 "fixture.admin@workspace.example"; xdotool key Tab ctrl+a
+shot distribution-5-wrong-app-password 3
+email_from_password 2; xdotool type --delay 15 "fixture.admin@workspace.example"; password_from_email 2
 xdotool type --delay 15 "abcd efgh ijkl mnop"; xdotool key Return
-shot distribution-5-workspace-imap-off 3
+shot distribution-6-workspace-imap-off 3
+xdotool key ctrl+2; sleep 0.4
+email_from_password 1; xdotool type --delay 15 "someone@icloud.example"; password_from_email 1
+xdotool type --delay 15 "MyApplePassw0rd!"; xdotool key Return
+shot distribution-7-apple-password 3
+xdotool key ctrl+3; sleep 0.4
+email_from_password 0; xdotool type --delay 15 "person@example.invalid"; password_from_email 0
+xdotool type --delay 15 "secret"; xdotool key Return
+shot distribution-8-servers-not-found 4
+xdotool key ctrl+1; sleep 0.4
 # A slow request (5 s): the same choice can't be resubmitted; others stay usable.
-xdotool key shift+Tab ctrl+a; xdotool type --delay 15 "fixture.slow@workspace.example"; xdotool key Tab ctrl+a
+email_from_password 2; xdotool type --delay 15 "fixture.slow@workspace.example"; password_from_email 2
 xdotool type --delay 15 "abcd efgh ijkl mnop"; xdotool key Return
-shot distribution-5a-slow-connecting 0.6
-xdotool key ctrl+2; shot distribution-5b-slow-icloud-usable 0.4
-xdotool key ctrl+1; shot distribution-5c-slow-still-connecting 0.4
-xdotool key ctrl+2; sleep 5; shot distribution-5d-slow-finished-on-icloud 0.3
+shot distribution-9a-slow-connecting 0.6
+xdotool key ctrl+2; shot distribution-9b-slow-icloud-usable 0.4
+xdotool key ctrl+1; shot distribution-9c-slow-still-connecting 0.4
+xdotool key ctrl+2; sleep 5; shot distribution-9d-slow-finished-on-icloud 0.3
 # Back on Gmail: usable again, and its failure is shown now.
-xdotool key ctrl+1; shot distribution-5e-gmail-failure-shown-on-return 0.4
+xdotool key ctrl+1; shot distribution-9e-gmail-failure-shown-on-return 0.4
 # A slow success while iCloud is on screen keeps the window and what is typed there.
-xdotool key ctrl+a; xdotool type --delay 15 "fixture.later@workspace.example"; xdotool key Tab ctrl+a
+email_from_password 2; xdotool type --delay 15 "fixture.later@workspace.example"; password_from_email 2
 xdotool type --delay 15 "abcd efgh ijkl mnop"; xdotool key Return; sleep 0.3
-xdotool key ctrl+2; sleep 0.3; xdotool key ctrl+a; xdotool type --delay 15 "someone@icloud.example"; xdotool key Tab
+xdotool key ctrl+2; sleep 0.3
+email_from_password 1; xdotool type --delay 15 "someone@icloud.example"; password_from_email 1
 xdotool type --delay 15 "half typed"
 sleep 6
-echo "dialog after background success: $(xdotool search --name 'Connect an account' 2>/dev/null | wc -l)"
-shot distribution-5f-background-success-icloud-kept 0.3
-xdotool key ctrl+1; shot distribution-5g-gmail-connected-on-return 0.4
-# Focus is in the address field after switching back.
-xdotool key ctrl+a; xdotool type --delay 15 "fixture.user@gmail.com"; xdotool key Tab
+echo "dialog after background success: $(dialogs)"
+shot distribution-9f-background-success-icloud-kept 0.3
+xdotool key ctrl+1; shot distribution-9g-gmail-connected-on-return 0.4
+email_from_password 2; xdotool type --delay 15 "fixture.user@gmail.com"; password_from_email 2
 xdotool type --delay 15 "abcd efgh ijkl mnop"; xdotool key Return
 sleep 6
-echo "dialog after connect: $(xdotool search --name 'Connect an account' 2>/dev/null | wc -l)"
-shot distribution-6-inbox 1
+echo "dialog after connect: $(dialogs)"
+shot distribution-10-inbox 1
 # Search the synced mail.
-xdotool key slash; sleep 0.3; xdotool type --delay 20 "roadmap"; shot distribution-7-search 1.5
+xdotool key slash; sleep 0.3; xdotool type --delay 20 "roadmap"; shot distribution-11-search 1.5
 xdotool key Escape; sleep 0.5
-# Escape in an open security list closes only the list; a second Escape closes the window.
-xdotool key a; d=$(dialog); xdotool windowactivate --sync "$d"; sleep 0.5
-xdotool key ctrl+3; sleep 0.5
-for _ in 1 2 3 4 5 6; do xdotool key Tab; sleep 0.1; done
-xdotool key space; shot distribution-8-security-list-open 0.8
+# Escape in the open provider menu closes only the menu; a second Escape closes the window.
+open_dialog
+xdotool key Tab space; shot distribution-12-provider-menu-open 0.8
 xdotool key Escape; sleep 0.8
-echo "dialog after Escape in list: $(xdotool search --name 'Connect an account' 2>/dev/null | wc -l)"
-shot distribution-8a-security-list-closed 0.3
+echo "dialog after Escape in menu: $(dialogs)"
 xdotool key Escape; sleep 0.8
-echo "dialog after Escape: $(xdotool search --name 'Connect an account' 2>/dev/null | wc -l)"
+echo "dialog after Escape: $(dialogs)"
 pkill -f email-linux-distribution-qa || true; sleep 1
 
-# Development (local-alpha) build: Gmail sign-in first, Outlook kept.
+# Development (local-alpha) build: a Gmail address opens Google sign-in; Outlook kept.
 run development /out/email-linux-local-alpha-qa
+open_dialog
+xdotool type --delay 15 "someone@gmail.com"; xdotool key Return
 shot development-1-gmail
 xdotool key ctrl+2; shot development-2-app-password
 xdotool key ctrl+4; shot development-3-outlook

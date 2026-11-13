@@ -896,6 +896,9 @@ impl Ui {
                 );
             }
         }
+        if !self.calendar_available(&self.accounts()) {
+            items.retain(|item| !matches!(item.id.as_str(), "calendar" | "invitations"));
+        }
         if !booking::configured() {
             // Scheduling commands exist only when the profile names a service.
             items.retain(|item| {

@@ -1,6 +1,7 @@
-//! Account setup, mirroring macOS `AccountSetupWindow.swift`: the same choices,
-//! order, copy, preset servers, inline errors and keyboard behavior (Ctrl+digit
-//! replaces ⌘+digit; Escape cancels; Enter connects).
+//! Account setup, mirroring macOS `AccountSetupWindow.swift`: email first, the
+//! same choices, order, copy, one-line errors with a fix link and Details, and
+//! keyboard behavior (Ctrl+digit replaces ⌘+digit; Escape cancels; Enter
+//! continues or connects).
 use crate::Ui;
 use gtk::{Orientation, gdk, glib};
 use mail_service::MailService;
@@ -23,8 +24,8 @@ pub(crate) struct BuildFeatures {
     pub google_contact_photos: bool,
     pub microsoft_accounts: bool,
     /// "Google OAuth publicly available" (the profile's `GOOGLE_OAUTH_PUBLIC`).
-    /// Off in official releases until Google's review passes: account setup then
-    /// offers Gmail only through an app password. Connected accounts keep working.
+    /// Off in official releases: account setup then offers Gmail only through
+    /// an app password. Connected accounts keep working.
     pub google_oauth_public: bool,
 }
 
@@ -91,8 +92,8 @@ impl Choice {
     }
 }
 
-/// Display order. Official releases do not offer Google sign-in until Google's
-/// review passes (`google_oauth_public`); Gmail then goes straight to the
+/// Display order. Official releases do not offer Google sign-in
+/// (`google_oauth_public` is off); Gmail then goes straight to the
 /// app-password path. Outlook/Hotmail stays out of distribution builds until
 /// it has been tested with real accounts. Development builds keep both.
 pub(crate) fn available(features: &BuildFeatures) -> Vec<Choice> {
@@ -109,7 +110,7 @@ pub(crate) fn available(features: &BuildFeatures) -> Vec<Choice> {
     choices
 }
 
-/// The choice selected when the window opens.
+/// The Gmail choice for a Google address.
 pub(crate) fn initial(features: &BuildFeatures, google_sign_in_configured: bool) -> Choice {
     if features.google_oauth_public && google_sign_in_configured {
         Choice::Gmail
@@ -118,41 +119,189 @@ pub(crate) fn initial(features: &BuildFeatures, google_sign_in_configured: bool)
     }
 }
 
-// Gmail's servers are owned by the Rust preset (`ImapConfig::gmail`); the
-// request names none.
-pub(crate) const GMAIL_TWO_STEP_URL: &str = "https://myaccount.google.com/signinoptions/twosv";
-pub(crate) const GMAIL_APP_PASSWORDS_URL: &str = "https://myaccount.google.com/apppasswords";
-pub(crate) const GMAIL_HELP_URL: &str = "https://support.google.com/accounts/answer/185833";
-const ICLOUD_HELP_URL: &str = "https://support.apple.com/en-us/102654";
-/// The same three steps as macOS `GmailAppPasswordPreset.steps`.
-pub(crate) const GMAIL_STEPS: [(&str, Option<(&str, &str)>); 3] = [
-    (
-        "Turn on 2-Step Verification for your Google Account.",
-        Some(("Open 2-Step Verification ↗", GMAIL_TWO_STEP_URL)),
-    ),
-    (
-        "Create an app password and name it “Email”.",
-        Some(("Open App passwords ↗", GMAIL_APP_PASSWORDS_URL)),
-    ),
-    (
-        "Paste the 16-letter password below. Spaces don't matter.",
-        None,
-    ),
-];
-/// macOS says "your Mac's Keychain"; the credential store is the only difference.
-const GMAIL_ABOUT: &str = "An app password is a 16-letter code that lets Email sign in to Gmail's mail servers without your Google password. Email keeps it in your system keyring and sends it only to Google. Remove it on the App passwords page to revoke access; changing your Google password revokes it too.";
-/// Shown when this build offers no Google sign-in (macOS `signInComing`).
-pub(crate) const GMAIL_SIGN_IN_COMING: &str =
-    "One-click Google sign-in is coming once Google finishes reviewing the app.";
-fn gmail_unavailable(features: &BuildFeatures) -> String {
-    let next = if features.google_oauth_public {
-        "Use Gmail sign-in instead, or ask your administrator."
+/// The choice for the engine's `setup_provider` answer (macOS
+/// `AccountSetupChoice.forProvider`). Everything not clearly Google or Apple
+/// goes to Other.
+pub(crate) fn for_provider(
+    provider: &str,
+    features: &BuildFeatures,
+    google_sign_in_configured: bool,
+) -> Choice {
+    match provider {
+        "gmail" => initial(features, google_sign_in_configured),
+        "icloud" => Choice::Icloud,
+        "outlook" if features.microsoft_accounts => Choice::Outlook,
+        _ => Choice::Other,
+    }
+}
+
+/// The steps, field and short explanation for a provider that needs a
+/// password made for Email (macOS `AppPasswordGuide`).
+pub(crate) struct Guide {
+    pub intro: &'static str,
+    pub steps: [(&'static str, Option<&'static str>); 3],
+    pub field_label: &'static str,
+    pub placeholder: &'static str,
+    pub disclosure: &'static str,
+    pub about: [&'static str; 4],
+}
+
+pub(crate) const TITLE: &str = "Add an account";
+const CHOOSE_PROVIDER: &str = "Choose provider";
+const GUIDE_LINK: &str = "Need help? Step-by-step guide ↗";
+const ENTER_EMAIL: &str = "Enter your email address.";
+
+/// macOS `AccountSetupCopy.gmail`; the credential store is the only difference.
+pub(crate) const GMAIL: Guide = Guide {
+    intro: "Gmail needs an app password.",
+    steps: [
+        (
+            "Turn on 2-Step Verification ↗",
+            Some("https://myaccount.google.com/signinoptions/twosv"),
+        ),
+        (
+            "Create an app password ↗",
+            Some("https://myaccount.google.com/apppasswords"),
+        ),
+        ("Paste it below", None),
+    ],
+    field_label: "App password",
+    placeholder: "16 letters, spaces are fine",
+    disclosure: "What's an app password?",
+    about: [
+        "It's a 16-letter code just for Email, stored in your system keyring (Secret Service).",
+        "You can revoke it in your Google Account. Changing your Google password revokes it too.",
+        "No App passwords option? Google hides it for accounts that use only security keys, Advanced Protection, and some work or school accounts.",
+        "Email connects to imap.gmail.com and smtp.gmail.com.",
+    ],
+};
+
+/// macOS `AccountSetupCopy.icloud`.
+pub(crate) const ICLOUD: Guide = Guide {
+    intro: "iCloud needs an app-specific password.",
+    steps: [
+        (
+            "Sign in to your Apple Account ↗",
+            Some("https://account.apple.com/"),
+        ),
+        ("Create an app-specific password", None),
+        ("Paste it below", None),
+    ],
+    field_label: "App password",
+    placeholder: "abcd-efgh-ijkl-mnop",
+    disclosure: "What's an app-specific password?",
+    about: [
+        "It's a password Apple makes for one app, here Email, stored in your system keyring (Secret Service).",
+        "Create it under Sign-In and Security. Your Apple Account needs two-factor authentication.",
+        "You can revoke it at account.apple.com. Changing your Apple Account password revokes it too.",
+        "Email connects to imap.mail.me.com and smtp.mail.me.com.",
+    ],
+};
+
+/// Other: no steps, one line; the engine finds the servers.
+pub(crate) const OTHER_INTRO: &str = "Use your email password or an app password.";
+
+fn guide(choice: Option<Choice>) -> Option<&'static Guide> {
+    match choice {
+        Some(Choice::GmailAppPassword) => Some(&GMAIL),
+        Some(Choice::Icloud) => Some(&ICLOUD),
+        _ => None,
+    }
+}
+
+fn guide_section(choice: Option<Choice>) -> Option<&'static str> {
+    match choice {
+        Some(Choice::GmailAppPassword | Choice::Gmail) => Some("gmail"),
+        Some(Choice::Icloud) => Some("icloud"),
+        Some(Choice::Other) => Some("other"),
+        _ => None,
+    }
+}
+
+/// The website guide for a section, only in builds whose support channel is
+/// Y Corp's own (`mail_service::profile::setup_guide_url`).
+pub(crate) fn guide_url(section: &str) -> Option<String> {
+    mail_service::profile::setup_guide_url().map(|base| format!("{base}#{section}"))
+}
+
+fn oauth_intro(choice: Choice) -> &'static str {
+    if choice == Choice::Outlook {
+        "You'll sign in to Microsoft in your browser."
     } else {
-        "Ask your administrator, or wait for one-click Google sign-in."
-    };
-    format!(
-        "No App passwords option? Google doesn't offer them for accounts that use only security keys or Advanced Protection, or for some work and school accounts. {next}"
-    )
+        "You'll sign in to Google in your browser."
+    }
+}
+
+/// Server settings the engine guessed (`servers` in `setup_error`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Servers {
+    pub imap_host: String,
+    pub imap_port: String,
+    pub imap_tls: bool,
+    pub smtp_host: String,
+    pub smtp_port: String,
+    pub smtp_tls: bool,
+}
+
+/// An account-setup failure as the engine explains it (macOS `SetupProblem`):
+/// one line, an optional fix link, the server's words for Details.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Problem {
+    pub code: String,
+    pub message: String,
+    pub action: Option<(String, String)>,
+    pub detail: String,
+    pub servers: Option<Servers>,
+}
+
+impl Problem {
+    fn plain(message: &str) -> Self {
+        Self {
+            code: "invalid".into(),
+            message: message.into(),
+            ..Self::default()
+        }
+    }
+
+    /// From a failed envelope (`request_envelope`).
+    pub(crate) fn from_envelope(envelope: &Value) -> Self {
+        let message = envelope["error"]
+            .as_str()
+            .unwrap_or("The mail action failed.")
+            .to_string();
+        let setup = &envelope["setup_error"];
+        if !setup.is_object() {
+            return Self {
+                code: "other".into(),
+                message,
+                ..Self::default()
+            };
+        }
+        let action = setup["action"]["url"]
+            .as_str()
+            // Only web pages: a fix link never opens anything else.
+            .filter(|url| url.starts_with("https://"))
+            .zip(setup["action"]["label"].as_str())
+            .map(|(url, label)| (label.to_string(), url.to_string()));
+        let servers = &setup["servers"];
+        let servers = servers["imap_host"].as_str().zip(servers["smtp_host"].as_str()).map(
+            |(imap, smtp)| Servers {
+                imap_host: imap.into(),
+                imap_port: servers["imap_port"].as_u64().unwrap_or(993).to_string(),
+                imap_tls: servers["imap_security"] != "start_tls",
+                smtp_host: smtp.into(),
+                smtp_port: servers["smtp_port"].as_u64().unwrap_or(587).to_string(),
+                smtp_tls: servers["smtp_security"] == "implicit_tls",
+            },
+        );
+        Self {
+            code: setup["code"].as_str().unwrap_or("other").into(),
+            message: setup["message"].as_str().map_or(message, str::to_string),
+            action,
+            detail: setup["detail"].as_str().unwrap_or_default().into(),
+            servers,
+        }
+    }
 }
 
 /// The values typed into the password-based form.
@@ -163,6 +312,8 @@ pub(crate) struct Form {
     pub username: String,
     pub smtp_username: String,
     pub password: String,
+    /// Other only: the server rows are shown, so their values are sent.
+    pub servers_shown: bool,
     pub imap_host: String,
     pub imap_port: String,
     pub imap_tls: bool,
@@ -171,63 +322,77 @@ pub(crate) struct Form {
     pub smtp_tls: bool,
 }
 
-/// The `add_imap_account` request, identical to the macOS payload.
-pub(crate) fn imap_payload(
-    choice: Choice,
-    form: &Form,
-    google_sign_in: bool,
-) -> Result<Value, &'static str> {
+/// The `add_imap_account` request, identical to the macOS payload
+/// (`AccountSetupWindow.imapPayload`). Gmail and iCloud name no servers; Other
+/// names none until its server rows are shown, and the engine guesses them.
+pub(crate) fn imap_payload(choice: Choice, form: &Form) -> Result<Value, &'static str> {
     let address = form.email.trim().to_string();
-    if choice == Choice::GmailAppPassword {
-        // The service owns Gmail's servers and usernames; send only the address
-        // and the app password.
-        if !address.contains('@') || form.password.trim().is_empty() {
-            return Err(invalid_message(choice));
+    let has_password = !form.password.trim().is_empty();
+    let display_name = if form.display_name.is_empty() {
+        address.clone()
+    } else {
+        form.display_name.clone()
+    };
+    match choice {
+        Choice::GmailAppPassword => {
+            if !address.contains('@') || !has_password {
+                return Err(invalid_message(choice));
+            }
+            return Ok(json!({
+                "op": "add_imap_account", "provider": "imap", "preset": "gmail",
+                "email": address, "display_name": address, "username": address,
+                "smtp_username": address, "password": form.password,
+            }));
         }
-        return Ok(json!({
-            "op": "add_imap_account", "provider": "imap", "preset": "gmail",
-            "email": address, "display_name": address, "username": address,
-            "smtp_username": address, "password": form.password,
-            "google_sign_in": google_sign_in,
-        }));
+        Choice::Icloud => {
+            if !address.contains('@') || !has_password {
+                return Err(invalid_message(choice));
+            }
+            // The engine's iCloud preset owns the servers and username.
+            return Ok(json!({
+                "op": "add_imap_account", "provider": "icloud",
+                "email": address, "display_name": address, "password": form.password,
+            }));
+        }
+        _ if !form.servers_shown => {
+            if !address.contains('@') || !has_password {
+                return Err("Enter your email address and password.");
+            }
+            return Ok(json!({
+                "op": "add_imap_account", "provider": "imap",
+                "email": address, "display_name": display_name, "password": form.password,
+            }));
+        }
+        _ => {}
     }
     let typed_login = form.username.trim().to_string();
-    // iCloud's username field is hidden: never send one left over from Other.
-    let login = match choice {
-        Choice::Icloud => address.split('@').next().unwrap_or("").to_string(),
-        _ if typed_login.is_empty() => address.clone(),
-        _ => typed_login,
+    let login = if typed_login.is_empty() {
+        address.clone()
+    } else {
+        typed_login
     };
     let port = |value: &str| value.trim().parse::<u16>().ok().filter(|p| *p > 0);
     let (Some(imap_port), Some(smtp_port)) = (port(&form.imap_port), port(&form.smtp_port)) else {
         return Err(invalid_message(choice));
     };
     if !address.contains('@')
-        || login.is_empty()
-        || form.password.trim().is_empty()
+        || !has_password
         || form.imap_host.trim().is_empty()
         || form.smtp_host.trim().is_empty()
     {
         return Err(invalid_message(choice));
     }
     let security = |tls: bool| if tls { "implicit_tls" } else { "start_tls" };
-    let mut payload = json!({
-        "op": "add_imap_account",
-        "provider": if choice == Choice::Icloud { "icloud" } else { "imap" },
-        "email": address,
-        "display_name": if form.display_name.is_empty() { address.clone() } else { form.display_name.clone() },
+    let smtp_login = form.smtp_username.trim();
+    Ok(json!({
+        "op": "add_imap_account", "provider": "imap",
+        "email": address, "display_name": display_name,
         "username": login,
+        "smtp_username": if smtp_login.is_empty() { login.as_str() } else { smtp_login },
         "password": form.password,
         "imap_host": form.imap_host.trim(), "imap_port": imap_port, "imap_security": security(form.imap_tls),
         "smtp_host": form.smtp_host.trim(), "smtp_port": smtp_port, "smtp_security": security(form.smtp_tls),
-    });
-    let smtp_login = form.smtp_username.trim();
-    if !smtp_login.is_empty() && choice == Choice::Other {
-        payload["smtp_username"] = json!(smtp_login);
-    } else if choice != Choice::Icloud {
-        payload["smtp_username"] = payload["username"].clone();
-    }
-    Ok(payload)
+    }))
 }
 
 fn invalid_message(choice: Choice) -> &'static str {
@@ -237,41 +402,6 @@ fn invalid_message(choice: Choice) -> &'static str {
         }
         Choice::Icloud => "Enter your iCloud address and app-specific password.",
         _ => "Enter a valid email, provider-issued app password, server names, and ports.",
-    }
-}
-
-fn intro(features: &BuildFeatures) -> &'static str {
-    if !features.google_oauth_public && features.microsoft_accounts {
-        "Outlook signs in through your browser. Gmail and iCloud use a password created for this app. Never enter your main account password here."
-    } else if !features.google_oauth_public {
-        "Gmail and iCloud connect with a password created for this app. Never enter your main account password here."
-    } else if features.microsoft_accounts {
-        "Gmail and Outlook sign in through your browser. Gmail (app password) and iCloud use a password created for this app. Never enter your main account password here."
-    } else {
-        "Gmail signs in through your browser. Gmail (app password) and iCloud use a password created for this app. Never enter your main account password here."
-    }
-}
-
-fn status_text(choice: Choice, oauth_ready: bool) -> &'static str {
-    match choice {
-        Choice::Icloud => {
-            "Use a password created for this app in your Apple Account. Never enter your Apple Account password."
-        }
-        Choice::GmailAppPassword => {
-            "Email connects directly to imap.gmail.com and smtp.gmail.com. Your regular Google password won't work here."
-        }
-        Choice::Other => {
-            "Use a provider-issued app password and the server settings from your provider."
-        }
-        Choice::Gmail if !oauth_ready => {
-            "Google sign-in isn't configured in this build. Use Gmail (app password) instead."
-        }
-        Choice::Gmail | Choice::Outlook if oauth_ready => {
-            "You'll sign in on your provider's website in your browser."
-        }
-        Choice::Gmail | Choice::Outlook => {
-            "Sign-in isn't configured in this build yet. The app developer must register Email with this provider."
-        }
     }
 }
 
@@ -299,49 +429,74 @@ fn google_client_secret() -> Option<String> {
 struct Setup {
     ui: std::rc::Weak<Ui>,
     window: gtk::Window,
+    features: BuildFeatures,
     choices: Vec<Choice>,
-    selected: Cell<Choice>,
-    buttons: Vec<(Choice, gtk::Button)>,
-    display_name: gtk::Entry,
+    /// `None` until the address is entered or a provider chosen.
+    selected: Cell<Option<Choice>>,
+    picked_by_hand: Cell<bool>,
     email: gtk::Entry,
+    provider_menu: gtk::MenuButton,
+    provider_items: Vec<(Choice, gtk::Button)>,
+    intro: gtk::Label,
+    steps: gtk::Box,
+    password_row: gtk::Box,
+    password_label: gtk::Label,
+    password: gtk::PasswordEntry,
+    about: gtk::Expander,
+    about_lines: gtk::Box,
+    advanced: gtk::ToggleButton,
+    advanced_icon: gtk::Image,
+    advanced_rows: gtk::Box,
+    display_name: gtk::Entry,
     username: gtk::Entry,
     smtp_username: gtk::Entry,
-    password: gtk::PasswordEntry,
     imap_host: gtk::Entry,
     imap_port: gtk::Entry,
     imap_security: gtk::DropDown,
     smtp_host: gtk::Entry,
     smtp_port: gtk::Entry,
     smtp_security: gtk::DropDown,
-    display_name_row: gtk::Box,
-    email_row: gtk::Box,
-    password_rows: gtk::Box,
-    advanced_rows: Vec<gtk::Box>,
-    oauth_help: gtk::Label,
-    gmail_steps: gtk::Box,
-    gmail_about: gtk::Box,
-    help: gtk::Button,
+    guide: gtk::Button,
+    /// Status and errors, under the password field.
+    problem_row: gtk::Box,
     status: gtk::Label,
+    fix: gtk::Button,
+    fix_url: RefCell<Option<String>>,
+    details: gtk::Expander,
+    details_text: gtk::Label,
     switch_to_app_password: gtk::Button,
     connect: gtk::Button,
+    /// Other: Advanced is offered once a first attempt failed.
+    advanced_offered: Cell<bool>,
     /// Choices with a request still running. Another choice can be used
     /// meanwhile; the same one cannot be submitted twice.
     in_flight: RefCell<HashSet<Choice>>,
-    /// How a request ended while another choice was on screen: the message
-    /// and whether it is a problem. Shown when that choice is selected again.
-    outcomes: RefCell<HashMap<Choice, (String, bool)>>,
+    /// How a request ended while another choice was on screen. Shown when
+    /// that choice is selected again.
+    outcomes: RefCell<HashMap<Choice, (String, Option<Problem>)>>,
     sign_in_failed: Cell<bool>,
 }
 
-fn row(title: &str, field: &impl IsA<gtk::Widget>) -> gtk::Box {
+const LABEL_WIDTH: i32 = 104;
+const FIELD_WIDTH: i32 = 340;
+
+fn row(title: &str, field: &impl IsA<gtk::Widget>) -> (gtk::Box, gtk::Label) {
     let row = gtk::Box::new(Orientation::Horizontal, 12);
     let label = gtk::Label::new(Some(title));
-    label.set_xalign(0.);
-    label.set_size_request(110, -1);
+    label.set_xalign(1.);
+    label.set_size_request(LABEL_WIDTH, -1);
     label.add_css_class("setup-label");
-    field.as_ref().set_size_request(345, -1);
+    field.as_ref().set_size_request(FIELD_WIDTH, -1);
     row.append(&label);
     row.append(field);
+    (row, label)
+}
+
+/// Lines a widget up with the fields.
+fn indented(widget: &impl IsA<gtk::Widget>) -> gtk::Box {
+    let row = gtk::Box::new(Orientation::Horizontal, 0);
+    row.set_margin_start(LABEL_WIDTH + 12);
+    row.append(widget);
     row
 }
 
@@ -350,7 +505,6 @@ fn link(title: &str, url: &'static str) -> gtk::Button {
     button.add_css_class("setup-link");
     button.set_tooltip_text(Some(url));
     button.set_halign(gtk::Align::Start);
-    button.set_valign(gtk::Align::Start);
     button.connect_clicked(move |_| open_url(url));
     button
 }
@@ -361,82 +515,43 @@ fn open_url(url: &str) {
     }
 }
 
-fn wrapped(text: &str, class: &str) -> gtk::Label {
+fn wrapped(text: &str, class: &str, width: i32) -> gtk::Label {
     let label = gtk::Label::new(Some(text));
     label.set_wrap(true);
     label.set_xalign(0.);
-    label.set_max_width_chars(72);
-    label.set_size_request(500, -1);
+    label.set_max_width_chars(60);
+    label.set_size_request(width, -1);
     label.add_css_class(class);
     label
 }
 
 /// Open the account window, transient for the mail window.
 pub(crate) fn present(ui: &Rc<Ui>) {
-    let features = &build_features(&ui.service);
-    let choices = available(features);
+    let features = build_features(&ui.service);
+    let choices = available(&features);
     let window = gtk::Window::builder()
         .transient_for(&ui.window)
         .modal(true)
-        .title("Connect an account")
-        .default_width(560)
+        .title(TITLE)
+        .default_width(520)
         .resizable(false)
         .build();
     window.add_css_class("account-setup");
+    // One title: the heading inside the window (macOS hides its title text).
+    let header = gtk::HeaderBar::new();
+    header.set_title_widget(Some(&gtk::Label::new(None)));
+    header.add_css_class("setup-header");
+    window.set_titlebar(Some(&header));
     let content = gtk::Box::new(Orientation::Vertical, 12);
-    content.set_margin_top(28);
+    content.set_margin_top(8);
     content.set_margin_bottom(24);
     content.set_margin_start(30);
     content.set_margin_end(30);
-    let headline = gtk::Label::new(Some("Add an email account"));
+    let headline = gtk::Label::new(Some(TITLE));
     headline.set_xalign(0.);
     headline.add_css_class("setup-headline");
+    headline.set_margin_bottom(6);
     content.append(&headline);
-    content.append(&wrapped(intro(features), "setup-intro"));
-    let chip_row = gtk::Box::new(Orientation::Horizontal, 8);
-    let buttons: Vec<(Choice, gtk::Button)> = choices
-        .iter()
-        .enumerate()
-        .map(|(index, choice)| {
-            let button = gtk::Button::with_label(choice.title(features));
-            button.add_css_class("provider-choice");
-            button.set_tooltip_text(Some(&format!(
-                "Choose {} (Ctrl+{})",
-                choice.title(features),
-                index + 1
-            )));
-            chip_row.append(&button);
-            (*choice, button)
-        })
-        .collect();
-    content.append(&chip_row);
-
-    // Gmail (app password): three numbered steps with direct links.
-    let gmail_steps = gtk::Box::new(Orientation::Vertical, 8);
-    if !features.google_oauth_public {
-        gmail_steps.append(&wrapped(GMAIL_SIGN_IN_COMING, "setup-coming"));
-    }
-    for (index, (text, target)) in GMAIL_STEPS.iter().enumerate() {
-        let line = gtk::Box::new(Orientation::Horizontal, 8);
-        let number = gtk::Label::new(Some(&(index + 1).to_string()));
-        number.add_css_class("setup-step-number");
-        number.set_size_request(14, -1);
-        number.set_valign(gtk::Align::Start);
-        let label = gtk::Label::new(Some(text));
-        label.set_wrap(true);
-        label.set_xalign(0.);
-        label.set_valign(gtk::Align::Start);
-        label.add_css_class("setup-step");
-        // Natural width, so the link follows the text as on macOS.
-        label.set_max_width_chars(if target.is_some() { 48 } else { 78 });
-        line.append(&number);
-        line.append(&label);
-        if let Some((title, url)) = target {
-            line.append(&link(title, url));
-        }
-        gmail_steps.append(&line);
-    }
-    content.append(&gmail_steps);
 
     let entry = |placeholder: &str| {
         let entry = gtk::Entry::new();
@@ -444,67 +559,135 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         entry.set_activates_default(true);
         entry
     };
-    let display_name = entry("Optional");
     let email = entry("you@example.com");
-    let username = entry("Usually your email address");
-    let smtp_username = entry("Leave blank to use the mail username");
+    email.set_input_purpose(gtk::InputPurpose::Email);
+    // The email field and the small provider menu under it sit close together.
+    let email_group = gtk::Box::new(Orientation::Vertical, 2);
+    email_group.append(&row("Email", &email).0);
+    content.append(&email_group);
+
+    // Small "Choose provider" control for custom domains on Google or Apple.
+    let provider_menu = gtk::MenuButton::new();
+    provider_menu.set_label(CHOOSE_PROVIDER);
+    provider_menu.add_css_class("setup-provider-menu");
+    provider_menu.set_tooltip_text(Some(&format!(
+        "Choose your provider by hand (Ctrl+1–Ctrl+{})",
+        choices.len()
+    )));
+    let menu_box = gtk::Box::new(Orientation::Vertical, 2);
+    let provider_items: Vec<(Choice, gtk::Button)> = choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            let item = gtk::Box::new(Orientation::Horizontal, 24);
+            let name = gtk::Label::new(Some(choice.title(&features)));
+            name.set_hexpand(true);
+            name.set_xalign(0.);
+            let key = gtk::Label::new(Some(&format!("Ctrl+{}", index + 1)));
+            key.add_css_class("setup-menu-key");
+            item.append(&name);
+            item.append(&key);
+            let button = gtk::Button::new();
+            button.set_child(Some(&item));
+            button.add_css_class("setup-menu-item");
+            menu_box.append(&button);
+            (*choice, button)
+        })
+        .collect();
+    let popover = gtk::Popover::new();
+    popover.set_child(Some(&menu_box));
+    popover.set_has_arrow(false);
+    provider_menu.set_popover(Some(&popover));
+    email_group.append(&indented(&provider_menu));
+
+    let intro = wrapped("", "setup-intro", 460);
+    intro.set_margin_top(4);
+    content.append(&intro);
+    let steps = gtk::Box::new(Orientation::Vertical, 2);
+    content.append(&steps);
+
     let password = gtk::PasswordEntry::new();
     password.set_activates_default(true);
+    let (password_row, password_label) = row("App password", &password);
+    content.append(&password_row);
+
+    // Status and errors sit right under the field they are about (macOS
+    // `problemRow`): one line, the fix link, the server's words behind Details.
+    let status = wrapped("", "setup-status", FIELD_WIDTH);
+    status.set_selectable(true);
+    let fix = gtk::Button::with_label("");
+    fix.add_css_class("setup-link");
+    fix.add_css_class("setup-fix");
+    fix.set_halign(gtk::Align::Start);
+    let details_text = wrapped("", "setup-details", FIELD_WIDTH);
+    details_text.set_selectable(true);
+    let details = gtk::Expander::new(Some("Details"));
+    details.add_css_class("setup-disclosure");
+    details.set_child(Some(&details_text));
+    let problem_box = gtk::Box::new(Orientation::Vertical, 3);
+    problem_box.append(&status);
+    problem_box.append(&fix);
+    problem_box.append(&details);
+    let problem_row = indented(&problem_box);
+    content.append(&problem_row);
+
+    let about_lines = gtk::Box::new(Orientation::Vertical, 4);
+    let about = gtk::Expander::new(None);
+    about.add_css_class("setup-disclosure");
+    about.set_child(Some(&about_lines));
+    content.append(&indented(&about));
+
+    let display_name = entry("Optional");
+    let username = entry("Usually your email address");
+    let smtp_username = entry("Same as the mail username");
     let imap_host = entry("imap.example.com");
     let imap_port = entry("993");
     let smtp_host = entry("smtp.example.com");
     let smtp_port = entry("587");
     let imap_security = gtk::DropDown::from_strings(&["TLS", "STARTTLS"]);
     let smtp_security = gtk::DropDown::from_strings(&["STARTTLS", "TLS"]);
-    let display_name_row = row("Display name", &display_name);
-    let email_row = row("Email address", &email);
-    content.append(&display_name_row);
-    content.append(&email_row);
-    let password_rows = gtk::Box::new(Orientation::Vertical, 10);
-    let mut advanced_rows = Vec::new();
+    let advanced_rows = gtk::Box::new(Orientation::Vertical, 8);
     for (title, widget) in [
-        ("Mail username", username.clone().upcast::<gtk::Widget>()),
-        ("SMTP username", smtp_username.clone().upcast()),
-        ("App password", password.clone().upcast()),
-        ("IMAP server", imap_host.clone().upcast()),
+        ("IMAP server", imap_host.clone().upcast::<gtk::Widget>()),
         ("IMAP port", imap_port.clone().upcast()),
         ("IMAP security", imap_security.clone().upcast()),
         ("SMTP server", smtp_host.clone().upcast()),
         ("SMTP port", smtp_port.clone().upcast()),
         ("SMTP security", smtp_security.clone().upcast()),
+        ("Mail username", username.clone().upcast()),
+        ("SMTP username", smtp_username.clone().upcast()),
+        ("Display name", display_name.clone().upcast()),
     ] {
-        let field_row = row(title, &widget);
-        password_rows.append(&field_row);
-        if title != "App password" {
-            advanced_rows.push(field_row);
-        }
+        advanced_rows.append(&row(title, &widget).0);
     }
-    content.append(&password_rows);
-    let oauth_help = wrapped(
-        "Sign-in opens on your provider's website. Email receives a revocable access token, never your account password.",
-        "setup-note",
-    );
-    content.append(&oauth_help);
-    let gmail_about = gtk::Box::new(Orientation::Vertical, 6);
-    gmail_about.append(&wrapped(GMAIL_ABOUT, "setup-note"));
-    gmail_about.append(&wrapped(&gmail_unavailable(features), "setup-note"));
-    content.append(&gmail_about);
-    let help = gtk::Button::with_label("How to get an app password");
-    help.add_css_class("setup-link");
-    help.set_halign(gtk::Align::Start);
-    content.append(&help);
-    let status = wrapped("", "setup-status");
-    status.set_selectable(true);
-    content.append(&status);
+    // Advanced: a disclosure above rows that line up with the other fields.
+    let advanced_icon = gtk::Image::from_icon_name("pan-end-symbolic");
+    let advanced_title = gtk::Box::new(Orientation::Horizontal, 4);
+    advanced_title.append(&advanced_icon);
+    advanced_title.append(&gtk::Label::new(Some("Advanced")));
+    let advanced = gtk::ToggleButton::new();
+    advanced.set_child(Some(&advanced_title));
+    advanced.add_css_class("setup-toggle");
+    content.append(&indented(&advanced));
+    content.append(&advanced_rows);
+
+    let guide_button = gtk::Button::with_label(GUIDE_LINK);
+    guide_button.add_css_class("setup-link");
+    guide_button.add_css_class("setup-guide");
+    content.append(&indented(&guide_button));
+
     let switch_to_app_password = gtk::Button::with_label("Use Gmail (app password) instead →");
     switch_to_app_password.add_css_class("setup-link");
     switch_to_app_password.add_css_class("setup-switch");
     switch_to_app_password.set_halign(gtk::Align::Start);
     content.append(&switch_to_app_password);
+    // Dialog buttons at the bottom right; Enter on the default button.
     let actions = gtk::Box::new(Orientation::Horizontal, 10);
+    actions.set_halign(gtk::Align::End);
+    actions.set_margin_top(8);
     let cancel = gtk::Button::with_label("Cancel");
     cancel.add_css_class("setup-button");
-    let connect = gtk::Button::with_label("Connect account");
+    let connect = gtk::Button::with_label("Continue");
     connect.add_css_class("setup-button");
     connect.add_css_class("setup-primary");
     actions.append(&cancel);
@@ -516,39 +699,55 @@ pub(crate) fn present(ui: &Rc<Ui>) {
     let setup = Rc::new(Setup {
         ui: Rc::downgrade(ui),
         window: window.clone(),
+        features,
         choices,
-        selected: Cell::new(Choice::Gmail),
-        buttons,
-        display_name,
+        selected: Cell::new(None),
+        picked_by_hand: Cell::new(false),
         email,
+        provider_menu,
+        provider_items,
+        intro,
+        steps,
+        password_row,
+        password_label,
+        password,
+        about,
+        about_lines,
+        advanced,
+        advanced_icon,
+        advanced_rows,
+        display_name,
         username,
         smtp_username,
-        password,
         imap_host,
         imap_port,
         imap_security,
         smtp_host,
         smtp_port,
         smtp_security,
-        display_name_row,
-        email_row,
-        password_rows,
-        advanced_rows,
-        oauth_help,
-        gmail_steps,
-        gmail_about,
-        help,
+        guide: guide_button,
+        problem_row,
         status,
+        fix,
+        fix_url: RefCell::new(None),
+        details,
+        details_text,
         switch_to_app_password,
         connect,
+        advanced_offered: Cell::new(false),
         in_flight: RefCell::new(HashSet::new()),
         outcomes: RefCell::new(HashMap::new()),
         sign_in_failed: Cell::new(false),
     });
-    for (choice, button) in &setup.buttons {
+    for (choice, button) in &setup.provider_items {
         let setup = setup.clone();
         let choice = *choice;
-        button.connect_clicked(move |_| setup.select(choice));
+        button.connect_clicked(move |_| {
+            if let Some(popover) = setup.provider_menu.popover() {
+                popover.popdown();
+            }
+            setup.choose(choice, true);
+        });
     }
     {
         let window = window.clone();
@@ -563,12 +762,18 @@ pub(crate) fn present(ui: &Rc<Ui>) {
     }
     {
         let setup = setup.clone();
-        setup.help.clone().connect_clicked(move |_| {
-            open_url(if setup.selected.get() == Choice::GmailAppPassword {
-                GMAIL_HELP_URL
-            } else {
-                ICLOUD_HELP_URL
-            });
+        setup.guide.clone().connect_clicked(move |_| {
+            if let Some(url) = guide_section(setup.selected.get()).and_then(guide_url) {
+                open_url(&url);
+            }
+        });
+    }
+    {
+        let setup = setup.clone();
+        setup.fix.clone().connect_clicked(move |_| {
+            if let Some(url) = setup.fix_url.borrow().as_deref() {
+                open_url(url);
+            }
         });
     }
     {
@@ -576,12 +781,30 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         setup
             .switch_to_app_password
             .clone()
-            .connect_clicked(move |_| {
-                setup.select(Choice::GmailAppPassword);
-                if !setup.email.text().is_empty() {
-                    setup.password.grab_focus();
-                }
-            });
+            .connect_clicked(move |_| setup.choose(Choice::GmailAppPassword, true));
+    }
+    {
+        let setup = setup.clone();
+        setup.advanced.clone().connect_toggled(move |_| setup.show_servers());
+    }
+    {
+        // Follow the address while the person hasn't chosen a provider by hand.
+        let setup = setup.clone();
+        setup.email.clone().connect_changed(move |entry| {
+            if setup.selected.get().is_none() || setup.picked_by_hand.get() {
+                return;
+            }
+            let address = entry.text().trim().to_string();
+            if !address.contains('@') {
+                return;
+            }
+            let next = setup.provider(&address);
+            if Some(next) != setup.selected.get() {
+                setup.selected.set(Some(next));
+                setup.advanced_offered.set(false);
+                setup.show_choice();
+            }
+        });
     }
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -589,7 +812,7 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         let setup = setup.clone();
         keys.connect_key_pressed(move |_, key, _, mods| {
             if key == gdk::Key::Escape {
-                // An open list (security menus) closes itself first, as on macOS.
+                // An open list (security menus, provider menu) closes itself first, as on macOS.
                 let in_popover = gtk::prelude::GtkWindowExt::focus(&setup.window)
                     .and_then(|focus| focus.ancestor(gtk::Popover::static_type()))
                     .is_some();
@@ -614,7 +837,7 @@ pub(crate) fn present(ui: &Rc<Ui>) {
                     .and_then(|d| d.checked_sub(1))
                     .and_then(|i| setup.choices.get(i))
                 {
-                    setup.select(*choice);
+                    setup.choose(*choice, true);
                     return glib::Propagation::Stop;
                 }
             }
@@ -622,122 +845,237 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         });
     }
     window.add_controller(keys);
-    setup.select(initial(features, oauth_client_id(Choice::Gmail).is_some()));
+    setup.show_choice();
     window.present();
+    setup.email.grab_focus();
 }
 
 impl Setup {
-    fn select(&self, choice: Choice) {
-        let choice = if self.choices.contains(&choice) {
+    /// The provider for the typed address, asked of the engine (no network).
+    fn provider(&self, address: &str) -> Choice {
+        let answer = self.ui.upgrade().and_then(|ui| {
+            ui.service
+                .request_json(&json!({"op": "setup_provider", "email": address}).to_string())
+                .ok()
+        });
+        let provider = answer
+            .as_ref()
+            .and_then(|value| value["provider"].as_str())
+            .unwrap_or("other");
+        for_provider(provider, &self.features, oauth_client_id(Choice::Gmail).is_some())
+    }
+
+    fn choose(&self, choice: Choice, by_hand: bool) {
+        let next = if self.choices.contains(&choice) {
             choice
         } else {
-            *self.choices.first().unwrap_or(&Choice::Other)
+            *self.choices.last().unwrap_or(&Choice::Other)
         };
-        self.selected.set(choice);
-        self.sign_in_failed.set(false);
-        self.password.set_text("");
-        for (option, button) in &self.buttons {
-            if *option == choice {
+        if by_hand {
+            self.picked_by_hand.set(true);
+        }
+        if Some(next) != self.selected.get() {
+            self.selected.set(Some(next));
+            self.password.set_text("");
+            self.sign_in_failed.set(false);
+            self.advanced_offered.set(false);
+            self.advanced.set_active(false);
+            self.show_choice();
+        }
+        let outcome = self.outcomes.borrow_mut().remove(&next);
+        match outcome {
+            Some((_, Some(problem))) => {
+                self.sign_in_failed.set(next == Choice::Gmail);
+                self.show_problem(&problem);
+            }
+            Some((message, None)) => self.show_status(&message),
+            None => {}
+        }
+        if next.uses_password() {
+            if self.email.text().contains('@') {
+                self.password.grab_focus();
+            } else {
+                self.email.grab_focus();
+            }
+        } else {
+            self.connect.grab_focus();
+        }
+    }
+
+    /// Show what the current choice needs; nothing else (macOS `showChoice`).
+    fn show_choice(&self) {
+        let choice = self.selected.get();
+        let guide = guide(choice);
+        for (option, button) in &self.provider_items {
+            if Some(*option) == choice {
                 button.add_css_class("active");
             } else {
                 button.remove_css_class("active");
             }
         }
-        let uses_password = choice.uses_password();
-        self.password_rows.set_visible(uses_password);
-        for advanced in &self.advanced_rows {
-            advanced.set_visible(choice == Choice::Other);
-        }
-        self.oauth_help.set_visible(!uses_password);
-        self.email_row.set_visible(uses_password);
-        self.display_name_row.set_visible(choice == Choice::Other);
-        self.gmail_steps
-            .set_visible(choice == Choice::GmailAppPassword);
-        self.gmail_about
-            .set_visible(choice == Choice::GmailAppPassword);
-        self.help
-            .set_visible(matches!(choice, Choice::Icloud | Choice::GmailAppPassword));
-        self.help.set_label(if choice == Choice::GmailAppPassword {
-            "Learn more about app passwords ↗"
-        } else {
-            "Get an iCloud app password ↗"
+        self.intro.set_visible(choice.is_some());
+        self.intro.set_text(match (guide, choice) {
+            (Some(guide), _) => guide.intro,
+            (None, Some(Choice::Other)) => OTHER_INTRO,
+            (None, Some(choice)) => oauth_intro(choice),
+            (None, None) => "",
         });
-        let set_servers = |imap: &str,
-                           imap_port: &str,
-                           imap_tls: bool,
-                           smtp: &str,
-                           smtp_port: &str,
-                           smtp_tls: bool| {
-            self.imap_host.set_text(imap);
-            self.imap_port.set_text(imap_port);
-            self.imap_security
-                .set_selected(if imap_tls { 0 } else { 1 });
-            self.smtp_host.set_text(smtp);
-            self.smtp_port.set_text(smtp_port);
-            self.smtp_security
-                .set_selected(if smtp_tls { 1 } else { 0 });
-        };
+        while let Some(child) = self.steps.first_child() {
+            self.steps.remove(&child);
+        }
+        for (index, (text, url)) in guide.map(|g| g.steps).unwrap_or_default().iter().enumerate() {
+            let line = gtk::Box::new(Orientation::Horizontal, 6);
+            let number = gtk::Label::new(Some(&format!("{}.", index + 1)));
+            number.add_css_class("setup-step-number");
+            number.set_size_request(18, -1);
+            number.set_xalign(1.);
+            line.append(&number);
+            match url {
+                Some(url) => line.append(&link(text, url)),
+                None => {
+                    let label = gtk::Label::new(Some(text));
+                    label.add_css_class("setup-step");
+                    line.append(&label);
+                }
+            }
+            self.steps.append(&line);
+        }
+        self.steps.set_visible(guide.is_some());
+        let uses_password = choice.is_some_and(Choice::uses_password);
+        self.password_row.set_visible(uses_password);
+        self.password_label
+            .set_text(guide.map_or("Password", |g| g.field_label));
+        self.password
+            .set_placeholder_text(Some(guide.map_or("", |g| g.placeholder)));
+        if let Some(parent) = self.about.parent() {
+            parent.set_visible(guide.is_some());
+        }
+        self.about.set_label(Some(guide.map_or("", |g| g.disclosure)));
+        self.about.set_expanded(false);
+        while let Some(child) = self.about_lines.first_child() {
+            self.about_lines.remove(&child);
+        }
+        for line in guide.map(|g| g.about).unwrap_or_default() {
+            self.about_lines
+                .append(&wrapped(line, "setup-note", FIELD_WIDTH));
+        }
+        let guide_link = guide_section(choice).and_then(guide_url);
+        if let Some(parent) = self.guide.parent() {
+            parent.set_visible(guide_link.is_some());
+        }
+        self.guide.set_tooltip_text(guide_link.as_deref());
+        self.show_servers();
         match choice {
-            Choice::Icloud => {
-                set_servers(
-                    "imap.mail.me.com",
-                    "993",
-                    true,
-                    "smtp.mail.me.com",
-                    "587",
-                    false,
-                );
-                self.email.set_placeholder_text(Some("you@icloud.com"));
-                self.password
-                    .set_placeholder_text(Some("iCloud app-specific password"));
+            None => {
+                self.connect.set_label("Continue");
+                self.connect.set_sensitive(true);
             }
-            Choice::GmailAppPassword => {
-                self.email.set_placeholder_text(Some("you@gmail.com"));
-                self.password
-                    .set_placeholder_text(Some("abcd efgh ijkl mnop"));
+            Some(choice) => {
+                self.connect.set_label(if uses_password {
+                    "Add account"
+                } else {
+                    "Sign in with browser"
+                });
+                let ready = uses_password || oauth_client_id(choice).is_some();
+                self.connect
+                    .set_sensitive(ready && !self.in_flight.borrow().contains(&choice));
             }
-            Choice::Other => {
-                set_servers("", "993", true, "", "587", false);
-                self.email.set_placeholder_text(Some("you@example.com"));
-                self.password
-                    .set_placeholder_text(Some("Provider-issued app password"));
-            }
-            Choice::Gmail | Choice::Outlook => {}
         }
-        self.connect.set_label(if uses_password {
-            "Add account"
-        } else {
-            "Sign in with browser"
-        });
-        let oauth_ready = uses_password || oauth_client_id(choice).is_some();
-        let running = self.in_flight.borrow().contains(&choice);
-        self.connect.set_sensitive(oauth_ready && !running);
-        self.status.remove_css_class("setup-problem");
-        self.status.set_text(if running {
-            "Still connecting…"
-        } else {
-            status_text(choice, oauth_ready)
-        });
+        self.clear_problem();
+        if let Some(choice) = choice {
+            if self.in_flight.borrow().contains(&choice) {
+                self.show_status("Still connecting…");
+            } else if !choice.uses_password() && oauth_client_id(choice).is_none() {
+                self.show_status(if choice == Choice::Gmail {
+                    "Google sign-in isn't configured in this build. Use Gmail (app password) instead."
+                } else {
+                    "Sign-in isn't configured in this build yet."
+                });
+            }
+        }
         self.update_switch(false);
-        let outcome = self.outcomes.borrow_mut().remove(&choice);
-        match outcome {
-            Some((message, true)) => {
-                self.sign_in_failed.set(choice == Choice::Gmail);
-                self.problem(&message);
+    }
+
+    fn clear_problem(&self) {
+        self.problem_row.set_visible(false);
+        self.status.set_text("");
+        self.status.remove_css_class("setup-problem");
+        self.status.set_visible(false);
+        self.fix.set_visible(false);
+        self.fix_url.borrow_mut().take();
+        self.details.set_visible(false);
+        self.details.set_expanded(false);
+        self.details_text.set_text("");
+    }
+
+    fn show_status(&self, message: &str) {
+        self.clear_problem();
+        self.status.set_text(message);
+        self.status.set_visible(!message.is_empty());
+        self.problem_row.set_visible(!message.is_empty());
+    }
+
+    /// One line, a fix link if there is one, and the server's words behind Details.
+    fn show_problem(&self, problem: &Problem) {
+        self.clear_problem();
+        self.problem_row.set_visible(true);
+        // The explanation stays closed so the error sits right under the field.
+        self.about.set_expanded(false);
+        self.status.set_text(&problem.message);
+        self.status.add_css_class("setup-problem");
+        self.status.set_visible(true);
+        if let Some((label, url)) = &problem.action {
+            self.fix.set_label(&format!("{label} ↗"));
+            self.fix.set_tooltip_text(Some(url));
+            *self.fix_url.borrow_mut() = Some(url.clone());
+            self.fix.set_visible(true);
+        }
+        self.details_text.set_text(&problem.detail);
+        self.details.set_visible(!problem.detail.is_empty());
+        if self.selected.get() == Some(Choice::Other) {
+            self.advanced_offered.set(true);
+            if let Some(servers) = &problem.servers {
+                self.imap_host.set_text(&servers.imap_host);
+                self.imap_port.set_text(&servers.imap_port);
+                self.imap_security
+                    .set_selected(if servers.imap_tls { 0 } else { 1 });
+                self.smtp_host.set_text(&servers.smtp_host);
+                self.smtp_port.set_text(&servers.smtp_port);
+                self.smtp_security
+                    .set_selected(if servers.smtp_tls { 1 } else { 0 });
+                self.advanced.set_active(true);
             }
-            Some((message, false)) => self.status.set_text(&message),
-            None => {}
+            self.show_servers();
         }
-        if uses_password {
-            self.email.grab_focus();
+        self.update_switch(false);
+    }
+
+    /// Other's server rows: offered after a failed attempt, open when the
+    /// guess failed or the person opens Advanced.
+    fn servers_shown(&self) -> bool {
+        self.selected.get() == Some(Choice::Other)
+            && self.advanced_offered.get()
+            && self.advanced.is_active()
+    }
+
+    fn show_servers(&self) {
+        let offered = self.selected.get() == Some(Choice::Other) && self.advanced_offered.get();
+        if let Some(parent) = self.advanced.parent() {
+            parent.set_visible(offered);
         }
+        self.advanced_rows.set_visible(self.servers_shown());
+        self.advanced_icon.set_icon_name(Some(if self.advanced.is_active() {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        }));
     }
 
     /// Offer the app-password path wherever Google sign-in may not work for this person.
     fn update_switch(&self, waiting: bool) {
         let unconfigured = oauth_client_id(Choice::Gmail).is_none();
         self.switch_to_app_password.set_visible(
-            self.selected.get() == Choice::Gmail
+            self.selected.get() == Some(Choice::Gmail)
                 && (unconfigured || waiting || self.sign_in_failed.get()),
         );
     }
@@ -749,6 +1087,7 @@ impl Setup {
             username: self.username.text().to_string(),
             smtp_username: self.smtp_username.text().to_string(),
             password: self.password.text().to_string(),
+            servers_shown: self.servers_shown(),
             imap_host: self.imap_host.text().to_string(),
             imap_port: self.imap_port.text().to_string(),
             imap_tls: self.imap_security.selected() == 0,
@@ -759,33 +1098,33 @@ impl Setup {
     }
 
     fn refresh_connect(&self) {
-        let choice = self.selected.get();
+        let Some(choice) = self.selected.get() else { return };
         let ready = choice.uses_password() || oauth_client_id(choice).is_some();
         self.connect
             .set_sensitive(ready && !self.in_flight.borrow().contains(&choice));
     }
 
-    fn problem(&self, message: &str) {
-        self.status.set_text(message);
-        self.status.add_css_class("setup-problem");
-        self.update_switch(false);
-    }
-
     fn connect_clicked(self: &Rc<Self>) {
-        let choice = self.selected.get();
+        let Some(choice) = self.selected.get() else {
+            // Email first: the address decides which steps to show.
+            let address = self.email.text().trim().to_string();
+            if !address.contains('@') {
+                return self.show_problem(&Problem::plain(ENTER_EMAIL));
+            }
+            let choice = self.provider(&address);
+            return self.choose(choice, false);
+        };
         if self.in_flight.borrow().contains(&choice) {
             return;
         }
         let payload = if choice.uses_password() {
-            let google_sign_in =
-                self.choices.contains(&Choice::Gmail) && oauth_client_id(Choice::Gmail).is_some();
-            match imap_payload(choice, &self.form(), google_sign_in) {
+            match imap_payload(choice, &self.form()) {
                 Ok(payload) => payload,
-                Err(message) => return self.problem(message),
+                Err(message) => return self.show_problem(&Problem::plain(message)),
             }
         } else {
             let Some(client_id) = oauth_client_id(choice) else {
-                return self.problem("Sign-in isn't configured in this build yet.");
+                return self.show_problem(&Problem::plain("Sign-in isn't configured in this build yet."));
             };
             let provider = if choice == Choice::Gmail {
                 "gmail"
@@ -802,10 +1141,10 @@ impl Setup {
         let Some(ui) = self.ui.upgrade() else { return };
         self.in_flight.borrow_mut().insert(choice);
         self.connect.set_sensitive(false);
-        self.status.remove_css_class("setup-problem");
-        self.status.set_text(match choice {
+        self.show_status(match choice {
             Choice::GmailAppPassword => "Connecting to Gmail…",
-            Choice::Icloud | Choice::Other => "Checking your mail server…",
+            Choice::Icloud => "Connecting to iCloud…",
+            Choice::Other => "Checking your mail server…",
             Choice::Gmail => "Waiting for browser sign-in… If Google shows “Access blocked”, close that tab and use an app password.",
             Choice::Outlook => "Waiting for browser sign-in…",
         });
@@ -813,8 +1152,21 @@ impl Setup {
         let (sender, receiver) = mpsc::channel();
         let path = ui.database_path.clone();
         thread::spawn(move || {
-            let result = MailService::open(path)
-                .and_then(|service| service.request_json(&payload.to_string()));
+            let result = match MailService::open(path) {
+                Ok(service) => {
+                    let envelope = service.request_envelope(&payload.to_string());
+                    if envelope["ok"] == true {
+                        Ok(envelope["data"].clone())
+                    } else {
+                        Err(Problem::from_envelope(&envelope))
+                    }
+                }
+                Err(error) => Err(Problem {
+                    code: "other".into(),
+                    message: error,
+                    ..Problem::default()
+                }),
+            };
             let _ = sender.send(result);
         });
         let setup = self.clone();
@@ -822,10 +1174,12 @@ impl Setup {
             let result = match receiver.try_recv() {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
-                Err(mpsc::TryRecvError::Disconnected) => Err("The mail engine stopped.".into()),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(Problem::plain("The mail engine stopped."))
+                }
             };
             setup.in_flight.borrow_mut().remove(&choice);
-            let elsewhere = setup.selected.get() != choice;
+            let elsewhere = setup.selected.get() != Some(choice);
             match result {
                 Ok(account) => {
                     if elsewhere {
@@ -837,7 +1191,7 @@ impl Setup {
                         setup
                             .outcomes
                             .borrow_mut()
-                            .insert(choice, (connected, false));
+                            .insert(choice, (connected, None));
                         setup.refresh_connect();
                     } else {
                         setup.password.set_text("");
@@ -849,13 +1203,16 @@ impl Setup {
                     }
                 }
                 // Another choice is on screen: keep the message for when it returns.
-                Err(message) if elsewhere => {
-                    setup.outcomes.borrow_mut().insert(choice, (message, true));
+                Err(problem) if elsewhere => {
+                    setup
+                        .outcomes
+                        .borrow_mut()
+                        .insert(choice, (problem.message.clone(), Some(problem)));
                     setup.refresh_connect();
                 }
-                Err(message) => {
+                Err(problem) => {
                     setup.sign_in_failed.set(choice == Choice::Gmail);
-                    setup.problem(&message);
+                    setup.show_problem(&problem);
                     setup.connect.set_sensitive(true);
                 }
             }
@@ -868,22 +1225,37 @@ impl Setup {
 /// equals `@selected`; `accent` matches `@ink`).
 pub(crate) const CSS: &str = r#"
 .account-setup { background: @canvas; color: @ink; }
+/* The header bar makes this window client-side decorated. GTK frames such
+   windows in the base theme's light colors: a white 4px band without a
+   compositor (solid-csd), a light outline with one. Use the app's line
+   color instead, like the macOS window's hairline. */
+window.account-setup.solid-csd { padding: 0; border: 1px solid @line; border-radius: 0; box-shadow: none; outline: none; }
+window.account-setup.csd:not(.solid-csd) { outline: none; box-shadow: 0 3px 12px 1px rgba(0, 0, 0, 0.3), 0 0 0 1px @line; }
+.setup-header { background: @canvas; box-shadow: none; border: none; min-height: 30px; }
 .setup-headline { font-size: 20px; font-weight: 600; }
-.setup-intro { font-size: 12px; color: @secondary; }
-.setup-label { font-size: 12px; font-weight: 500; }
-.setup-note { font-size: 11px; color: @secondary; }
-.setup-coming { font-size: 12px; color: @secondary; }
-.setup-status { font-size: 12px; color: @secondary; }
+.setup-intro { font-size: 13px; font-weight: 500; }
+.setup-label { font-size: 13px; }
+.setup-note { font-size: 12px; color: @secondary; }
+.setup-status { font-size: 13px; color: @secondary; }
 .setup-status.setup-problem { color: @problem; }
-.provider-choice { background: alpha(@ink, 0.05); color: @ink; border-radius: 8px; min-height: 34px; min-width: 76px; padding: 0 12px; font-size: 12px; font-weight: 500; }
-.provider-choice.active { background: @selected; font-weight: 600; box-shadow: inset 0 0 0 2px @ink; }
-.setup-link { background: transparent; color: @ink; padding: 2px 0; min-height: 0; font-size: 12px; }
+.setup-details { font-size: 11px; font-family: monospace; color: @secondary; }
+.setup-provider-menu > button { background: transparent; color: @muted; font-size: 11px; padding: 0 2px; min-height: 0; box-shadow: none; border: none; }
+.setup-menu-item { background: transparent; border: none; border-radius: 5px; padding: 4px 8px; }
+.setup-menu-item:hover, .setup-menu-item.active { background: @selected; }
+.setup-menu-key { color: @muted; font-size: 11px; }
+.setup-link { background: transparent; color: @link; padding: 1px 0; min-height: 0; font-size: 13px; border: none; box-shadow: none; }
 .setup-link:hover { text-decoration: underline; background: transparent; }
-.setup-step { font-size: 12px; }
-.setup-step-number { font-size: 12px; font-weight: 600; font-feature-settings: "tnum"; }
-.setup-switch { font-weight: 600; }
-.setup-button { border: 1px solid @line; padding: 4px 14px; }
-.setup-primary { background: @selected; font-weight: 600; }
+.setup-guide { font-size: 12px; }
+.setup-fix { font-weight: 500; }
+.setup-disclosure title, .setup-toggle { color: @secondary; font-size: 12px; }
+.setup-toggle { background: transparent; border: none; box-shadow: none; padding: 0; min-height: 0; }
+.setup-toggle:checked { background: transparent; }
+.setup-step { font-size: 13px; }
+.setup-step-number { font-size: 13px; color: @secondary; font-feature-settings: "tnum"; }
+.setup-switch { font-weight: 600; font-size: 12px; }
+.setup-button { border: 1px solid @line; padding: 4px 14px; min-height: 26px; }
+.setup-primary { background: @ink; color: @canvas; border-color: @ink; font-weight: 600; }
+.setup-primary label { color: @canvas; }
 .setup-button:disabled { opacity: 0.45; }
 "#;
 
@@ -909,15 +1281,16 @@ mod tests {
         }
     }
 
-    fn gmail_form(password: &str) -> Form {
+    fn form(email: &str, password: &str) -> Form {
         // Hidden server fields left over from another choice must not travel.
         Form {
-            email: " person@gmail.example ".into(),
+            email: email.into(),
             password: password.into(),
             imap_host: "imap.example.com".into(),
             imap_port: "143".into(),
             smtp_host: "smtp.example.com".into(),
             smtp_port: "25".into(),
+            username: "someone.else@example.com".into(),
             ..Form::default()
         }
     }
@@ -933,152 +1306,183 @@ mod tests {
         // Development builds keep Google sign-in exactly as before.
         assert_eq!(
             titles(&development()),
-            [
-                "Gmail",
-                "Gmail (app password)",
-                "iCloud",
-                "Outlook",
-                "Other"
-            ]
+            ["Gmail", "Gmail (app password)", "iCloud", "Outlook", "Other"]
         );
-        assert_eq!(initial(&development(), true), Choice::Gmail);
-        assert_eq!(
-            initial(&development(), false),
-            Choice::GmailAppPassword,
-            "no Google client configured"
-        );
-        // Official release before Google's review passes (the default).
         let before = distribution(false);
         assert_eq!(
             available(&before),
             [Choice::GmailAppPassword, Choice::Icloud, Choice::Other]
         );
         assert_eq!(titles(&before), ["Gmail", "iCloud", "Other"]);
-        assert_eq!(
-            initial(&before, true),
-            Choice::GmailAppPassword,
-            "even with a client configured"
-        );
-        assert_eq!(
-            intro(&before),
-            "Gmail and iCloud connect with a password created for this app. Never enter your main account password here."
-        );
-        assert!(gmail_unavailable(&before).ends_with("wait for one-click Google sign-in."));
-        // After maintainers set GOOGLE_OAUTH_PUBLIC=true in the official profile.
         let after = distribution(true);
-        assert_eq!(
-            titles(&after),
-            ["Gmail", "Gmail (app password)", "iCloud", "Other"]
-        );
-        assert!(!intro(&after).contains("Outlook"));
-        assert!(
-            gmail_unavailable(&after)
-                .ends_with("Use Gmail sign-in instead, or ask your administrator.")
-        );
-        assert_eq!(
-            BuildFeatures::from_response(None),
-            BuildFeatures::restricted()
-        );
+        assert_eq!(titles(&after), ["Gmail", "Gmail (app password)", "iCloud", "Other"]);
+        assert_eq!(BuildFeatures::from_response(None), BuildFeatures::restricted());
         assert!(!BuildFeatures::restricted().google_oauth_public);
     }
 
     #[test]
-    fn steps_link_directly_to_google_pages() {
-        let links: Vec<_> = GMAIL_STEPS
-            .iter()
-            .filter_map(|(_, target)| target.map(|(_, url)| url))
-            .collect();
+    fn the_address_chooses_the_provider_as_on_macos() {
+        let official = distribution(false);
+        assert_eq!(for_provider("gmail", &official, true), Choice::GmailAppPassword);
+        assert_eq!(for_provider("gmail", &development(), true), Choice::Gmail);
         assert_eq!(
-            links,
+            for_provider("gmail", &development(), false),
+            Choice::GmailAppPassword,
+            "no Google client configured"
+        );
+        assert_eq!(for_provider("icloud", &official, false), Choice::Icloud);
+        assert_eq!(for_provider("outlook", &official, false), Choice::Other);
+        assert_eq!(for_provider("outlook", &development(), false), Choice::Outlook);
+        assert_eq!(for_provider("other", &official, false), Choice::Other);
+    }
+
+    #[test]
+    fn copy_matches_macos_and_never_mentions_a_google_review() {
+        assert_eq!(GMAIL.intro, "Gmail needs an app password.");
+        assert_eq!(
+            GMAIL.steps.map(|(text, _)| text),
+            ["Turn on 2-Step Verification ↗", "Create an app password ↗", "Paste it below"]
+        );
+        assert_eq!(
+            GMAIL.steps.iter().filter_map(|(_, url)| *url).collect::<Vec<_>>(),
             [
                 "https://myaccount.google.com/signinoptions/twosv",
                 "https://myaccount.google.com/apppasswords"
             ]
         );
-        assert!(
-            GMAIL_ABOUT.contains("revoke")
-                && gmail_unavailable(&development()).contains("security keys")
-        );
+        assert_eq!(GMAIL.placeholder, "16 letters, spaces are fine");
+        assert_eq!(ICLOUD.steps[0].1, Some("https://account.apple.com/"));
+        for guide in [&GMAIL, &ICLOUD] {
+            assert!(guide.about[0].contains("Secret Service"));
+            for text in guide.about.iter().chain([&guide.intro]) {
+                assert!(!text.contains("review") && !text.contains("Never enter"), "{text}");
+            }
+        }
+        // Visible before any disclosure: about 40 words for Gmail.
+        let visible = [TITLE, "Email", CHOOSE_PROVIDER, GMAIL.intro, GMAIL.field_label, GMAIL.placeholder, GMAIL.disclosure, GUIDE_LINK, "Cancel", "Add account"]
+            .into_iter()
+            .chain(GMAIL.steps.map(|(text, _)| text))
+            .map(|text| text.split_whitespace().count())
+            .sum::<usize>();
+        assert!(visible <= 45, "{visible} words");
+    }
+
+    #[test]
+    fn guide_links_only_in_builds_with_our_support_channel() {
+        // Tests build the neutral profile, which has no support channel.
         assert_eq!(
-            GMAIL_SIGN_IN_COMING,
-            "One-click Google sign-in is coming once Google finishes reviewing the app."
+            guide_url("gmail").is_some(),
+            mail_service::profile::setup_guide_url().is_some()
         );
+        if let Some(url) = guide_url("icloud") {
+            assert_eq!(url, "https://ycorplabs.com/email/guide/#icloud");
+        }
     }
 
     #[test]
     fn gmail_app_password_payload_matches_the_macos_request() {
-        let payload = imap_payload(
-            Choice::GmailAppPassword,
-            &gmail_form("abcd efgh ijkl mnop"),
-            false,
-        )
-        .unwrap();
+        let payload =
+            imap_payload(Choice::GmailAppPassword, &form(" person@gmail.example ", "abcd efgh ijkl mnop")).unwrap();
         assert_eq!(
             payload,
             json!({
                 "op": "add_imap_account", "provider": "imap", "preset": "gmail",
                 "email": "person@gmail.example", "display_name": "person@gmail.example",
                 "username": "person@gmail.example", "smtp_username": "person@gmail.example",
-                "password": "abcd efgh ijkl mnop", "google_sign_in": false,
+                "password": "abcd efgh ijkl mnop",
             })
         );
         assert_eq!(
-            imap_payload(Choice::GmailAppPassword, &gmail_form("  "), false).unwrap_err(),
+            imap_payload(Choice::GmailAppPassword, &form("person@gmail.example", "  ")).unwrap_err(),
             "Enter your Gmail address and the 16-letter app password from step 2."
         );
     }
 
     #[test]
-    fn icloud_payload_keeps_its_existing_login_rules() {
-        let form = Form {
-            email: "person@icloud.com".into(),
-            password: "app-specific".into(),
-            imap_host: "imap.mail.me.com".into(),
-            imap_port: "993".into(),
-            imap_tls: true,
-            smtp_host: "smtp.mail.me.com".into(),
-            smtp_port: "587".into(),
-            smtp_tls: false,
-            ..Form::default()
-        };
-        let payload = imap_payload(Choice::Icloud, &form, true).unwrap();
-        assert_eq!(payload["provider"], "icloud");
-        assert_eq!(payload["username"], "person");
-        // A username typed under Other (hidden for iCloud) never travels.
-        let stale = Form {
-            username: "bob@example.com".into(),
-            ..form.clone()
-        };
+    fn icloud_payload_leaves_servers_and_username_to_the_engine() {
+        let payload = imap_payload(Choice::Icloud, &form("person@icloud.com", "abcd-efgh-ijkl-mnop")).unwrap();
         assert_eq!(
-            imap_payload(Choice::Icloud, &stale, true).unwrap()["username"],
-            "person"
+            payload,
+            json!({
+                "op": "add_imap_account", "provider": "icloud", "email": "person@icloud.com",
+                "display_name": "person@icloud.com", "password": "abcd-efgh-ijkl-mnop",
+            })
         );
-        assert_eq!(payload["smtp_security"], "start_tls");
-        assert!(payload.get("smtp_username").is_none());
-        assert!(payload.get("preset").is_none());
+        assert_eq!(
+            imap_payload(Choice::Icloud, &form("person", "x")).unwrap_err(),
+            "Enter your iCloud address and app-specific password."
+        );
     }
 
     #[test]
-    fn other_payload_ignores_spaces_around_servers_and_ports() {
+    fn other_sends_servers_only_once_they_are_shown() {
+        let hidden = form("person@example.com", "secret");
+        assert_eq!(
+            imap_payload(Choice::Other, &hidden).unwrap(),
+            json!({
+                "op": "add_imap_account", "provider": "imap", "email": "person@example.com",
+                "display_name": "person@example.com", "password": "secret",
+            }),
+            "the engine guesses the servers"
+        );
         // Same rule as macOS (`AccountSetupWindow.imapPayload`).
-        let form = Form {
-            email: "person@example.com".into(),
-            password: "secret".into(),
+        let shown = Form {
+            servers_shown: true,
+            username: String::new(),
             imap_host: " imap.example.com ".into(),
             imap_port: " 993 ".into(),
             imap_tls: true,
             smtp_host: "smtp.example.com".into(),
             smtp_port: "587 ".into(),
-            ..Form::default()
+            ..hidden
         };
-        let payload = imap_payload(Choice::Other, &form, false).unwrap();
+        let payload = imap_payload(Choice::Other, &shown).unwrap();
         assert_eq!(payload["imap_host"], "imap.example.com");
         assert_eq!(payload["imap_port"], 993);
         assert_eq!(payload["smtp_port"], 587);
+        assert_eq!(payload["username"], "person@example.com");
+        assert_eq!(payload["smtp_username"], "person@example.com");
         let blank = Form {
             imap_host: "   ".into(),
-            ..form
+            ..shown
         };
-        assert!(imap_payload(Choice::Other, &blank, false).is_err());
+        assert!(imap_payload(Choice::Other, &blank).is_err());
+    }
+
+    #[test]
+    fn problems_come_from_the_envelope_with_only_web_links() {
+        let envelope = json!({"ok": false, "error": "That looks like your Google password.", "setup_error": {
+            "code": "google_password", "message": "That looks like your Google password.",
+            "action": {"label": "Create an app password instead", "url": "https://myaccount.google.com/apppasswords"},
+            "detail": "imap.gmail.com:993 said: …", "servers": null}});
+        let problem = Problem::from_envelope(&envelope);
+        assert_eq!(problem.code, "google_password");
+        assert_eq!(
+            problem.action,
+            Some((
+                "Create an app password instead".into(),
+                "https://myaccount.google.com/apppasswords".into()
+            ))
+        );
+        assert_eq!(problem.detail, "imap.gmail.com:993 said: …");
+        let unsafe_link = json!({"ok": false, "error": "x", "setup_error": {"code": "x", "message": "x",
+            "action": {"label": "Open", "url": "file:///etc/passwd"}, "detail": ""}});
+        assert_eq!(Problem::from_envelope(&unsafe_link).action, None);
+        let servers = json!({"ok": false, "error": "x", "setup_error": {"code": "servers_not_found", "message": "x",
+            "detail": "d", "servers": {"imap_host": "imap.example.org", "imap_port": 993, "imap_security": "implicit_tls",
+            "smtp_host": "smtp.example.org", "smtp_port": 587, "smtp_security": "start_tls", "known": false}}});
+        assert_eq!(
+            Problem::from_envelope(&servers).servers,
+            Some(Servers {
+                imap_host: "imap.example.org".into(),
+                imap_port: "993".into(),
+                imap_tls: true,
+                smtp_host: "smtp.example.org".into(),
+                smtp_port: "587".into(),
+                smtp_tls: false,
+            })
+        );
+        let plain = Problem::from_envelope(&json!({"ok": false, "error": "valid email required"}));
+        assert_eq!((plain.code.as_str(), plain.message.as_str()), ("other", "valid email required"));
     }
 }

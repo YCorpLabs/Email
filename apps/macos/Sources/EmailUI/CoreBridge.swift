@@ -83,7 +83,51 @@ private final class BuildFeatureCache: @unchecked Sendable {
 
 struct MailServiceError: LocalizedError, Sendable {
     let message: String
+    /// Set when `add_imap_account` failed: the engine's one-line explanation,
+    /// fix link and server details (`setup_error`, docs/service-api.md).
+    var setupProblem: SetupProblem? = nil
     var errorDescription: String? { message }
+}
+
+/// Server settings the engine guessed for an address (`servers` in `setup_error`).
+struct ServerGuess: Sendable, Equatable {
+    let imapHost: String, imapPort: Int, imapImplicitTLS: Bool
+    let smtpHost: String, smtpPort: Int, smtpImplicitTLS: Bool
+
+    init?(_ value: Any?) {
+        guard let value = value as? [String: Any],
+              let imapHost = value["imap_host"] as? String, let imapPort = value["imap_port"] as? Int,
+              let smtpHost = value["smtp_host"] as? String, let smtpPort = value["smtp_port"] as? Int else { return nil }
+        self.imapHost = imapHost; self.imapPort = imapPort
+        imapImplicitTLS = value["imap_security"] as? String != "start_tls"
+        self.smtpHost = smtpHost; self.smtpPort = smtpPort
+        smtpImplicitTLS = value["smtp_security"] as? String == "implicit_tls"
+    }
+}
+
+/// An account-setup failure as the engine explains it. Linux reads the same
+/// object (`apps/linux/src/account_setup.rs`).
+struct SetupProblem: Sendable, Equatable {
+    let code: String
+    let message: String
+    let actionLabel: String?
+    let actionURL: URL?
+    let detail: String
+    let servers: ServerGuess?
+
+    init?(_ value: Any?) {
+        guard let value = value as? [String: Any], let code = value["code"] as? String,
+              let message = value["message"] as? String else { return nil }
+        self.code = code
+        self.message = message
+        let action = value["action"] as? [String: Any]
+        let url = (action?["url"] as? String).flatMap(URL.init(string:))
+        // Only web pages: a fix link never opens anything else.
+        actionURL = url?.scheme == "https" ? url : nil
+        actionLabel = actionURL == nil ? nil : action?["label"] as? String
+        detail = value["detail"] as? String ?? ""
+        servers = ServerGuess(value["servers"])
+    }
 }
 
 /// One long-lived Rust service handle. Calls may perform network I/O, so UI callers
@@ -243,7 +287,8 @@ final class CoreBridge: @unchecked Sendable {
             throw MailServiceError(message: "The mail engine returned an invalid response.")
         }
         guard envelope["ok"] as? Bool == true else {
-            throw MailServiceError(message: envelope["error"] as? String ?? "The mail action failed.")
+            throw MailServiceError(message: envelope["error"] as? String ?? "The mail action failed.",
+                                   setupProblem: SetupProblem(envelope["setup_error"]))
         }
         return envelope["data"]
     }

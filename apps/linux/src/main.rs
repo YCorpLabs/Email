@@ -3,8 +3,8 @@ mod search_filter_rules;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gtk::{Orientation, gdk, glib};
 use mail_core::{
-    Account, DraftAttachmentMeta, LabelSummary, MailAction, Message, OutboxItem, SplitInbox,
-    ThreadSummary,
+    Account, DraftAttachmentMeta, LabelSummary, MailAction, Message, OutboxItem, Provider,
+    SplitInbox, ThreadSummary,
 };
 use mail_service::MailService;
 use scraper::{Html, Selector};
@@ -136,6 +136,13 @@ button:focus-visible { outline: 1px solid @muted; outline-offset: -1px; }
 .conversation-item { background: transparent; color: @secondary; border-bottom: 1px solid @line; border-radius: 0; padding: 14px 10px; margin: 0; font-size: 11px; }
 .conversation-item:hover { background: @hover; }
 .reading { background: @canvas; }
+/* First run: one welcome with the app's primary button (macOS paintEmptyAction). */
+.welcome-page { background: @canvas; }
+.welcome-title { font-size: 16px; font-weight: 600; color: @ink; }
+.welcome-detail { font-size: 13px; color: @muted; }
+.welcome-action { background: @ink; color: @canvas; border: none; border-radius: 9px; min-height: 34px; min-width: 144px; padding: 0 16px; font-size: 12px; font-weight: 600; margin-top: 11px; }
+.welcome-action:hover { background: alpha(@ink, 0.88); }
+.welcome-action label { color: @canvas; }
 .plain, .plain text { background: @canvas; color: @ink; font-family: Inter, sans-serif; font-size: 14px; }
 .plain { padding: 28px; }
 .palette, popover contents { background: @surface; color: @ink; border: 1px solid @line; border-radius: 10px; padding: 10px; }
@@ -220,6 +227,8 @@ fn appearance_css(dark: bool) -> String {
         css.push_str(&format!("@define-color {name} {value};\n"));
     }
     css.push_str(&format!("@define-color problem {};\n", if dark { "#ff6961" } else { "#c4161c" }));
+    // Links in account setup (macOS linkColor).
+    css.push_str(&format!("@define-color link {};\n", if dark { "#419cff" } else { "#0068da" }));
     css.push_str(CSS);
     css.push_str(account_setup::CSS);
     css.push_str(r#"
@@ -862,6 +871,10 @@ fn dispatch_due_in_background(
 struct Ui {
     window: gtk::ApplicationWindow,
     workspace: gtk::Stack,
+    /// The mail page: the list and reader, or the first-run welcome.
+    mail_stack: gtk::Stack,
+    /// Sidebar rows that do nothing until an account exists.
+    account_only: Vec<gtk::Widget>,
     calendar_host: gtk::Box,
     calendar: RefCell<Option<Rc<agenda::Agenda>>>,
     service: MailService,
@@ -1161,6 +1174,30 @@ impl Ui {
             );
         }
     }
+    /// A calendar connects only to an account that signed in with Google
+    /// (`connect_calendar`), which this build may not offer (macOS
+    /// `calendarAvailable`).
+    fn calendar_available(&self, accounts: &[Account]) -> bool {
+        !accounts.is_empty()
+            && (account_setup::build_features(&self.service).google_oauth_public
+                || accounts.iter().any(|account| account.provider == Provider::Gmail))
+    }
+    /// Show the mail chrome only once there is an account (macOS
+    /// `updateAccountChrome`): until then the window is a welcome.
+    fn update_account_chrome(&self, accounts: &[Account]) {
+        let empty = accounts.is_empty();
+        for widget in &self.account_only {
+            widget.set_visible(!empty);
+        }
+        if empty {
+            self.labels_heading.set_visible(false);
+            if let Some(button) = self.filter_buttons.get(1) {
+                button.set_label("Unread");
+            }
+        }
+        self.mail_stack
+            .set_visible_child_name(if empty { "welcome" } else { "columns" });
+    }
     fn refresh_navigation(self: &Rc<Self>, accounts: &[Account]) {
         let counts = self.request(json!({"op":"unread_counts"})).unwrap_or_default();
         let (unread, followup_due, followup_active) = parity::navigation_counts(&counts);
@@ -1231,6 +1268,7 @@ impl Ui {
             invitations.add_css_class("active");
         }
         invitations.set_tooltip_text(Some("Calendar · G then C"));
+        invitations.set_visible(self.calendar_available(accounts));
         {
             let ui = self.clone();
             invitations.connect_clicked(move |_| agenda::open(&ui));
@@ -1299,6 +1337,7 @@ impl Ui {
             button.set_tooltip_text(Some("Unread conversations in downloaded inboxes"));
         }
         self.refresh_navigation(&accounts);
+        self.update_account_chrome(&accounts);
         for (i, button) in self.filter_buttons.iter().enumerate() {
             if i == self.inbox_filter.get() as usize {
                 button.add_css_class("active");
@@ -1637,19 +1676,9 @@ impl Ui {
                 self.recipient_details.set_text("");
                 self.contact.root.set_visible(false);
                 self.title.set_text(if matches!(view, MailView::Sent) { "No sent mail cached yet" } else { "Inbox zero" });
-                self.meta.set_text(if accounts.is_empty() {
-                    "Connect an account to get started."
-                } else {
-                    "Nothing matches your search."
-                });
+                self.meta.set_text("Nothing matches your search.");
                 self.show_plain(if matches!(view, MailView::Sent) {
                     "Messages sent from Email appear here after delivery. Only locally available sent mail is shown."
-                } else if accounts.is_empty() {
-                    if account_setup::build_features(&self.service).microsoft_accounts {
-                        "Add Gmail, Outlook, iCloud, or IMAP from the sidebar."
-                    } else {
-                        "Add Gmail, iCloud, or IMAP from the sidebar."
-                    }
                 } else {
                     "Your inbox is clear."
                 });
@@ -4245,7 +4274,8 @@ fn build(app: &gtk::Application) {
     let compose_button = navigation_button("document-edit-symbolic", "Compose", "C");
     compose_button.add_css_class("compose-button");
     sidebar.append(&compose_button);
-    sidebar.append(&sidebar_heading("WORKSPACE"));
+    let workspace_heading = sidebar_heading("WORKSPACE");
+    sidebar.append(&workspace_heading);
     let views_box = gtk::Box::new(Orientation::Vertical, 0);
     sidebar.append(&views_box);
     let accounts_heading = sidebar_heading("ACCOUNTS");
@@ -4575,7 +4605,38 @@ fn build(app: &gtk::Application) {
     workspace.set_vhomogeneous(false);
     workspace.set_hexpand(true);
     workspace.set_vexpand(true);
-    workspace.add_named(&columns, Some("mail"));
+    // Without an account the mail page is one welcome with one action
+    // (macOS hides the list and shows the welcome in the reader).
+    let welcome = gtk::Box::new(Orientation::Vertical, 14);
+    welcome.set_halign(gtk::Align::Center);
+    welcome.set_valign(gtk::Align::Center);
+    let welcome_title = gtk::Label::new(Some("Welcome to Email"));
+    welcome_title.add_css_class("welcome-title");
+    // The text depends on the build's features; set once the service is open.
+    let welcome_detail = gtk::Label::new(None);
+    welcome_detail.add_css_class("welcome-detail");
+    welcome_detail.set_wrap(true);
+    welcome_detail.set_justify(gtk::Justification::Center);
+    welcome_detail.set_max_width_chars(52);
+    let welcome_action = gtk::Button::with_label("Add an account");
+    welcome_action.add_css_class("welcome-action");
+    welcome_action.set_halign(gtk::Align::Center);
+    welcome.append(&welcome_title);
+    welcome.append(&welcome_detail);
+    welcome.append(&welcome_action);
+    let welcome_page = gtk::Box::new(Orientation::Vertical, 0);
+    welcome_page.add_css_class("welcome-page");
+    welcome_page.set_hexpand(true);
+    welcome_page.set_vexpand(true);
+    welcome_page.append(&welcome);
+    welcome.set_vexpand(true);
+    let mail_stack = gtk::Stack::new();
+    mail_stack.set_transition_type(gtk::StackTransitionType::None);
+    mail_stack.set_hhomogeneous(false);
+    mail_stack.set_vhomogeneous(false);
+    mail_stack.add_named(&columns, Some("columns"));
+    mail_stack.add_named(&welcome_page, Some("welcome"));
+    workspace.add_named(&mail_stack, Some("mail"));
     let calendar_host = gtk::Box::new(Orientation::Vertical, 0);
     calendar_host.set_focusable(true);
     calendar_host.add_css_class("calendar-workspace");
@@ -4637,6 +4698,11 @@ fn build(app: &gtk::Application) {
     let database_path = database_path().expect("mail data directory");
     let image_preference = remote_images_enabled(&database_path);
     let service = MailService::open(&database_path).expect("open mail service");
+    welcome_detail.set_text(if account_setup::build_features(&service).microsoft_accounts {
+        "Add your Gmail, iCloud, Outlook or other email account to get started."
+    } else {
+        "Add your Gmail, iCloud or other email account to get started."
+    });
     // Matches macOS: EMAIL_DEMO=1 (or small) adds three labelled example
     // messages and EMAIL_DEMO=launch the launch demo mailbox, but only to an
     // explicitly isolated store, never to the real mail cache.
@@ -4666,9 +4732,24 @@ fn build(app: &gtk::Application) {
         let _ = std::fs::remove_file(database_path.with_extension("notification-previews"));
         let _ = std::fs::write(&previews_marker, "");
     }
+    let account_only: Vec<gtk::Widget> = vec![
+        compose_button.clone().upcast(),
+        workspace_heading.clone().upcast(),
+        views_box.clone().upcast(),
+        splits_heading.clone().upcast(),
+        splits_box.clone().upcast(),
+        new_split.clone().upcast(),
+        accounts_heading.clone().upcast(),
+        accounts_box.clone().upcast(),
+        labels_box.clone().upcast(),
+        manage.clone().upcast(),
+        agent_access.clone().upcast(),
+    ];
     let ui = Rc::new(Ui {
         window: window.clone(),
         workspace,
+        mail_stack,
+        account_only,
         calendar_host,
         calendar: RefCell::new(None),
         service,
@@ -5080,6 +5161,10 @@ fn build(app: &gtk::Application) {
     {
         let ui = ui.clone();
         add_account.connect_clicked(move |_| ui.add_account());
+    }
+    {
+        let ui = ui.clone();
+        welcome_action.connect_clicked(move |_| ui.add_account());
     }
     {
         let ui = ui.clone();

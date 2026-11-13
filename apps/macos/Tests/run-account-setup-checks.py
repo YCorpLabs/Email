@@ -56,71 +56,148 @@ extension AccountSetupWindow {
         func editing(_ window: NSWindow, _ field: NSTextField) -> Bool {
             (window.firstResponder as? NSTextView)?.delegate === field || window.firstResponder === field
         }
+        /// Shown on screen: the view and all its ancestors are visible.
+        func shown(_ view: NSView) -> Bool {
+            var current: NSView? = view
+            while let v = current { if v.isHidden { return false }; current = v.superview }
+            return true
+        }
+        func texts(_ view: NSView) -> [String] {
+            var found: [String] = []
+            if shown(view) {
+                if let field = view as? NSTextField { found.append(field.stringValue); found.append(field.placeholderString ?? "") }
+                if let button = view as? NSButton { found.append(button.title) }
+            }
+            return found + view.subviews.flatMap(texts)
+        }
+        func shownButtons(_ view: NSView) -> [String] {
+            ((view as? NSButton).flatMap { shown($0) ? [$0.title] : nil } ?? []) + view.subviews.flatMap(shownButtons)
+        }
         guard let core = CoreBridge() else { fatalError("mail-service unavailable") }
         let features = core.buildFeatures()
         var connected = 0
-        let window = AccountSetupWindow(core: core) { connected += 1 }
-        window.makeKeyAndOrderFront(nil)
-        spin(0.2)
+        func open() -> AccountSetupWindow {
+            let window = AccountSetupWindow(core: core) { connected += 1 }
+            window.makeKeyAndOrderFront(nil)
+            spin(0.2)
+            return window
+        }
+        func enter(_ window: AccountSetupWindow, _ address: String) {
+            window.email.stringValue = address
+            window.connectButton.performClick(nil)
+            spin(0.1)
+        }
+        var window = open()
         let titles = window.choices.map { $0.title(features) }
-        let steps = window.gmailSteps.arrangedSubviews.flatMap { ($0 as? NSStackView)?.arrangedSubviews ?? [] }
-        let links = steps.compactMap { ($0 as? NSButton)?.identifier?.rawValue }
+        let stepLinks = { (w: AccountSetupWindow) in w.steps.arrangedSubviews.flatMap { ($0 as? NSStackView)?.arrangedSubviews ?? [] }.compactMap { ($0 as? NSButton)?.identifier?.rawValue } }
+
+        // Email first, in every build.
+        expect(window.title == "Add an account" && window.titleVisibility == .hidden, "one title: the heading")
+        expect(window.selected == nil && window.connectButton.title == "Continue", "opens on the email field with Continue")
+        expect(window.intro.isHidden && window.passwordRow!.isHidden && window.steps.isHidden, "nothing but the email field before an address")
+        expect(editing(window, window.email), "email field has keyboard focus")
+        expect(window.providerMenu.itemArray.first?.title == "Choose provider", "small Choose provider control")
+        window.connectButton.performClick(nil)
+        expect(window.status.textColor == .systemRed && window.status.stringValue == "Enter your email address.", "Continue without an address explains itself")
+        snapshot(window, "0-email-first")
+        window.close()
 
         if mode == "distribution" {
             expect(features.channel == "distribution" && !features.googleOAuthPublic && !features.microsoftAccounts && !features.googleContactPhotos, "distribution library reports its features")
             expect(titles == ["Gmail", "iCloud", "Other"], "one Gmail entry, no Google sign-in, no Outlook")
-            expect(!window.choices.contains(.gmail), "Google sign-in is not offered")
-            expect(window.selected == .gmailAppPassword, "Gmail opens on the app-password path although a client ID is configured")
-            let coming = (window.gmailSteps.arrangedSubviews.first as? NSTextField)?.stringValue
-            expect(coming == "One-click Google sign-in is coming once Google finishes reviewing the app.", "one honest line about Google sign-in")
-            expect(window.intro.stringValue == "Gmail and iCloud connect with a password created for this app. Never enter your main account password here.", "intro does not promise browser sign-in")
-            expect(!window.gmailSteps.isHidden && !window.gmailAbout.isHidden && !window.emailRow!.isHidden, "steps, explanation and fields are visible")
-            expect(links == ["https://myaccount.google.com/signinoptions/twosv", "https://myaccount.google.com/apppasswords"], "steps link to 2-Step Verification and App passwords")
-            expect(window.helpButton.title == "Learn more about app passwords ↗" && !window.helpButton.isHidden, "help link names app passwords")
+
+            // The main window before any account is one welcome.
+            let empty = MailWindow()
+            empty.setContentSize(NSSize(width: 1100, height: 720))
+            empty.makeKeyAndOrderFront(nil)
+            spin(1.5)
+            let welcome = shownButtons(empty.contentView!)
+            expect(welcome.contains("Add an account") && welcome.contains("Add account") && welcome.contains("Support & feedback"), "welcome keeps Add account and Support")
+            expect(!welcome.contains("Compose") && !welcome.contains("Calendar") && !welcome.contains("Manage accounts") && !welcome.contains("Agent access"), "welcome hides mail-only rows: \(welcome)")
+            expect(!texts(empty.contentView!).contains("Connect an account to see your mail."), "no duplicate list message")
+            snapshot(empty, "1-welcome")
+            empty.close()
+
+            for (address, choice) in [("someone@gmail.com", AccountSetupChoice.gmailAppPassword), ("someone@googlemail.com", .gmailAppPassword),
+                                      ("someone@icloud.com", .icloud), ("someone@me.com", .icloud), ("someone@mac.com", .icloud),
+                                      ("someone@company.example", .other), ("someone@hotmail.com", .other)] {
+                let w = open(); enter(w, address)
+                expect(w.selected == choice, "\(address) opens \(choice)")
+                w.close()
+            }
+
+            window = open()
+            enter(window, " person@gmail.example ")
+            expect(window.selected == .other, "an unknown domain goes to Other")
+            expect(key(window, "1", 18, command: true) && window.selected == .gmailAppPassword, "⌘1 chooses Gmail by hand")
+            expect(window.intro.stringValue == "Gmail needs an app password." && !window.steps.isHidden, "Gmail steps show")
+            expect(stepLinks(window) == ["https://myaccount.google.com/signinoptions/twosv", "https://myaccount.google.com/apppasswords"], "steps link to 2-Step Verification and App passwords")
+            expect(window.password.placeholderString == "16 letters, spaces are fine" && editing(window, window.password), "focus moves to the app password")
+            expect(window.about.superview?.isHidden == true && window.aboutToggle.title == "What's an app password?", "explanation starts collapsed")
+            expect(window.guideButton.superview?.isHidden == (DistributionProfile.current?.setupGuide == nil), "guide link follows the profile's support channel")
+            let visible = texts(window.contentView!).joined(separator: " ")
+            expect(!visible.contains("review") && !visible.contains("Never enter") && !visible.contains("imap.gmail.com"), "no review promise, defensive copy or server footnote: \(visible)")
+            window.aboutToggle.performClick(nil)
+            expect(window.about.superview?.isHidden == false && texts(window.about).contains { $0.contains("Advanced Protection") }, "disclosure explains accounts without app passwords")
+            snapshot(window, "2-gmail")
+            window.aboutToggle.performClick(nil)
             // Stale hidden server fields from another choice never travel with Gmail.
             window.imapHost.stringValue = "imap.example.com"; window.imapPort.stringValue = "143"
-            window.email.stringValue = " person@gmail.example "; window.password.stringValue = "abcd efgh ijkl mnop"
+            window.password.stringValue = "abcd efgh ijkl mnop"
             let request = window.imapPayload(for: .gmailAppPassword).payload ?? [:]
-            expect(Set(request.keys) == ["op", "provider", "preset", "email", "display_name", "username", "smtp_username", "password", "google_sign_in"]
-                   && request["google_sign_in"] as? Bool == false
+            expect(Set(request.keys) == ["op", "provider", "preset", "email", "display_name", "username", "smtp_username", "password"]
                    && request["preset"] as? String == "gmail" && request["email"] as? String == "person@gmail.example",
                    "Gmail request names no servers (same keys as Linux)")
+            let icloud = window.imapPayload(for: .icloud).payload ?? [:]
+            expect(Set(icloud.keys) == ["op", "provider", "email", "display_name", "password"] && icloud["provider"] as? String == "icloud", "iCloud request leaves servers to the engine (as Linux)")
             window.email.stringValue = "person@example.com"; window.password.stringValue = "secret"
-            window.imapHost.stringValue = " imap.example.com "; window.imapPort.stringValue = " 993 "
-            window.smtpHost.stringValue = "smtp.example.com"; window.smtpPort.stringValue = "587 "
-            let other = window.imapPayload(for: .other).payload ?? [:]
-            expect(other["imap_host"] as? String == "imap.example.com" && other["imap_port"] as? Int == 993 && other["smtp_port"] as? Int == 587,
-                   "Other ignores spaces around servers and ports (as Linux)")
-            window.imapHost.stringValue = "   "
-            expect(window.imapPayload(for: .other).payload == nil, "a blank server name is refused before sending (as Linux)")
-            window.email.stringValue = ""; window.password.stringValue = ""
-            expect(window.advancedRows.allSatisfy(\.isHidden), "server rows stay hidden")
-            expect(editing(window, window.email), "email field has keyboard focus")
-            expect(window.switchToAppPassword.isHidden, "no switch link on the app-password choice")
-            snapshot(window, "1-app-password")
-            window.appearance = NSAppearance(named: .aqua)
-            snapshot(window, "1-app-password-light")
-            window.appearance = nil
+            let guessed = window.imapPayload(for: .other).payload ?? [:]
+            expect(guessed["imap_host"] == nil && guessed["smtp_host"] == nil, "Other sends no servers until they are shown (as Linux)")
 
             expect(key(window, "2", 19, command: true) && window.selected == .icloud, "⌘2 selects iCloud")
-            snapshot(window, "2-icloud")
-            expect(key(window, "1", 18, command: true) && window.selected == .gmailAppPassword && editing(window, window.email), "⌘1 returns to Gmail with focus in the address field")
+            expect(window.intro.stringValue == "iCloud needs an app-specific password." && stepLinks(window) == ["https://account.apple.com/"], "iCloud steps link to the Apple Account")
+            snapshot(window, "3-icloud")
+            expect(key(window, "3", 20, command: true) && window.selected == .other && window.steps.isHidden, "⌘3 selects Other: no steps")
+            expect(window.advancedToggle.superview?.isHidden == true && window.advanced.isHidden, "Other hides server settings until a failure")
+            snapshot(window, "4-other")
+            expect(key(window, "1", 18, command: true) && window.selected == .gmailAppPassword, "⌘1 returns to Gmail")
 
-            func attempt(_ address: String, _ secret: String, _ prefix: String, _ name: String, snapshotName: String? = nil) {
+            func attempt(_ address: String, _ secret: String, _ message: String, fix: String?, details: String? = nil, _ name: String, snapshotName: String? = nil) {
                 window.email.stringValue = address
                 window.password.stringValue = secret
                 window.connectButton.performClick(nil)
                 wait(name) { window.status.textColor == .systemRed && window.connectButton.isEnabled }
-                expect(window.status.stringValue.hasPrefix(prefix), "\(name): \(window.status.stringValue)")
-                expect(!window.status.stringValue.contains(secret.filter { !$0.isWhitespace }), "\(name): password not echoed")
-                if let snapshotName { snapshot(window, snapshotName) }
+                expect(window.status.stringValue == message, "\(name): \(window.status.stringValue)")
+                expect(fix == nil ? window.fixButton.isHidden : (!window.fixButton.isHidden && window.fixButton.title == fix! + " ↗"), "\(name): fix link \(window.fixButton.isHidden ? "none" : window.fixButton.title)")
+                if let details { expect(!window.detailsToggle.isHidden && window.details.stringValue.contains(details), "\(name): server words behind Details") }
+                expect(!window.status.stringValue.contains(secret.filter { !$0.isWhitespace }) && !window.details.stringValue.contains(secret.filter { !$0.isWhitespace }), "\(name): password not echoed")
+                if let snapshotName { window.detailsToggle.performClick(nil); snapshot(window, snapshotName); window.detailsToggle.performClick(nil) }
             }
-            attempt("fixture.user@gmail.com", "my regular google password", "That isn't a Google app password.", "regular Google password is refused locally", snapshotName: "3-regular-password")
-            attempt("fixture.user@gmail.com", "zzzz yyyy xxxx wwww", "Google didn't accept this app password", "wrong app password", snapshotName: "4-wrong-app-password")
-            attempt("fixture.2sv@workspace.example", "qrst qrst qrst qrst", "Google needs an app password here", "account needs an app password")
-            attempt("fixture.admin@workspace.example", "abcd efgh ijkl mnop", "Your Google Workspace administrator has turned off IMAP", "Workspace admin turned IMAP off", snapshotName: "5-workspace-imap-off")
-            attempt("fixture.weblogin@workspace.example", "abcd efgh ijkl mnop", "Google blocked this sign-in", "Google blocked the sign-in")
+            window.aboutToggle.performClick(nil)
+            attempt("fixture.user@gmail.com", "my regular google password", "That looks like your Google password.", fix: "Create an app password instead", details: "16 letters", "regular Google password is refused locally", snapshotName: "5-google-password")
+            func frame(_ view: NSView) -> NSRect { view.convert(view.bounds, to: nil) }
+            expect(window.about.superview?.isHidden == true, "an error closes the explanation")
+            let error = frame(window.status), field = frame(window.password), explanation = frame(window.aboutToggle)
+            expect(error.maxY <= field.minY && error.minY > explanation.maxY && abs(error.minX - field.minX) < 4,
+                   "the error sits directly under the password field, lined up with it")
+            attempt("fixture.user@gmail.com", "zzzz yyyy xxxx wwww", "Wrong email or app password.", fix: "Create a new app password", details: "AUTHENTICATIONFAILED", "wrong app password", snapshotName: "6-wrong-app-password")
+            attempt("fixture.2sv@workspace.example", "qrst qrst qrst qrst", "That looks like your Google password.", fix: "Create an app password instead", details: "Application-specific password required", "account needs an app password")
+            attempt("fixture.admin@workspace.example", "abcd efgh ijkl mnop", "Your Google Workspace admin has turned off IMAP for this account.", fix: nil, details: "End User Access", "Workspace admin turned IMAP off")
+            attempt("fixture.weblogin@workspace.example", "abcd efgh ijkl mnop", "Google blocked this sign-in. Confirm it was you in Gmail, then try again.", fix: "Open Gmail", "Google blocked the sign-in")
+            expect(key(window, "2", 19, command: true), "switch to iCloud")
+            attempt("someone@icloud.example", "MyApplePassw0rd!", "That looks like your Apple Account password.", fix: "Create an app-specific password instead", "Apple Account password", snapshotName: "7-apple-password")
+            attempt("someone@icloud.example", "abcd-efgh-ijkl-mnop", "Wrong email or app-specific password.", fix: "Create a new app-specific password", "wrong app-specific password")
+            expect(key(window, "3", 20, command: true), "switch to Other")
+            attempt("person@guess.example", "secret", "Wrong email or app password.", fix: nil, details: "imap.guess.example:993 said", "guessed server refuses the password")
+            expect(window.advancedToggle.superview?.isHidden == false && window.advanced.isHidden, "Advanced is offered, closed, after a refusal")
+            attempt("person@example.invalid", "secret", "Couldn't find the mail servers for example.invalid. Check the server settings.", fix: nil, "guessed servers do not answer", snapshotName: "8-servers-not-found")
+            expect(!window.advanced.isHidden && window.imapHost.stringValue == "imap.example.invalid" && window.smtpPort.stringValue == "587", "the guess is shown for editing")
+            let typed = window.imapPayload(for: .other).payload ?? [:]
+            expect(typed["imap_host"] as? String == "imap.example.invalid" && typed["imap_port"] as? Int == 993, "shown servers are sent")
+            window.imapHost.stringValue = "   "
+            expect(window.imapPayload(for: .other).payload == nil, "a blank server name is refused before sending (as Linux)")
             expect(core.accountRecords().isEmpty, "failed attempts save no account")
+            expect(key(window, "1", 18, command: true), "back to Gmail")
 
             // A slow request: the same choice can't be submitted twice, others stay usable.
             window.email.stringValue = "fixture.slow@workspace.example"
@@ -133,8 +210,7 @@ extension AccountSetupWindow {
             wait("slow request finishes") { window.inFlight.isEmpty }
             expect(window.connectButton.isEnabled && window.status.textColor != .systemRed, "its error is not shown on another choice")
             expect(key(window, "1", 18, command: true) && window.connectButton.isEnabled, "Gmail is usable again afterwards")
-            expect(window.status.textColor == .systemRed && window.status.stringValue.hasPrefix("Google didn't accept this app password"), "returning to Gmail shows how its request ended")
-            snapshot(window, "5a-failure-shown-on-return")
+            expect(window.status.textColor == .systemRed && window.status.stringValue == "Wrong email or app password.", "returning to Gmail shows how its request ended")
             expect(core.accountRecords().isEmpty, "the slow attempt saved nothing")
 
             // A slow success while another choice is on screen keeps the window and that choice's input.
@@ -148,7 +224,6 @@ extension AccountSetupWindow {
             expect(window.isVisible && connected == 1 && window.selected == .icloud, "a success elsewhere refreshes the app but keeps this window")
             expect(window.email.stringValue == "someone@icloud.example" && window.password.stringValue == "half typed", "what is typed for iCloud is kept")
             expect(key(window, "1", 18, command: true) && window.status.stringValue == "Connected fixture.later@workspace.example." && window.status.textColor != .systemRed, "returning to Gmail shows it connected")
-            snapshot(window, "5b-success-shown-on-return")
 
             window.email.stringValue = "fixture.user@gmail.com"
             window.password.stringValue = "abcd efgh ijkl mnop"
@@ -167,33 +242,37 @@ extension AccountSetupWindow {
             mail.setContentSize(NSSize(width: 1280, height: 760))
             mail.makeKeyAndOrderFront(nil)
             spin(3)
-            snapshot(mail, "6-inbox")
+            let chrome = shownButtons(mail.contentView!)
+            expect(chrome.contains("Compose") && chrome.contains("Manage accounts"), "the sidebar comes back with an account")
+            expect(!chrome.contains("Calendar"), "no Calendar where none can be connected (app-password accounts, no Google sign-in)")
+            snapshot(mail, "9-inbox")
             let pane = ContactPane(frame: .zero)
             pane.show(sender: "Maya Fixture <maya@example.com>", recent: [], googleAccountID: accounts[0].id, core: core)
             expect(!pane.pictureMenu().items.map(\.title).contains("Use Google contact photos…"), "contact photos are not offered")
             mail.close()
 
-            let second = AccountSetupWindow(core: core) {}
-            second.makeKeyAndOrderFront(nil)
-            spin(0.2)
+            let second = open()
             expect(key(second, "\u{1b}", 53), "Escape is handled")
             wait("Escape closes the window") { !second.isVisible }
         } else {
             expect(features.channel == "development" && features.googleOAuthPublic && features.microsoftAccounts && features.googleContactPhotos, "development library keeps every feature")
             expect(titles == ["Gmail", "Gmail (app password)", "iCloud", "Outlook", "Other"], "development lists Gmail first and keeps Outlook")
-            expect(window.selected == .gmail, "Gmail sign-in is selected when a client is configured")
-            expect(window.switchToAppPassword.isHidden && window.status.stringValue == "You'll sign in on your provider's website in your browser.", "Google sign-in unchanged in development")
-            expect(!(window.gmailSteps.arrangedSubviews.first is NSTextField), "no sign-in-coming line in development")
+            window = open(); enter(window, "someone@gmail.com")
+            expect(window.selected == .gmail, "a Gmail address opens Google sign-in when a client is configured")
+            expect(window.switchToAppPassword.isHidden && window.intro.stringValue == "You'll sign in to Google in your browser." && window.connectButton.title == "Sign in with browser", "Google sign-in unchanged in development")
             snapshot(window, "1-gmail")
             expect(key(window, "2", 19, command: true) && window.selected == .gmailAppPassword, "⌘2 selects Gmail (app password)")
-            expect(!window.gmailSteps.isHidden && links.count == 2, "steps are visible")
+            expect(!window.steps.isHidden && stepLinks(window).count == 2, "steps are visible")
             snapshot(window, "2-app-password")
             expect(key(window, "4", 21, command: true) && window.selected == .outlook, "⌘4 selects Outlook")
             snapshot(window, "3-outlook")
+            window.close()
+            window = open(); enter(window, "someone@hotmail.com")
+            expect(window.selected == .outlook, "an Outlook address opens Outlook where it is offered")
+            window.close()
             let pane = ContactPane(frame: .zero)
             pane.show(sender: "Maya Fixture <maya@example.com>", recent: [], googleAccountID: "demo:personal", core: core)
             expect(pane.pictureMenu().items.map(\.title).contains("Use Google contact photos…"), "contact photos remain in development builds")
-            window.close()
         }
         print("ALL PASS [\(mode)]")
     }
@@ -215,6 +294,10 @@ with tempfile.TemporaryDirectory(prefix='email-account-setup-') as temp:
             name, value = line.strip().split('=', 1)
             env_lines[name] = value
     threading.Thread(target=lambda: fixture_log.extend(iter(server.stdout.readline, '')), daemon=True).start()
+    # The fixture also answers for iCloud and a guessed Other server, so their
+    # refusals are checked without any real provider.
+    imap_port = env_lines['EMAIL_TEST_FIXTURE_ENDPOINTS'].split('imap.gmail.com:993=localhost:')[1].split(',')[0]
+    env_lines['EMAIL_TEST_FIXTURE_ENDPOINTS'] += f',imap.mail.me.com:993=localhost:{imap_port},imap.guess.example:993=localhost:{imap_port}'
     try:
         ui = p / 'AccountSetupWindow.swift'
         ui.write_text(source.joinpath('AccountSetupWindow.swift').read_text() + check)

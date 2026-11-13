@@ -198,10 +198,7 @@ private final class RightEdgeResizeView: NSView {
         guard let window else { return }
         UserDefaults.standard.set(Double(window.frame.width), forKey: preferredWindowWidthKey)
     }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.withAlphaComponent(0.7).setFill()
-        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 1, y: bounds.midY - 16, width: 2, height: 32), xRadius: 1, yRadius: 1).fill()
-    }
+    // Invisible like the left strip: macOS windows show no resize grabber.
 }
 
 struct MailThread: Sendable {
@@ -337,6 +334,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private var calendarHiddenMailViews: [(NSView, Bool)] = []
     private var calendarWorkspaceView: NSView?
     private var calendarSidebarButton: NSButton?
+    /// Sidebar rows that do nothing until an account exists (see `updateAccountChrome`).
+    private var accountOnlySidebarViews: [NSView] = []
     private var workflowPopover: NSPopover?
     private var archiveBrowseStarted = false
     private var unreadSidebarButton: NSButton?
@@ -481,6 +480,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         restoreTriageUndo()
         refreshInbox()
         updateEmptyInbox()
+        updateAccountChrome()
         syncStatus.stringValue = usesCore ? "" : "Mail engine unavailable — build mail-service first"
         if let first = threads.first {
             table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
@@ -603,7 +603,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         composeButton.toolTip = "New message (C)"
         railStack.addArrangedSubview(composeButton)
         railStack.setCustomSpacing(22, after: composeButton)
-        railStack.addArrangedSubview(heading("WORKSPACE", size: 10, weight: .semibold, color: EmailTheme.muted))
+        let workspaceHeading = heading("WORKSPACE", size: 10, weight: .semibold, color: EmailTheme.muted)
+        railStack.addArrangedSubview(workspaceHeading)
         let allInboxes = sidebarButton("All Inboxes", symbol: "tray.full", action: #selector(showInboxClicked), active: true)
         let unreadFolder = sidebarButton("Unread", symbol: "envelope.badge", action: #selector(showUnreadClicked))
         let pinnedFolder = sidebarButton("Favorites", symbol: "star", action: #selector(showPinnedClicked))
@@ -670,14 +671,17 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         railStack.addArrangedSubview(sentFolder)
         railStack.addArrangedSubview(outboxFolder)
         railStack.setCustomSpacing(19, after: railStack.arrangedSubviews.last!)
-        railStack.addArrangedSubview(heading("SPLITS", size: 10, weight: .semibold, color: EmailTheme.muted))
+        let splitsHeading = heading("SPLITS", size: 10, weight: .semibold, color: EmailTheme.muted)
+        railStack.addArrangedSubview(splitsHeading)
         sidebarSplits.orientation = .vertical
         sidebarSplits.alignment = .leading
         sidebarSplits.spacing = 6
         railStack.addArrangedSubview(sidebarSplits)
-        railStack.addArrangedSubview(sidebarButton("New split", symbol: "plus", action: #selector(createSplitClicked), primary: true))
-        railStack.setCustomSpacing(19, after: railStack.arrangedSubviews.last!)
-        railStack.addArrangedSubview(heading("ACCOUNTS", size: 10, weight: .semibold, color: EmailTheme.muted))
+        let newSplit = sidebarButton("New split", symbol: "plus", action: #selector(createSplitClicked), primary: true)
+        railStack.addArrangedSubview(newSplit)
+        railStack.setCustomSpacing(19, after: newSplit)
+        let accountsHeading = heading("ACCOUNTS", size: 10, weight: .semibold, color: EmailTheme.muted)
+        railStack.addArrangedSubview(accountsHeading)
         sidebarAccounts.orientation = .vertical
         sidebarAccounts.alignment = .leading
         sidebarAccounts.spacing = 10
@@ -704,6 +708,11 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         agentSidebarButton = agentButton
         railStack.addArrangedSubview(agentButton)
         railStack.addArrangedSubview(sidebarButton("Support & feedback", symbol: "questionmark.circle", action: #selector(supportClicked)))
+        // Without an account only Add account, Support & feedback and Commands
+        // do something; the rest returns with the first account.
+        accountOnlySidebarViews = [composeButton, workspaceHeading, allInboxes, archiveFolder, snoozedFolder, followupsFolder,
+                                   draftFolder, sentFolder, outboxFolder, splitsHeading, sidebarSplits, newSplit,
+                                   accountsHeading, sidebarAccounts, manageAccounts, agentButton]
         root.addArrangedSubview(rail)
 
         let inbox = NSView()
@@ -1039,9 +1048,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         emptyAction.action = #selector(addAccountClicked)
         emptyAction.isBordered = false
         emptyAction.wantsLayer = true
-        emptyAction.layer?.backgroundColor = EmailTheme.cgColor(EmailTheme.accent, in: effectiveAppearance)
         emptyAction.layer?.cornerRadius = 9
-        emptyAction.attributedTitle = NSAttributedString(string: "Add an account", attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)])
+        paintEmptyAction()
         emptyAction.widthAnchor.constraint(equalToConstant: 144).isActive = true
         emptyAction.heightAnchor.constraint(equalToConstant: 34).isActive = true
         emptyState.addArrangedSubview(emptyAction)
@@ -1154,6 +1162,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         readerPanel?.layer?.backgroundColor = resolved(EmailTheme.reader)
         contactPane.applyTheme()
         readerKeyboardHint.needsDisplay = true
+        paintEmptyAction()
         attachmentCard.layer?.backgroundColor = resolved(EmailTheme.compose)
         attachmentCard.layer?.borderColor = resolved(EmailTheme.line)
         remoteImagesNotice.layer?.backgroundColor = resolved(EmailTheme.inbox)
@@ -1360,7 +1369,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.about, "About Email", "SETTINGS", detail: EmailBuildIdentity.value, aliases: ["version", "build", "updated"]))
             items.append(paletteItem(.searchFilters, "Refine search…", "MAIL", aliases: ["filters", "advanced search", "from", "to", "cc", "dates", "attachments"]))
             items.append(paletteItem(.searchHelp, "Search syntax and coverage", "MAIL", aliases: ["from", "to", "cc", "label", "local", "cache", "operators"]))
-            items.append(paletteItem(.invitations, "Calendar invitations…", "CALENDAR", aliases: ["agenda", "meeting", "ics", "event"]))
+            if calendarAvailable { items.append(paletteItem(.invitations, "Calendar invitations…", "CALENDAR", aliases: ["agenda", "meeting", "ics", "event"])) }
             items.append(paletteItem(.followup, "Follow up unless they reply…", "MAIL", aliases: ["waiting", "reminder", "followup"]))
             items.append(paletteItem(.followups, "Go to Follow-ups", "GO TO", shortcut: "G W", aliases: ["waiting for reply", "due"]))
             items.append(paletteItem(.cleanupJobs, "Cleanup history…", "MAIL", aliases: ["jobs", "progress", "resume cleanup"]))
@@ -2130,6 +2139,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                         scopeTabButtons[1].title = "Unread \(count.formatted())"
                         scopeTabButtons[1].toolTip = "Unread conversations in downloaded inboxes"
                     }
+                    updateAccountChrome()
                     threads = result.1.filter { thread in
                         guard let id = thread.id else { return true }
                         if pendingRemovedThreadIDs.contains(id) { return false }
@@ -2321,6 +2331,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         })
     }
     func showCalendarWorkspace() {
+        // G C and the palette follow the sidebar: no Calendar where none can be connected.
+        guard calendarAvailable else { NSSound.beep(); return }
         guard calendarWorkspace == nil, let core, let container = contentView, let sidebarPanel else { return }
         if let composePane { composePane.requestClose(); if self.composePane != nil { return } }
         if activityController != nil { closeActivityPane() }
@@ -2687,6 +2699,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             Task { @MainActor [weak self] in
                 let accounts = await Task.detached { core.accountRecords() }.value
                 self?.knownAccounts = accounts
+                self?.updateAccountChrome()
                 self?.refreshInbox()
                 self?.syncAll()
             }
@@ -3494,11 +3507,11 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .inbox: threads.isEmpty
         }
         inboxScroll.isHidden = empty
-        inboxEmpty.isHidden = !empty || (folder == .outbox && search.stringValue.isEmpty)
+        inboxEmpty.isHidden = !empty || (folder == .outbox && search.stringValue.isEmpty) || hasNoAccounts
         inboxEmpty.stringValue = switch folder {
         case .drafts: search.stringValue.isEmpty ? "No drafts yet." : "No drafts match your search."
         case .outbox: search.stringValue.isEmpty ? "Nothing scheduled to send." : "No outgoing messages match."
-        case .inbox: search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : (knownAccounts.isEmpty ? "Connect an account to see your mail." : "No messages in this view.")) : "No messages match your search."
+        case .inbox: search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : "No messages in this view.") : "No messages match your search."
         }
     }
 
@@ -3784,8 +3797,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         readerBody.isHidden = true
         emptyState.isHidden = false
         let searching = !search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        emptyTitle.stringValue = folder == .drafts ? "No draft selected" : (folder == .outbox ? "Nothing pending" : (searching ? "No results" : (inboxScope == .archived ? "No archived mail cached yet" : (inboxScope == .pinned ? "No favorites yet" : (knownAccounts.isEmpty ? "Connect your inbox" : "You're all caught up")))))
-        emptyDetail.stringValue = folder == .drafts ? "Select a draft to continue writing, or press C to start a message." : (folder == .outbox ? "Scheduled messages and the undo window appear here." : (searching ? "Try another search or clear the field." : (inboxScope == .pinned ? "Press F on an email to save it here for later." : (knownAccounts.isEmpty ? (core?.buildFeatures().microsoftAccounts == true ? "Add Gmail, iCloud, Outlook, or any IMAP account to get started." : "Add Gmail, iCloud, or any IMAP account to get started.") : "New messages will appear after the next sync."))))
+        emptyTitle.stringValue = folder == .drafts ? "No draft selected" : (folder == .outbox ? "Nothing pending" : (searching ? "No results" : (inboxScope == .archived ? "No archived mail cached yet" : (inboxScope == .pinned ? "No favorites yet" : (knownAccounts.isEmpty ? "Welcome to Email" : "You're all caught up")))))
+        emptyDetail.stringValue = folder == .drafts ? "Select a draft to continue writing, or press C to start a message." : (folder == .outbox ? "Scheduled messages and the undo window appear here." : (searching ? "Try another search or clear the field." : (inboxScope == .pinned ? "Press F on an email to save it here for later." : (knownAccounts.isEmpty ? (core?.buildFeatures().microsoftAccounts == true ? "Add your Gmail, iCloud, Outlook or other email account to get started." : "Add your Gmail, iCloud or other email account to get started.") : "New messages will appear after the next sync."))))
         if folder == .inbox && inboxScope == .sent && !searching {
             emptyTitle.stringValue = "No sent mail cached yet"
             emptyDetail.stringValue = "Messages sent from Email appear here after delivery. Only locally available sent mail is shown."
@@ -4869,6 +4882,35 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         } else {
             readerKeyboardHint.items = [("J K", "Next / previous"), ("↵", "Read"), ("R", "Reply"), (inboxScope == .archived ? "⇧E" : "E", inboxScope == .archived ? "Move to Inbox" : "Archive"), ("⌘K", "Commands")]
         }
+        // Mail shortcuts mean nothing before there is mail.
+        readerKeyboardHint.isHidden = hasNoAccounts && composePane == nil
+    }
+
+    /// No account yet: the window is a welcome with one action.
+    private var hasNoAccounts: Bool { usesCore && knownAccounts.isEmpty }
+
+    /// A calendar connects only to an account that signed in with Google
+    /// (`connect_calendar`), which this build may not offer.
+    private var calendarAvailable: Bool {
+        !knownAccounts.isEmpty && (core?.buildFeatures().googleOAuthPublic == true || knownAccounts.contains { $0.provider == "gmail" })
+    }
+
+    /// Show the mail chrome only once there is an account, and Calendar only
+    /// where one can be connected.
+    private func updateAccountChrome() {
+        let empty = hasNoAccounts
+        accountOnlySidebarViews.forEach { $0.isHidden = empty }
+        calendarSidebarButton?.isHidden = !calendarAvailable
+        inboxPanel?.isHidden = empty && activityController == nil
+        if scopeTabButtons.count > 1 && empty { scopeTabButtons[1].title = "Unread" }
+        updateReaderShortcuts()
+    }
+
+    /// The app's primary button: accent fill, text in the canvas color on dark.
+    private func paintEmptyAction() {
+        emptyAction.layer?.backgroundColor = EmailTheme.cgColor(EmailTheme.accent, in: effectiveAppearance)
+        let ink = EmailTheme.isDark(effectiveAppearance) ? EmailTheme.canvas : NSColor.white
+        emptyAction.attributedTitle = NSAttributedString(string: "Add an account", attributes: [.foregroundColor: ink, .font: NSFont.systemFont(ofSize: 12, weight: .semibold)])
     }
 
     private func setReaderMode(_ enabled: Bool) {

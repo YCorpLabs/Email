@@ -37,30 +37,130 @@ maintainers set `GOOGLE_OAUTH_PUBLIC=true` in `config/profiles/official.env`.
 | | Development build | Official release, sign-in off (launch) | Official release, sign-in on |
 | --- | --- | --- | --- |
 | Choices | Gmail, Gmail (app password), iCloud, Outlook, Other | **Gmail**, iCloud, Other | Gmail, Gmail (app password), iCloud, Other |
-| Selected on open | Gmail sign-in (app password if no client is configured) | Gmail, on the app-password path | Gmail sign-in |
+| Opens on | The email field | The email field | The email field |
+| `gmail.com`, `googlemail.com` | Gmail sign-in (app password if no client is configured) | Gmail, on the app-password path | Gmail sign-in |
 | Contact photos | Offered | Hidden; no Contacts scope compiled in | Hidden |
 
-The app-password panel shows, in order:
-- "One-click Google sign-in is coming once Google finishes reviewing the app." (only when sign-in is off);
-- three numbered steps, each with its direct link where there is one:
-  1. Turn on 2-Step Verification: <https://myaccount.google.com/signinoptions/twosv>.
-  2. Create an app password named "Email": <https://myaccount.google.com/apppasswords>.
-  3. Paste the 16 letters; spaces don't matter.
-- the address and app-password fields. The request names no servers: the service always uses `imap.gmail.com:993` and `smtp.gmail.com:465`, both TLS;
-- what an app password is and how to revoke it;
-- which accounts can't create one;
-- a link to Google's help article (185833).
+### Email first
+
+The window has one title, the heading **Add an account** (macOS hides the
+title-bar text; Linux shows an empty header bar). It opens with only the email
+field, a small **Choose provider** menu under it, and Cancel / **Continue**.
+Continue asks the engine which provider the address belongs to
+(`setup_provider`, domain only, no network):
+
+- `gmail.com`, `googlemail.com`: Gmail;
+- `icloud.com`, `me.com`, `mac.com`: iCloud;
+- `outlook.com`, `hotmail.com`, `live.com`, `msn.com`: Outlook where the build
+  offers it, otherwise Other;
+- everything else: Other.
+
+Choose provider (and ⌘1…⌘n / Ctrl+1…Ctrl+n) picks a provider by hand, for
+custom domains on Google Workspace or iCloud. Until then, editing the address
+follows it to its provider.
+
+### What each provider shows
+
+Gmail, about 40 words before any disclosure:
+
+> Gmail needs an app password.
+> 1. Turn on 2-Step Verification ↗ (<https://myaccount.google.com/signinoptions/twosv>)
+> 2. Create an app password ↗ (<https://myaccount.google.com/apppasswords>)
+> 3. Paste it below
+>
+> App password: "16 letters, spaces are fine" · ▸ What's an app password?
+
+The disclosure says it's a 16-letter code just for Email, stored in the
+Keychain (Secret Service on Linux); that it can be revoked in the Google
+Account and that changing the Google password revokes it; that Google hides
+the option for security-key-only, Advanced Protection and some work or school
+accounts; and that Email connects to `imap.gmail.com` and `smtp.gmail.com`.
+The request names no servers: the service always uses `imap.gmail.com:993`
+and `smtp.gmail.com:465`, both TLS.
+
+iCloud follows the same pattern: "iCloud needs an app-specific password.",
+1. Sign in to your Apple Account ↗ (<https://account.apple.com/>),
+2. Create an app-specific password, 3. Paste it below; placeholder
+`abcd-efgh-ijkl-mnop`; ▸ What's an app-specific password?
+
+Other: "Use your email password or an app password." and a Password field. The
+request names no servers; the engine guesses them (see below). The server
+fields appear only when the guess fails, filled with the guess, or under
+**Advanced** after any failed attempt (servers, ports, security, usernames,
+display name).
+
+Gmail, iCloud and Other end with **Need help? Step-by-step guide ↗**
+(`https://ycorplabs.com/email/guide/#gmail`, `#icloud`, `#other`) only in
+builds whose support address is Y Corp's own (`profile::setup_guide_url`,
+reported as `setup_guide_url` in the profile JSON). Forks and unofficial
+builds never link to that site.
+
+Not shown any more: the Google-review sentence (no review has been
+submitted), "Never enter your main account password here", the
+`imap.gmail.com`/`smtp.gmail.com` footnote (now in the disclosure) and the
+intro paragraph.
+
+### Errors
+
+A failure shows one line, a fix link where there is one, and **Details** with
+what the server said (`setup_error` from the engine, below). They sit directly
+under the password field (under the email field before a provider is shown),
+and an error closes the "What's an app password?" disclosure:
+
+| Situation | Line | Link |
+| --- | --- | --- |
+| Gmail: not 16 letters (checked before connecting), or "Application-specific password required" | That looks like your Google password. | Create an app password instead ↗ |
+| Gmail: `[AUTHENTICATIONFAILED]` with an app password | Wrong email or app password. | Create a new app password ↗ |
+| iCloud refused, password not shaped like `abcd-efgh-ijkl-mnop` | That looks like your Apple Account password. | Create an app-specific password instead ↗ |
+| iCloud refused an app-specific password | Wrong email or app-specific password. | Create a new app-specific password ↗ |
+| Any other server refused | Wrong email or app password. | none |
+| Other: guessed servers don't answer | Couldn't find the mail servers for example.com. Check the server settings. | none; server fields open |
+| Workspace admin turned IMAP off | Your Google Workspace admin has turned off IMAP for this account. | none; Admin console path in Details |
+| Google blocked the sign-in | Google blocked this sign-in. Confirm it was you in Gmail, then try again. | Open Gmail ↗ |
+
+"Turn on 2-Step Verification first" has no error of its own: an account
+without 2-Step Verification has no App passwords page, so it never reaches the
+server with an app password. Step 1 and the disclosure cover it, and the "looks
+like your Google password" line catches the regular password before it is
+sent. A Gmail `[AUTHENTICATIONFAILED]` after that check means the app password
+or address is wrong, so it is not reported as the Google password.
 
 Keyboard: ⌘1…⌘n on macOS and Ctrl+1…Ctrl+n on Linux pick a choice (the
 modifier alone; Shift is allowed for keyboard layouts that need it). Focus
-moves to the address field, Return submits and Escape closes; with a security
-list open, Escape first closes only the list. Errors appear inline; the window
-stays open and nothing is saved. A choice with a request still running cannot
-be submitted again (returning to it shows "Still connecting…"). Other choices
-stay usable meanwhile. A request that ends while another choice is on screen
-keeps its outcome for its own choice: an error is shown when that choice is
-selected again, and a success refreshes the app, keeps the window and what is
-typed for the other choice, and shows "Connected <address>." on return.
+starts in the email field and moves to the password once a provider is shown.
+Return continues, then submits; Escape closes; with a security list or the
+provider menu open, Escape first closes only the list. Errors appear inline;
+the window stays open and nothing is saved. A choice with a request still
+running cannot be submitted again (returning to it shows "Still connecting…").
+Other choices stay usable meanwhile. A request that ends while another choice
+is on screen keeps its outcome for its own choice: an error is shown when that
+choice is selected again, and a success refreshes the app, keeps the window
+and what is typed for the other choice, and shows "Connected <address>." on
+return.
+
+### Verified (13 Nov 2026)
+
+- macOS, official-profile distribution engine: the email field, Gmail (with and
+  without the disclosure), iCloud, Other, the Gmail "looks like your Google
+  password" error with Details, and Other's servers-not-found state, in dark
+  and light mode. `run-account-setup-checks.py` passed 126 checks, including
+  the error's position under the field against the
+  fixture in both modes: routing by domain, ⌘1–⌘n, focus, payload keys, every
+  error line and fix link above (iCloud and a guessed Other server through
+  fixture redirects), in-flight and background outcomes, Return, Escape.
+- Linux, the same engine in the verify container under Xvfb: the same states
+  in dark and light; the running executable matched the built artifact. The
+  Linux shell tests (62) pass. `apps/linux/qa/account-setup-fixture.sh` ran
+  through: the welcome, routing, every error above (iCloud and Other through
+  the fixture redirects), in-flight and background outcomes, connecting,
+  search, Escape in the provider menu, and the development build's Gmail
+  sign-in and Outlook choices. Its screenshots were checked by eye.
+- Linux dialog frame: the header bar makes the dialog client-side decorated,
+  and GTK framed it in the default light theme's colors (a white 4 px band
+  without a compositor, a light outline with one). The frame now uses the
+  app's line color; checked with and without a compositor (`xcompmgr`).
+- Not verified: Google's live responses (the fixture uses their documented
+  texts), real iCloud and third-party servers, and a Wayland session.
 
 When Google sign-in is offered but may not work for this person, a "Use Gmail
 (app password) instead" link appears: while the browser sign-in waits, after it
@@ -76,18 +176,29 @@ errors name the app-password path.
   security, username or archive values in the request, so an app password made
   for Google is only ever sent to Google's servers.
 - Before any connection, a value that is not 16 letters is refused with "That
-  isn't a Google app password…". A regular Google password is therefore never
-  sent to Gmail.
+  looks like your Google password." A regular Google password is therefore
+  never sent to Gmail.
+- Failures cross the JSON API as `setup_error` in the response envelope
+  (`MailService::request_envelope`, also the C ABI): `code`, a one-line
+  `message`, an optional `action` (`label`, `https` `url`), `detail` (what the
+  server said, password redacted) and `servers`. `request_json` keeps a plain
+  `error` string for every other caller.
+- **Server guess (Other).** `add_imap_account` for `imap` without a preset and
+  without servers uses `mail_imap::guess_servers`: a few providers by name
+  (Yahoo, AOL, Fastmail, plus Gmail and iCloud domains), otherwise
+  `imap.<domain>:993` TLS and `smtp.<domain>:587` STARTTLS. There is no MX or
+  autoconfig lookup; connecting on submit is the only network use. If nothing
+  answers (or TLS or sending fails), the failure is `servers_not_found` with the
+  guess, which the shells show for editing.
 - `verify_account` reports the step that failed (connect, login, mailbox, SMTP).
-  `SetupError::message` maps Gmail's responses to the next step:
+  `SetupError::explain` maps Gmail's responses to the next step:
   - `[AUTHENTICATIONFAILED]` and SMTP 535: wrong app password, including the security-key, Advanced Protection and work-account case;
   - "Application-specific password required" and SMTP 534 5.7.9: the regular Google password was used;
   - "IMAP access is disabled for your domain": a Workspace administrator turned IMAP off, with the Admin console path;
   - `[WEBALERT]` / "Web login required" and SMTP 5.7.14: confirm the sign-in in a browser;
   - too many connections, unreachable hosts and TLS failures.
 
-  The advice adapts to whether this build offers Google sign-in. Messages never
-  contain the password. The mapping uses Google's documented and commonly
+  Messages never contain the password. The mapping uses Google's documented and commonly
   reported texts; Google's live wording may differ.
 - Setup uses one IMAP session: it logs in, selects INBOX and, on servers that
   advertise `X-GM-EXT-1`, tries to list mailboxes (a failure there does not fail setup) to find the one marked `\All` (All
@@ -143,9 +254,9 @@ errors name the app-password path.
   keep the first answer, so the offered choices never change while the app
   runs. If the library cannot answer, optional features (Google sign-in,
   Outlook, contact photos) stay off for that session.
-- **Advice.** The shells send `google_sign_in` (whether they offer Google sign-in
-  right now). The "choose Gmail to sign in with Google" advice appears only when
-  it does.
+- **Advice.** Older shells send `google_sign_in`; the engine accepts and
+  ignores it. The one-line messages don't depend on it, and the window's
+  disclosure covers accounts without app passwords.
 - **macOS handles.** Account setup (`add_imap_account`, `start_oauth`) runs on its
   own service handle, so a slow server never blocks the window or cached reads.
   This matches Linux's per-request service.

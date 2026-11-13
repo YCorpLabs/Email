@@ -20,127 +20,241 @@ enum AccountSetupChoice: CaseIterable, Sendable {
     /// Choices that connect over IMAP/SMTP with a password made for this app.
     var usesPassword: Bool { self == .gmailAppPassword || self == .icloud || self == .other }
 
-    /// Display order. Official releases do not offer Google sign-in until
-    /// Google's review passes (`googleOAuthPublic`); Gmail then goes straight to
-    /// the app-password path. Outlook/Hotmail stays out of distribution builds
+    /// Display order. Official releases do not offer Google sign-in
+    /// (`googleOAuthPublic` is off); Gmail then goes straight to the
+    /// app-password path. Outlook/Hotmail stays out of distribution builds
     /// until it has been tested with real accounts.
     static func available(_ features: BuildFeatures) -> [AccountSetupChoice] {
         let gmail: [AccountSetupChoice] = features.googleOAuthPublic ? [.gmail, .gmailAppPassword] : [.gmailAppPassword]
         return gmail + [.icloud] + (features.microsoftAccounts ? [.outlook] : []) + [.other]
     }
 
-    /// The choice selected when the window opens.
+    /// The Gmail choice for a Google address.
     static func initial(_ features: BuildFeatures, googleSignInConfigured: Bool) -> AccountSetupChoice {
         features.googleOAuthPublic && googleSignInConfigured ? .gmail : .gmailAppPassword
     }
+
+    /// The choice for the engine's `setup_provider` answer. Everything that is
+    /// not clearly Google or Apple goes to Other.
+    static func forProvider(_ provider: String, features: BuildFeatures, googleSignInConfigured: Bool) -> AccountSetupChoice {
+        switch provider {
+        case "gmail": initial(features, googleSignInConfigured: googleSignInConfigured)
+        case "icloud": .icloud
+        case "outlook" where features.microsoftAccounts: .outlook
+        default: .other
+        }
+    }
 }
 
-/// Gmail through the generic IMAP path. The Rust preset (`ImapConfig::gmail`)
-/// owns the servers; the request names none.
-enum GmailAppPasswordPreset {
-    static let twoStepURL = "https://myaccount.google.com/signinoptions/twosv"
-    static let appPasswordsURL = "https://myaccount.google.com/apppasswords"
-    static let helpURL = "https://support.google.com/accounts/answer/185833"
-    static let steps: [(text: String, link: String?, url: String?)] = [
-        ("Turn on 2-Step Verification for your Google Account.", "Open 2-Step Verification ↗", twoStepURL),
-        ("Create an app password and name it “Email”.", "Open App passwords ↗", appPasswordsURL),
-        ("Paste the 16-letter password below. Spaces don't matter.", nil, nil),
-    ]
-    /// Shown when this build offers no Google sign-in.
-    static let signInComing = "One-click Google sign-in is coming once Google finishes reviewing the app."
-    static let about = "An app password is a 16-letter code that lets Email sign in to Gmail's mail servers without your Google password. Email keeps it in your Mac's Keychain and sends it only to Google. Remove it on the App passwords page to revoke access; changing your Google password revokes it too."
-    static func unavailable(_ features: BuildFeatures) -> String {
-        "No App passwords option? Google doesn't offer them for accounts that use only security keys or Advanced Protection, or for some work and school accounts. "
-            + (features.googleOAuthPublic ? "Use Gmail sign-in instead, or ask your administrator." : "Ask your administrator, or wait for one-click Google sign-in.")
+/// The steps, field and short explanation for a provider that needs a
+/// password made for Email. Linux shows the same text (`account_setup.rs`).
+struct AppPasswordGuide: Sendable {
+    let intro: String
+    let steps: [(text: String, url: String?)]
+    let fieldLabel: String
+    let placeholder: String
+    let disclosure: String
+    let about: [String]
+}
+
+enum AccountSetupCopy {
+    static let title = "Add an account"
+    static let chooseProvider = "Choose provider"
+    static let continueTitle = "Continue"
+    static let addAccount = "Add account"
+    static let guideLink = "Need help? Step-by-step guide ↗"
+    static let details = "Details"
+    static let advanced = "Advanced"
+    static let enterEmail = "Enter your email address."
+
+    static let gmail = AppPasswordGuide(
+        intro: "Gmail needs an app password.",
+        steps: [("Turn on 2-Step Verification ↗", "https://myaccount.google.com/signinoptions/twosv"),
+                ("Create an app password ↗", "https://myaccount.google.com/apppasswords"),
+                ("Paste it below", nil)],
+        fieldLabel: "App password",
+        placeholder: "16 letters, spaces are fine",
+        disclosure: "What's an app password?",
+        about: ["It's a 16-letter code just for Email, stored in your Keychain.",
+                "You can revoke it in your Google Account. Changing your Google password revokes it too.",
+                "No App passwords option? Google hides it for accounts that use only security keys, Advanced Protection, and some work or school accounts.",
+                "Email connects to imap.gmail.com and smtp.gmail.com."])
+
+    static let icloud = AppPasswordGuide(
+        intro: "iCloud needs an app-specific password.",
+        steps: [("Sign in to your Apple Account ↗", "https://account.apple.com/"),
+                ("Create an app-specific password", nil),
+                ("Paste it below", nil)],
+        fieldLabel: "App password",
+        placeholder: "abcd-efgh-ijkl-mnop",
+        disclosure: "What's an app-specific password?",
+        about: ["It's a password Apple makes for one app, here Email, stored in your Keychain.",
+                "Create it under Sign-In and Security. Your Apple Account needs two-factor authentication.",
+                "You can revoke it at account.apple.com. Changing your Apple Account password revokes it too.",
+                "Email connects to imap.mail.me.com and smtp.mail.me.com."])
+
+    /// Other: no steps, one line, servers found automatically.
+    static let otherIntro = "Use your email password or an app password."
+    static let otherFieldLabel = "Password"
+    static let otherPlaceholder = ""
+
+    static func oauthIntro(_ choice: AccountSetupChoice) -> String {
+        choice == .outlook ? "You'll sign in to Microsoft in your browser." : "You'll sign in to Google in your browser."
     }
 }
 
 @MainActor
-final class AccountSetupWindow: NSWindow {
+final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
     private let core: CoreBridge
     private let onConnected: () -> Void
     private let features: BuildFeatures
-    private let choices: [AccountSetupChoice]
-    private var selected: AccountSetupChoice
+    let choices: [AccountSetupChoice]
+    /// `nil` until the address is entered or a provider chosen: only the
+    /// email field shows.
+    private(set) var selected: AccountSetupChoice?
+    /// The person picked the provider; typing another address keeps it.
+    private var pickedByHand = false
     private let content = NSStackView()
-    private let intro = NSTextField(wrappingLabelWithString: "")
-    private let displayName = NSTextField()
-    private let email = NSTextField()
-    private let username = NSTextField()
-    private let smtpUsername = NSTextField()
-    private let password = NSSecureTextField()
-    private let imapHost = NSTextField()
-    private let imapPort = NSTextField()
-    private let smtpHost = NSTextField()
-    private let smtpPort = NSTextField()
-    private let imapSecurity = NSPopUpButton()
-    private let smtpSecurity = NSPopUpButton()
-    private let gmailSteps = NSStackView()
-    private let gmailAbout = NSStackView()
-    private let status = NSTextField(wrappingLabelWithString: "")
-    private let switchToAppPassword = NSButton(title: "Use Gmail (app password) instead →", target: nil, action: nil)
-    private let connectButton = NSButton(title: "Connect account", target: nil, action: nil)
-    private let helpButton = NSButton(title: "How to get an app password", target: nil, action: nil)
-    private var providerButtons: [(choice: AccountSetupChoice, button: NSButton)] = []
-    private let imapFields = NSStackView()
-    private let oauthFields = NSStackView()
-    private var displayNameRow: NSView?
-    private var emailRow: NSView?
-    private var advancedRows: [NSView] = []
+    let email = NSTextField()
+    let providerMenu = NSPopUpButton(frame: .zero, pullsDown: true)
+    let intro = NSTextField(wrappingLabelWithString: "")
+    let steps = NSStackView()
+    let password = NSSecureTextField()
+    private let passwordLabel = NSTextField(labelWithString: "")
+    private(set) var passwordRow: NSView?
+    /// Status and errors, under the password field.
+    private var problemRow: NSView?
+    let aboutToggle = NSButton(title: "", target: nil, action: nil)
+    let about = NSStackView()
+    let guideButton = NSButton(title: AccountSetupCopy.guideLink, target: nil, action: nil)
+    let advancedToggle = NSButton(title: AccountSetupCopy.advanced, target: nil, action: nil)
+    let advanced = NSStackView()
+    let displayName = NSTextField()
+    let username = NSTextField()
+    let smtpUsername = NSTextField()
+    let imapHost = NSTextField()
+    let imapPort = NSTextField()
+    let smtpHost = NSTextField()
+    let smtpPort = NSTextField()
+    let imapSecurity = NSPopUpButton()
+    let smtpSecurity = NSPopUpButton()
+    let status = NSTextField(wrappingLabelWithString: "")
+    let fixButton = NSButton(title: "", target: nil, action: nil)
+    let detailsToggle = NSButton(title: AccountSetupCopy.details, target: nil, action: nil)
+    let details = NSTextField(wrappingLabelWithString: "")
+    let switchToAppPassword = NSButton(title: "Use Gmail (app password) instead →", target: nil, action: nil)
+    let connectButton = NSButton(title: AccountSetupCopy.continueTitle, target: nil, action: nil)
+    private var fixURL: URL?
     private var signInFailed = false
+    /// The server rows for Other: shown when the guess failed or opened by hand.
+    private var serversShown = false
     /// Choices with a request still running. Another choice can be used
     /// meanwhile; the same one cannot be submitted twice.
-    private var inFlight: Set<AccountSetupChoice> = []
+    private(set) var inFlight: Set<AccountSetupChoice> = []
     /// How a request ended while another choice was on screen. Shown when
     /// that choice is selected again (same as Linux).
-    private var outcomes: [AccountSetupChoice: (message: String, problem: Bool)] = [:]
-    private var appearanceObservation: NSKeyValueObservation?
+    private var outcomes: [AccountSetupChoice: (message: String, problem: SetupProblem?)] = [:]
+
+    private static let width: CGFloat = 520
+    private static let fieldWidth: CGFloat = 340
+    private static let labelWidth: CGFloat = 104
 
     init(core: CoreBridge, onConnected: @escaping () -> Void) {
         self.core = core
         self.onConnected = onConnected
         features = core.buildFeatures()
         choices = AccountSetupChoice.available(features)
-        selected = .gmailAppPassword
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 560, height: 400), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        title = "Connect an account"
+        super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 240), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+        // One title: the heading inside the window. The title bar keeps the
+        // name for the Window menu and accessibility.
+        title = AccountSetupCopy.title
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
         backgroundColor = EmailTheme.reader
         isReleasedWhenClosed = false
         build()
-        select(AccountSetupChoice.initial(features, googleSignInConfigured: !oauthClientID(for: .gmail).isEmpty))
+        showChoice()
         center()
-        // Chip colors are layer colors; repaint them when light/dark mode changes.
-        appearanceObservation = observe(\.effectiveAppearance) { window, _ in
-            MainActor.assumeIsolated { window.paintChoices() }
-        }
+        initialFirstResponder = email
+        makeFirstResponder(email)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection([.command, .control, .option]) == .command,
            let digit = event.charactersIgnoringModifiers?.first?.wholeNumberValue,
            choices.indices.contains(digit - 1) {
-            select(choices[digit - 1])
+            choose(choices[digit - 1])
             return true
         }
         return super.performKeyEquivalent(with: event)
     }
 
+    // MARK: Building
+
     private static func secondary(_ text: String, size: CGFloat = 11) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
         label.font = .systemFont(ofSize: size)
         label.textColor = .secondaryLabelColor
-        label.preferredMaxLayoutWidth = 500
+        label.preferredMaxLayoutWidth = width - 60
         return label
     }
 
     private func link(_ title: String, url: String) -> NSButton {
         let button = NSButton(title: title, target: self, action: #selector(openLink(_:)))
         button.isBordered = false
-        button.contentTintColor = EmailTheme.accent
-        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.contentTintColor = .linkColor
+        button.font = .systemFont(ofSize: 13)
         button.toolTip = url
         button.identifier = NSUserInterfaceItemIdentifier(url)
+        button.setAccessibilityRole(.link)
         return button
+    }
+
+    private func disclosure(_ button: NSButton, action: Selector) {
+        button.target = self
+        button.action = action
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 12)
+        button.contentTintColor = .secondaryLabelColor
+        button.imagePosition = .imageLeading
+        button.imageHugsTitle = true
+        setDisclosure(button, open: false)
+    }
+
+    private func setDisclosure(_ button: NSButton, open: Bool) {
+        let symbol = open ? "chevron.down" : "chevron.right"
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+        button.setAccessibilityExpanded(open)
+    }
+
+    private func row(_ title: String, _ field: NSView, label: NSTextField? = nil) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 12
+        let label = label ?? NSTextField(labelWithString: title)
+        label.stringValue = title
+        label.font = .systemFont(ofSize: 13)
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: Self.labelWidth).isActive = true
+        field.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(field)
+        return stack
+    }
+
+    /// Indents a view to line up with the fields.
+    private func indented(_ view: NSView) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .top
+        stack.spacing = 0
+        let spacer = NSView()
+        spacer.widthAnchor.constraint(equalToConstant: Self.labelWidth + 12).isActive = true
+        stack.addArrangedSubview(spacer)
+        stack.addArrangedSubview(view)
+        return stack
     }
 
     private func build() {
@@ -153,122 +267,125 @@ final class AccountSetupWindow: NSWindow {
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: contentView!.leadingAnchor, constant: 30),
             content.trailingAnchor.constraint(equalTo: contentView!.trailingAnchor, constant: -30),
-            content.topAnchor.constraint(equalTo: contentView!.topAnchor, constant: 28)
+            content.topAnchor.constraint(equalTo: contentView!.topAnchor, constant: 40)
         ])
-        let headline = NSTextField(labelWithString: "Add an email account")
+        let headline = NSTextField(labelWithString: AccountSetupCopy.title)
         headline.font = .systemFont(ofSize: 20, weight: .semibold)
+        headline.setAccessibilityRole(.staticText)
         content.addArrangedSubview(headline)
-        intro.stringValue = switch (features.googleOAuthPublic, features.microsoftAccounts) {
-        case (true, true): "Gmail and Outlook sign in through your browser. Gmail (app password) and iCloud use a password created for this app. Never enter your main account password here."
-        case (true, false): "Gmail signs in through your browser. Gmail (app password) and iCloud use a password created for this app. Never enter your main account password here."
-        case (false, true): "Outlook signs in through your browser. Gmail and iCloud use a password created for this app. Never enter your main account password here."
-        case (false, false): "Gmail and iCloud connect with a password created for this app. Never enter your main account password here."
-        }
-        intro.textColor = .secondaryLabelColor
-        intro.font = .systemFont(ofSize: 12)
-        intro.preferredMaxLayoutWidth = 500
-        content.addArrangedSubview(intro)
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.spacing = 8
-        for (index, choice) in choices.enumerated() {
-            let button = NSButton(title: choice.title(features), target: self, action: #selector(providerButtonClicked(_:)))
-            button.tag = index
-            button.keyEquivalent = String(index + 1)
-            button.keyEquivalentModifierMask = [.command]
-            button.toolTip = "Choose \(choice.title(features)) (⌘\(index + 1))"
-            button.isBordered = false
-            button.wantsLayer = true
-            button.layer?.cornerRadius = 8
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
-            button.heightAnchor.constraint(equalToConstant: 34).isActive = true
-            providerButtons.append((choice, button))
-            row.addArrangedSubview(button)
-        }
-        content.addArrangedSubview(row)
+        content.setCustomSpacing(18, after: headline)
 
-        // Gmail (app password): three numbered steps with direct links.
-        gmailSteps.orientation = .vertical
-        gmailSteps.alignment = .leading
-        gmailSteps.spacing = 8
-        if !features.googleOAuthPublic {
-            gmailSteps.addArrangedSubview(Self.secondary(GmailAppPasswordPreset.signInComing, size: 12))
-        }
-        for (index, step) in GmailAppPasswordPreset.steps.enumerated() {
-            let line = NSStackView()
-            line.orientation = .horizontal
-            line.alignment = .firstBaseline
-            line.spacing = 8
-            let number = NSTextField(labelWithString: "\(index + 1)")
-            number.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-            number.textColor = EmailTheme.accent
-            number.widthAnchor.constraint(equalToConstant: 14).isActive = true
-            let text = NSTextField(wrappingLabelWithString: step.text)
-            text.font = .systemFont(ofSize: 12)
-            text.preferredMaxLayoutWidth = step.link == nil ? 470 : 300
-            line.addArrangedSubview(number)
-            line.addArrangedSubview(text)
-            if let title = step.link, let url = step.url { line.addArrangedSubview(link(title, url: url)) }
-            gmailSteps.addArrangedSubview(line)
-        }
-        content.addArrangedSubview(gmailSteps)
-
-        displayName.placeholderString = "Optional"
         email.placeholderString = "you@example.com"
+        email.delegate = self
+        content.addArrangedSubview(row("Email", email))
+        content.setCustomSpacing(4, after: content.arrangedSubviews.last!)
+
+        // Small "Choose provider" control for custom domains on Google or Apple.
+        providerMenu.isBordered = false
+        providerMenu.font = .systemFont(ofSize: 11)
+        providerMenu.contentTintColor = .secondaryLabelColor
+        (providerMenu.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtBottom
+        providerMenu.toolTip = "Choose your provider by hand (⌘1–⌘\(choices.count))"
+        providerMenu.addItem(withTitle: AccountSetupCopy.chooseProvider)
+        for (index, choice) in choices.enumerated() {
+            providerMenu.addItem(withTitle: choice.title(features))
+            providerMenu.lastItem?.keyEquivalent = String(index + 1)
+            providerMenu.lastItem?.keyEquivalentModifierMask = [.command]
+            providerMenu.lastItem?.tag = index
+        }
+        providerMenu.target = self
+        providerMenu.action = #selector(providerMenuChanged(_:))
+        content.addArrangedSubview(indented(providerMenu))
+        content.setCustomSpacing(14, after: content.arrangedSubviews.last!)
+
+        intro.font = .systemFont(ofSize: 13, weight: .medium)
+        intro.preferredMaxLayoutWidth = Self.width - 60
+        content.addArrangedSubview(intro)
+        content.setCustomSpacing(8, after: intro)
+        steps.orientation = .vertical
+        steps.alignment = .leading
+        steps.spacing = 4
+        content.addArrangedSubview(steps)
+
+        password.delegate = self
+        let passwordRow = row("", password, label: passwordLabel)
+        self.passwordRow = passwordRow
+        content.addArrangedSubview(passwordRow)
+
+        // Status and errors sit right under the field they are about: one
+        // line, the fix link, and the server's words behind Details.
+        status.font = .systemFont(ofSize: 13)
+        status.preferredMaxLayoutWidth = Self.fieldWidth
+        status.isSelectable = true
+        fixButton.target = self
+        fixButton.action = #selector(openFix)
+        fixButton.isBordered = false
+        fixButton.font = .systemFont(ofSize: 13, weight: .medium)
+        fixButton.contentTintColor = .linkColor
+        fixButton.setAccessibilityRole(.link)
+        disclosure(detailsToggle, action: #selector(toggleDetails))
+        details.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        details.textColor = .secondaryLabelColor
+        details.isSelectable = true
+        details.preferredMaxLayoutWidth = Self.fieldWidth
+        details.isHidden = true
+        let problemBox = NSStackView(views: [status, fixButton, detailsToggle, details])
+        problemBox.orientation = .vertical
+        problemBox.alignment = .leading
+        problemBox.spacing = 3
+        problemBox.setCustomSpacing(6, after: fixButton)
+        let problemRow = indented(problemBox)
+        self.problemRow = problemRow
+        content.addArrangedSubview(problemRow)
+        content.setCustomSpacing(10, after: passwordRow)
+
+        disclosure(aboutToggle, action: #selector(toggleAbout))
+        content.addArrangedSubview(indented(aboutToggle))
+        content.setCustomSpacing(4, after: content.arrangedSubviews.last!)
+        about.orientation = .vertical
+        about.alignment = .leading
+        about.spacing = 4
+        content.addArrangedSubview(indented(about))
+
+        disclosure(advancedToggle, action: #selector(toggleAdvanced))
+        content.addArrangedSubview(indented(advancedToggle))
+        advanced.orientation = .vertical
+        advanced.alignment = .leading
+        advanced.spacing = 8
+        displayName.placeholderString = "Optional"
         username.placeholderString = "Usually your email address"
-        smtpUsername.placeholderString = "Leave blank to use the mail username"
-        password.placeholderString = "Provider-issued app password"
+        smtpUsername.placeholderString = "Same as the mail username"
         imapHost.placeholderString = "imap.example.com"
         imapPort.placeholderString = "993"
         smtpHost.placeholderString = "smtp.example.com"
         smtpPort.placeholderString = "587"
         imapSecurity.addItems(withTitles: ["TLS", "STARTTLS"])
         smtpSecurity.addItems(withTitles: ["STARTTLS", "TLS"])
-        let nameRow = self.row("Display name", displayName)
-        let addressRow = self.row("Email address", email)
-        displayNameRow = nameRow
-        emailRow = addressRow
-        content.addArrangedSubview(nameRow)
-        content.addArrangedSubview(addressRow)
-
-        imapFields.orientation = .vertical
-        imapFields.alignment = .leading
-        imapFields.spacing = 10
-        for (label, field) in [("Mail username", username), ("SMTP username", smtpUsername), ("App password", password), ("IMAP server", imapHost), ("IMAP port", imapPort), ("IMAP security", imapSecurity), ("SMTP server", smtpHost), ("SMTP port", smtpPort), ("SMTP security", smtpSecurity)] {
-            let fieldRow = self.row(label, field)
-            imapFields.addArrangedSubview(fieldRow)
-            if label != "App password" { advancedRows.append(fieldRow) }
+        for (label, field) in [("IMAP server", imapHost), ("IMAP port", imapPort), ("IMAP security", imapSecurity),
+                               ("SMTP server", smtpHost), ("SMTP port", smtpPort), ("SMTP security", smtpSecurity),
+                               ("Mail username", username), ("SMTP username", smtpUsername), ("Display name", displayName)] as [(String, NSView)] {
+            advanced.addArrangedSubview(row(label, field))
         }
-        content.addArrangedSubview(imapFields)
-        oauthFields.orientation = .vertical
-        oauthFields.alignment = .leading
-        oauthFields.spacing = 10
-        oauthFields.addArrangedSubview(Self.secondary("Sign-in opens on your provider's website. Email receives a revocable access token, never your account password."))
-        content.addArrangedSubview(oauthFields)
+        advanced.isHidden = true
+        content.addArrangedSubview(advanced)
 
-        gmailAbout.orientation = .vertical
-        gmailAbout.alignment = .leading
-        gmailAbout.spacing = 6
-        gmailAbout.addArrangedSubview(Self.secondary(GmailAppPasswordPreset.about))
-        gmailAbout.addArrangedSubview(Self.secondary(GmailAppPasswordPreset.unavailable(features)))
-        content.addArrangedSubview(gmailAbout)
+        guideButton.target = self
+        guideButton.action = #selector(openGuide)
+        guideButton.isBordered = false
+        guideButton.font = .systemFont(ofSize: 12)
+        guideButton.contentTintColor = .linkColor
+        guideButton.setAccessibilityRole(.link)
+        content.addArrangedSubview(indented(guideButton))
 
-        helpButton.isBordered = false
-        helpButton.contentTintColor = EmailTheme.accent
-        helpButton.target = self
-        helpButton.action = #selector(openHelp)
-        content.addArrangedSubview(helpButton)
 
-        status.font = .systemFont(ofSize: 12)
-        status.textColor = .secondaryLabelColor
-        status.preferredMaxLayoutWidth = 500
-        content.addArrangedSubview(status)
         switchToAppPassword.isBordered = false
-        switchToAppPassword.contentTintColor = EmailTheme.accent
+        switchToAppPassword.contentTintColor = .linkColor
         switchToAppPassword.font = .systemFont(ofSize: 12, weight: .semibold)
         switchToAppPassword.target = self
         switchToAppPassword.action = #selector(switchToAppPasswordClicked)
         content.addArrangedSubview(switchToAppPassword)
+
+        // Dialog buttons at the bottom right, Return on the default button.
         let buttons = NSStackView()
         buttons.orientation = .horizontal
         buttons.spacing = 10
@@ -277,120 +394,217 @@ final class AccountSetupWindow: NSWindow {
         connectButton.target = self
         connectButton.action = #selector(connectClicked)
         connectButton.keyEquivalent = "\r"
+        connectButton.bezelStyle = .rounded
         buttons.addArrangedSubview(cancel)
         buttons.addArrangedSubview(connectButton)
-        content.addArrangedSubview(buttons)
+        let footer = NSStackView()
+        footer.orientation = .horizontal
+        let flexible = NSView()
+        flexible.setContentHuggingPriority(.init(1), for: .horizontal)
+        footer.addArrangedSubview(flexible)
+        footer.addArrangedSubview(buttons)
+        footer.widthAnchor.constraint(equalToConstant: Self.width - 60).isActive = true
+        content.setCustomSpacing(20, after: switchToAppPassword)
+        content.addArrangedSubview(footer)
     }
 
-    private func row(_ title: String, _ field: NSView) -> NSView {
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 12
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 12, weight: .medium)
-        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        field.widthAnchor.constraint(equalToConstant: 345).isActive = true
-        stack.addArrangedSubview(label)
-        stack.addArrangedSubview(field)
-        return stack
-    }
+    // MARK: State
 
-    @objc private func providerButtonClicked(_ sender: NSButton) {
-        guard choices.indices.contains(sender.tag) else { return }
-        select(choices[sender.tag])
-    }
-
-    @objc private func switchToAppPasswordClicked() {
-        select(.gmailAppPassword)
-        makeFirstResponder(email.stringValue.isEmpty ? email : password)
-    }
-
-    private func select(_ choice: AccountSetupChoice) {
-        selected = choices.contains(choice) ? choice : (choices.first ?? .other)
-        signInFailed = false
-        updateProvider()
-        if let outcome = outcomes.removeValue(forKey: selected) {
-            if outcome.problem {
-                signInFailed = selected == .gmail
-                showProblem(outcome.message)
-            } else {
-                status.stringValue = outcome.message
-            }
+    private var guide: AppPasswordGuide? {
+        switch selected {
+        case .gmailAppPassword: AccountSetupCopy.gmail
+        case .icloud: AccountSetupCopy.icloud
+        default: nil
         }
     }
 
-    private func paintChoices() {
-        for (option, button) in providerButtons {
-            let isSelected = option == selected
-            var unselected = NSColor.clear.cgColor
-            effectiveAppearance.performAsCurrentDrawingAppearance {
-                unselected = NSColor.quaternaryLabelColor.withAlphaComponent(0.12).cgColor
-            }
-            button.layer?.backgroundColor = isSelected ? EmailTheme.cgColor(EmailTheme.accentSoft, in: effectiveAppearance) : unselected
-            // A ring makes the current choice obvious in both appearances.
-            button.layer?.borderWidth = isSelected ? 1.5 : 0
-            button.layer?.borderColor = EmailTheme.cgColor(EmailTheme.accent, in: effectiveAppearance)
-            button.attributedTitle = NSAttributedString(string: "  \(option.title(features))  ", attributes: [
-                .foregroundColor: isSelected ? EmailTheme.accent : NSColor.labelColor,
-                .font: NSFont.systemFont(ofSize: 12, weight: isSelected ? .semibold : .medium)
-            ])
+    private var guideSection: String? {
+        switch selected {
+        case .gmailAppPassword, .gmail: "gmail"
+        case .icloud: "icloud"
+        case .other: "other"
+        default: nil
         }
     }
 
-    private func updateProvider() {
+    /// Show what the current choice needs; nothing else.
+    private func showChoice() {
         let choice = selected
-        password.stringValue = ""
-        paintChoices()
-        imapFields.isHidden = !choice.usesPassword
-        advancedRows.forEach { $0.isHidden = choice != .other }
-        oauthFields.isHidden = choice.usesPassword
-        emailRow?.isHidden = !choice.usesPassword
-        displayNameRow?.isHidden = choice != .other
-        gmailSteps.isHidden = choice != .gmailAppPassword
-        gmailAbout.isHidden = choice != .gmailAppPassword
-        helpButton.isHidden = choice != .icloud && choice != .gmailAppPassword
-        helpButton.title = choice == .gmailAppPassword ? "Learn more about app passwords ↗" : "Get an iCloud app password ↗"
-        switch choice {
-        case .icloud:
-            imapHost.stringValue = "imap.mail.me.com"
-            imapPort.stringValue = "993"
-            smtpHost.stringValue = "smtp.mail.me.com"
-            smtpPort.stringValue = "587"
-            imapSecurity.selectItem(at: 0)
-            smtpSecurity.selectItem(at: 0)
-            email.placeholderString = "you@icloud.com"
-            password.placeholderString = "iCloud app-specific password"
-        case .gmailAppPassword:
-            email.placeholderString = "you@gmail.com"
-            password.placeholderString = "abcd efgh ijkl mnop"
-        case .other:
-            imapHost.stringValue = ""
-            imapPort.stringValue = "993"
-            smtpHost.stringValue = ""
-            smtpPort.stringValue = "587"
-            imapSecurity.selectItem(at: 0)
-            smtpSecurity.selectItem(at: 0)
-            email.placeholderString = "you@example.com"
-            password.placeholderString = "Provider-issued app password"
-        case .gmail, .outlook:
-            break
+        let guide = guide
+        for item in providerMenu.itemArray.dropFirst() {
+            item.state = choices.indices.contains(item.tag) && choices[item.tag] == choice ? .on : .off
         }
-        connectButton.title = choice.usesPassword ? "Add account" : "Sign in with browser"
-        let oauthReady = choice.usesPassword || !oauthClientID(for: choice).isEmpty
-        connectButton.isEnabled = oauthReady && !inFlight.contains(choice)
-        status.textColor = .secondaryLabelColor
-        let idle: String = switch choice {
-        case .icloud: "Use a password created for this app in your Apple Account. Never enter your Apple Account password."
-        case .gmailAppPassword: "Email connects directly to imap.gmail.com and smtp.gmail.com. Your regular Google password won't work here."
-        case .other: "Use a provider-issued app password and the server settings from your provider."
-        case .gmail where !oauthReady: "Google sign-in isn't configured in this build. Use Gmail (app password) instead."
-        case .gmail, .outlook: oauthReady ? "You'll sign in on your provider's website in your browser." : "Sign-in isn't configured in this build yet. The app developer must register Email with this provider."
+        intro.isHidden = choice == nil
+        intro.stringValue = guide?.intro ?? (choice == .other ? AccountSetupCopy.otherIntro : choice.map(AccountSetupCopy.oauthIntro) ?? "")
+        steps.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for (index, step) in (guide?.steps ?? []).enumerated() {
+            let line = NSStackView()
+            line.orientation = .horizontal
+            line.alignment = .firstBaseline
+            line.spacing = 6
+            let number = NSTextField(labelWithString: "\(index + 1).")
+            number.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+            number.textColor = .secondaryLabelColor
+            number.alignment = .right
+            number.widthAnchor.constraint(equalToConstant: 18).isActive = true
+            line.addArrangedSubview(number)
+            if let url = step.url {
+                line.addArrangedSubview(link(step.text, url: url))
+            } else {
+                let text = NSTextField(labelWithString: step.text)
+                text.font = .systemFont(ofSize: 13)
+                line.addArrangedSubview(text)
+            }
+            steps.addArrangedSubview(line)
         }
-        status.stringValue = inFlight.contains(choice) ? "Still connecting…" : idle
+        steps.isHidden = guide == nil
+        let usesPassword = choice?.usesPassword == true
+        passwordRow?.isHidden = !usesPassword
+        passwordLabel.stringValue = guide?.fieldLabel ?? AccountSetupCopy.otherFieldLabel
+        password.placeholderString = guide?.placeholder ?? AccountSetupCopy.otherPlaceholder
+        aboutToggle.superview?.isHidden = guide == nil
+        aboutToggle.title = guide?.disclosure ?? ""
+        about.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for line in guide?.about ?? [] {
+            let label = Self.secondary(line, size: 12)
+            label.preferredMaxLayoutWidth = Self.fieldWidth
+            about.addArrangedSubview(label)
+        }
+        about.superview?.isHidden = true
+        setDisclosure(aboutToggle, open: false)
+        let guideURL = guideSection.flatMap { DistributionProfile.current?.setupGuideURL($0) }
+        guideButton.superview?.isHidden = guideURL == nil
+        guideButton.toolTip = guideURL?.absoluteString
+        advancedToggle.superview?.isHidden = choice != .other || !advancedOffered
+        advanced.isHidden = choice != .other || !serversShown
+        setDisclosure(advancedToggle, open: serversShown)
+        if choice == nil {
+            connectButton.title = AccountSetupCopy.continueTitle
+            connectButton.isEnabled = true
+        } else if let choice {
+            connectButton.title = usesPassword ? AccountSetupCopy.addAccount : "Sign in with browser"
+            let oauthReady = usesPassword || !oauthClientID(for: choice).isEmpty
+            connectButton.isEnabled = oauthReady && !inFlight.contains(choice)
+        }
+        clearProblem()
+        if let choice, inFlight.contains(choice) {
+            showStatus("Still connecting…")
+        } else if let choice, !choice.usesPassword, oauthClientID(for: choice).isEmpty {
+            showStatus(choice == .gmail
+                ? "Google sign-in isn't configured in this build. Use Gmail (app password) instead."
+                : "Sign-in isn't configured in this build yet.")
+        }
         updateSwitch()
-        resizeToFit(recenter: true)
-        if choice.usesPassword { makeFirstResponder(email) }
+        resizeToFit(recenter: false)
+    }
+
+    /// The Advanced disclosure appears for Other once a first attempt failed.
+    private var advancedOffered = false
+
+    private func choose(_ choice: AccountSetupChoice, byHand: Bool = true) {
+        let next = choices.contains(choice) ? choice : (choices.last ?? .other)
+        if byHand { pickedByHand = true }
+        if next != selected {
+            selected = next
+            password.stringValue = ""
+            signInFailed = false
+            serversShown = false
+            advancedOffered = false
+            showChoice()
+        }
+        if let outcome = outcomes.removeValue(forKey: next) {
+            if let problem = outcome.problem { signInFailed = next == .gmail; show(problem) }
+            else { showStatus(outcome.message) }
+        }
+        if next.usesPassword {
+            makeFirstResponder(email.stringValue.contains("@") ? password : email)
+        } else {
+            makeFirstResponder(connectButton)
+        }
+    }
+
+    /// The provider for the typed address, asked of the engine (no network).
+    private func provider(for address: String) -> AccountSetupChoice {
+        let answer = core.call(["op": "setup_provider", "email": address]) as? [String: Any]
+        return AccountSetupChoice.forProvider(answer?["provider"] as? String ?? "other", features: features,
+                                              googleSignInConfigured: !oauthClientID(for: .gmail).isEmpty)
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        guard (notification.object as? NSTextField) === email, selected != nil, !pickedByHand else { return }
+        // Follow the address while the person hasn't chosen a provider by hand.
+        let address = email.stringValue.trimmingCharacters(in: .whitespaces)
+        guard address.contains("@") else { return }
+        let next = provider(for: address)
+        if next != selected { selected = next; serversShown = false; advancedOffered = false; showChoice() }
+    }
+
+    private func fillServers(_ guess: ServerGuess) {
+        imapHost.stringValue = guess.imapHost
+        imapPort.stringValue = String(guess.imapPort)
+        imapSecurity.selectItem(withTitle: guess.imapImplicitTLS ? "TLS" : "STARTTLS")
+        smtpHost.stringValue = guess.smtpHost
+        smtpPort.stringValue = String(guess.smtpPort)
+        smtpSecurity.selectItem(withTitle: guess.smtpImplicitTLS ? "TLS" : "STARTTLS")
+    }
+
+    // MARK: Status and problems
+
+    private func clearProblem() {
+        problemRow?.isHidden = true
+        status.stringValue = ""
+        status.textColor = .secondaryLabelColor
+        status.isHidden = true
+        fixButton.isHidden = true
+        fixURL = nil
+        detailsToggle.isHidden = true
+        details.isHidden = true
+        details.stringValue = ""
+    }
+
+    private func showStatus(_ message: String) {
+        clearProblem()
+        status.stringValue = message
+        status.isHidden = message.isEmpty
+        problemRow?.isHidden = message.isEmpty
+        resizeToFit(recenter: false)
+    }
+
+    /// One line, a fix link if there is one, and the server's words behind Details.
+    private func show(_ problem: SetupProblem) {
+        clearProblem()
+        problemRow?.isHidden = false
+        // The explanation stays closed so the error sits right under the field.
+        about.superview?.isHidden = true
+        setDisclosure(aboutToggle, open: false)
+        status.stringValue = problem.message
+        status.textColor = .systemRed
+        status.isHidden = false
+        if let label = problem.actionLabel, let url = problem.actionURL {
+            fixURL = url
+            fixButton.title = label + " ↗"
+            fixButton.toolTip = url.absoluteString
+            fixButton.isHidden = false
+        }
+        details.stringValue = problem.detail
+        detailsToggle.isHidden = problem.detail.isEmpty
+        setDisclosure(detailsToggle, open: false)
+        if selected == .other {
+            advancedOffered = true
+            if let servers = problem.servers {
+                fillServers(servers)
+                serversShown = true
+            }
+            advancedToggle.superview?.isHidden = false
+            advanced.isHidden = !serversShown
+            setDisclosure(advancedToggle, open: serversShown)
+        }
+        updateSwitch()
+        resizeToFit(recenter: false)
+    }
+
+    private func showProblem(_ message: String) {
+        show(SetupProblem(["code": "invalid", "message": message])!)
     }
 
     /// Offer the app-password path wherever Google sign-in may not work for this person.
@@ -399,18 +613,64 @@ final class AccountSetupWindow: NSWindow {
         switchToAppPassword.isHidden = !(selected == .gmail && (unconfigured || waiting || signInFailed))
     }
 
-    /// Fit the window to the visible rows. Errors grow it downward in place.
+    /// Fit the window to the visible rows, growing downward in place.
     private func resizeToFit(recenter: Bool) {
         contentView?.layoutSubtreeIfNeeded()
-        let height = ceil(content.fittingSize.height) + 56
+        let height = ceil(content.fittingSize.height) + 64
         let top = frame.maxY
-        setContentSize(NSSize(width: 560, height: max(300, height)))
-        if recenter {
-            center()
-        } else {
-            setFrameTopLeftPoint(NSPoint(x: frame.minX, y: top))
-        }
+        setContentSize(NSSize(width: Self.width, height: max(200, height)))
+        if recenter { center() } else if top > 0 { setFrameTopLeftPoint(NSPoint(x: frame.minX, y: top)) }
     }
+
+    // MARK: Actions
+
+    @objc private func providerMenuChanged(_ sender: NSPopUpButton) {
+        guard let item = sender.selectedItem, choices.indices.contains(item.tag), item !== sender.itemArray.first else { return }
+        choose(choices[item.tag])
+    }
+
+    @objc private func toggleAbout() {
+        guard let wrapper = about.superview else { return }
+        wrapper.isHidden.toggle()
+        setDisclosure(aboutToggle, open: !wrapper.isHidden)
+        resizeToFit(recenter: false)
+    }
+
+    @objc private func toggleAdvanced() {
+        serversShown.toggle()
+        if serversShown, imapHost.stringValue.isEmpty {
+            let address = email.stringValue.trimmingCharacters(in: .whitespaces)
+            imapHost.placeholderString = "imap." + (address.split(separator: "@").last.map(String.init) ?? "example.com")
+            smtpHost.placeholderString = "smtp." + (address.split(separator: "@").last.map(String.init) ?? "example.com")
+        }
+        advanced.isHidden = !serversShown
+        setDisclosure(advancedToggle, open: serversShown)
+        resizeToFit(recenter: false)
+    }
+
+    @objc private func toggleDetails() {
+        details.isHidden.toggle()
+        setDisclosure(detailsToggle, open: !details.isHidden)
+        resizeToFit(recenter: false)
+    }
+
+    @objc private func switchToAppPasswordClicked() {
+        choose(.gmailAppPassword)
+    }
+
+    @objc private func openLink(_ sender: NSButton) {
+        if let raw = sender.identifier?.rawValue, let url = URL(string: raw) { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func openGuide() {
+        if let url = guideSection.flatMap({ DistributionProfile.current?.setupGuideURL($0) }) { NSWorkspace.shared.open(url) }
+    }
+
+    @objc private func openFix() {
+        if let fixURL { NSWorkspace.shared.open(fixURL) }
+    }
+
+    @objc private func cancelClicked() { close() }
 
     private func oauthClientID(for choice: AccountSetupChoice) -> String {
         guard choice == .gmail || choice == .outlook else { return "" }
@@ -429,27 +689,10 @@ final class AccountSetupWindow: NSWindow {
         return configured?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    @objc private func openLink(_ sender: NSButton) {
-        if let raw = sender.identifier?.rawValue, let url = URL(string: raw) { NSWorkspace.shared.open(url) }
-    }
-
-    @objc private func openHelp() {
-        let url = selected == .gmailAppPassword ? GmailAppPasswordPreset.helpURL : "https://support.apple.com/en-us/102654"
-        if let url = URL(string: url) { NSWorkspace.shared.open(url) }
-    }
-
-    @objc private func cancelClicked() { close() }
-
-    private func showProblem(_ message: String) {
-        status.stringValue = message
-        status.textColor = .systemRed
-        updateSwitch()
-        resizeToFit(recenter: false)
-    }
-
     /// The `add_imap_account` request, identical to the Linux payload
     /// (`apps/linux/src/account_setup.rs`, `imap_payload`). `nil` with a message
-    /// when the form is incomplete.
+    /// when the form is incomplete. Other sends no servers until they are
+    /// shown; the engine then guesses them from the address.
     func imapPayload(for choice: AccountSetupChoice) -> (payload: [String: Any]?, problem: String?) {
         let address = email.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasPassword = !password.stringValue.trimmingCharacters(in: .whitespaces).isEmpty
@@ -460,14 +703,22 @@ final class AccountSetupWindow: NSWindow {
             }
             return (["op": "add_imap_account", "provider": "imap", "preset": "gmail",
                      "email": address, "display_name": address, "username": address,
-                     "smtp_username": address, "password": password.stringValue,
-                     "google_sign_in": choices.contains(.gmail) && !oauthClientID(for: .gmail).isEmpty], nil)
+                     "smtp_username": address, "password": password.stringValue], nil)
+        }
+        if choice == .icloud {
+            guard address.contains("@"), hasPassword else { return (nil, "Enter your iCloud address and app-specific password.") }
+            // The engine's iCloud preset owns the servers and username.
+            return (["op": "add_imap_account", "provider": "icloud", "email": address, "display_name": address,
+                     "password": password.stringValue], nil)
+        }
+        guard serversShown else {
+            guard address.contains("@"), hasPassword else { return (nil, "Enter your email address and password.") }
+            return (["op": "add_imap_account", "provider": "imap", "email": address,
+                     "display_name": displayName.stringValue.isEmpty ? address : displayName.stringValue,
+                     "password": password.stringValue], nil)
         }
         let typedLogin = username.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        // iCloud's username field is hidden: never send one left over from Other.
-        let login = choice == .icloud
-            ? String(address.split(separator: "@").first ?? "")
-            : (typedLogin.isEmpty ? address : typedLogin)
+        let login = typedLogin.isEmpty ? address : typedLogin
         // Spaces around server names and ports are ignored, as on Linux.
         let imapServer = imapHost.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let smtpServer = smtpHost.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -475,29 +726,27 @@ final class AccountSetupWindow: NSWindow {
               !imapServer.isEmpty, !smtpServer.isEmpty,
               let imap = Int(imapPort.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), (1...65535).contains(imap),
               let smtp = Int(smtpPort.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)), (1...65535).contains(smtp) else {
-            return (nil, choice == .icloud
-                ? "Enter your iCloud address and app-specific password."
-                : "Enter a valid email, provider-issued app password, server names, and ports.")
+            return (nil, "Enter a valid email, provider-issued app password, server names, and ports.")
         }
-        var payload: [String: Any] = [
-            "op": "add_imap_account", "provider": choice == .icloud ? "icloud" : "imap",
-            "email": address,
-            "display_name": displayName.stringValue.isEmpty ? address : displayName.stringValue,
-            "username": login,
-            "password": password.stringValue,
-            "imap_host": imapServer, "imap_port": imap,
-            "imap_security": imapSecurity.titleOfSelectedItem == "TLS" ? "implicit_tls" : "start_tls",
-            "smtp_host": smtpServer, "smtp_port": smtp,
-            "smtp_security": smtpSecurity.titleOfSelectedItem == "TLS" ? "implicit_tls" : "start_tls"
-        ]
         let smtpLogin = smtpUsername.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !smtpLogin.isEmpty, choice == .other { payload["smtp_username"] = smtpLogin }
-        else if choice != .icloud { payload["smtp_username"] = login }
-        return (payload, nil)
+        return (["op": "add_imap_account", "provider": "imap", "email": address,
+                 "display_name": displayName.stringValue.isEmpty ? address : displayName.stringValue,
+                 "username": login, "smtp_username": smtpLogin.isEmpty ? login : smtpLogin,
+                 "password": password.stringValue,
+                 "imap_host": imapServer, "imap_port": imap,
+                 "imap_security": imapSecurity.titleOfSelectedItem == "TLS" ? "implicit_tls" : "start_tls",
+                 "smtp_host": smtpServer, "smtp_port": smtp,
+                 "smtp_security": smtpSecurity.titleOfSelectedItem == "TLS" ? "implicit_tls" : "start_tls"], nil)
     }
 
     @objc private func connectClicked() {
-        let choice = selected
+        guard let choice = selected else {
+            // Email first: the address decides which steps to show.
+            let address = email.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard address.contains("@") else { showProblem(AccountSetupCopy.enterEmail); return }
+            choose(provider(for: address), byHand: false)
+            return
+        }
         guard !inFlight.contains(choice) else { return }
         let payload: [String: Any]
         if choice.usesPassword {
@@ -521,41 +770,45 @@ final class AccountSetupWindow: NSWindow {
         }
         inFlight.insert(choice)
         connectButton.isEnabled = false
-        status.textColor = .secondaryLabelColor
-        status.stringValue = switch choice {
+        let waiting = switch choice {
         case .gmailAppPassword: "Connecting to Gmail…"
-        case .icloud, .other: "Checking your mail server…"
+        case .icloud: "Connecting to iCloud…"
+        case .other: "Checking your mail server…"
         case .gmail: "Waiting for browser sign-in… If Google shows “Access blocked”, close that tab and use an app password."
         case .outlook: "Waiting for browser sign-in…"
         }
+        showStatus(waiting)
         updateSwitch(waiting: choice == .gmail)
-        resizeToFit(recenter: false)
         Task { @MainActor in
             defer { inFlight.remove(choice) }
             do {
                 let account = try await core.callAsync(payload)
                 if selected == choice {
                     password.stringValue = ""
-                    status.stringValue = "Connected."
+                    showStatus("Connected.")
                     onConnected()
                     close()
                 } else {
                     // Keep the window and whatever is typed for the other choice.
                     let address = (account as? [String: Any])?["email"] as? String
-                    outcomes[choice] = (address.map { "Connected \($0)." } ?? "Connected.", false)
+                    outcomes[choice] = (address.map { "Connected \($0)." } ?? "Connected.", nil)
                     onConnected()
                 }
             } catch {
                 inFlight.remove(choice) // before deciding which button state to show
+                let problem = (error as? MailServiceError)?.setupProblem
+                    ?? SetupProblem(["code": "other", "message": error.localizedDescription])!
                 // Another choice is on screen: keep the message for when it returns.
                 guard selected == choice else {
-                    outcomes[choice] = (error.localizedDescription, true)
-                    connectButton.isEnabled = (selected.usesPassword || !oauthClientID(for: selected).isEmpty)
-                        && !inFlight.contains(selected)
+                    outcomes[choice] = (problem.message, problem)
+                    if let selected {
+                        connectButton.isEnabled = (selected.usesPassword || !oauthClientID(for: selected).isEmpty)
+                            && !inFlight.contains(selected)
+                    }
                     return
                 }
                 signInFailed = choice == .gmail
-                showProblem(error.localizedDescription)
+                show(problem)
                 connectButton.isEnabled = true
             }
         }

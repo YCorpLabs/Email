@@ -29,6 +29,16 @@ pub const SCHEDULING_ORIGIN: Option<&str> = optional(env!("EMAIL_PROFILE_SCHEDUL
 /// that cfg, tracking registration and pixel insertion are not compiled.
 pub const OPEN_TRACKING: bool = cfg!(email_open_tracking);
 
+/// The step-by-step account setup guide on the website, linked from account
+/// setup (`#gmail`, `#icloud`, `#other`). Only a build whose support channel is
+/// Y Corp's own links to it, so forks and unofficial builds never point at
+/// that site; a fork that sets its own support addresses gets no link.
+pub fn setup_guide_url() -> Option<&'static str> {
+    SUPPORT_ADDRESS
+        .filter(|address| address.to_ascii_lowercase().ends_with("@ycorplabs.com"))
+        .map(|_| "https://ycorplabs.com/email/guide/")
+}
+
 /// Values the native shells present. Never contains credentials.
 pub fn json() -> Value {
     json!({
@@ -37,6 +47,7 @@ pub fn json() -> Value {
         "feedback_address": FEEDBACK_ADDRESS,
         "scheduling_origin": SCHEDULING_ORIGIN,
         "open_tracking": OPEN_TRACKING,
+        "setup_guide_url": setup_guide_url(),
         "macos_data_directory": MACOS_DATA_DIRECTORY,
         "linux_data_directory": LINUX_DATA_DIRECTORY,
     })
@@ -54,5 +65,9 @@ mod tests {
         let value = json();
         assert_eq!(value["profile"], ID);
         assert!(value.get("client_id").is_none());
+        // The website guide follows the support channel: official and
+        // development builds link to it, the neutral profile never does.
+        assert_eq!(setup_guide_url().is_some(), ID == "official" || ID == "development", "{ID}");
+        assert_eq!(value["setup_guide_url"].as_str(), setup_guide_url());
     }
 }

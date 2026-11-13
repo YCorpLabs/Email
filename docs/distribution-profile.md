@@ -124,8 +124,10 @@ Info.plist depend on it.
 - **Rust engine** (`crates/mail-service/src/profile.rs`): Keychain and Secret
   Service names, data directory names, the Scheduling origin and the
   tracking-pixel origin derived from it, whether open tracking is compiled in
-  (`OPEN_TRACKING`), support and feedback addresses. The
-  MCP server uses the same engine.
+  (`OPEN_TRACKING`), support and feedback addresses, and the account-setup
+  guide link derived from them (`setup_guide_url`: the website guide only when
+  the support address is `@ycorplabs.com`, so a fork with its own support
+  channel never links to that site). The MCP server uses the same engine.
 - **macOS shell**: loads the engine's profile through
   `mail_service_distribution_profile_json` (`DistributionProfile.swift`). It
   keeps no defaults; without a loadable engine there is no support channel,

@@ -27,6 +27,15 @@ import Foundation
         precondition(!configured.isSchedulingURL(URL(string: "https://scheduling.example.test:8443/device")!))
         precondition(configured.isSchedulingURL(URL(string: "https://scheduling.example.test:443/device")!))
 
+        // The setup guide link needs the engine's https URL and a support channel.
+        let guided = profile(["support_address": "help@example.test", "feedback_address": "ideas@example.test",
+                              "setup_guide_url": "https://guide.example.test/email/guide/"])!
+        precondition(guided.setupGuideURL("gmail")?.absoluteString == "https://guide.example.test/email/guide/#gmail")
+        precondition(configured.setupGuideURL("gmail") == nil)
+        precondition(profile(["support_address": "help@example.test", "feedback_address": "ideas@example.test",
+                              "setup_guide_url": "http://guide.example.test/"])!.setupGuide == nil)
+        precondition(profile(["setup_guide_url": "https://guide.example.test/"])!.setupGuide == nil, "no support channel, no guide")
+
         // Unconfigured profiles never fall back to any address or service.
         let neutral = profile(["support_address": nil, "feedback_address": nil, "scheduling_origin": nil])!
         precondition(neutral.supportAddress == nil && neutral.feedbackAddress == nil && !neutral.hasScheduling)
@@ -44,6 +53,6 @@ import Foundation
         precondition(profile(["macos_data_directory": ".hidden"]) == nil)
         precondition(profile(["profile": ""]) == nil)
         precondition(DistributionProfile(json: Data("not json".utf8)) == nil)
-        print("Distribution profile checks passed (26 scenarios)")
+        print("Distribution profile checks passed (30 scenarios)")
     }
 }

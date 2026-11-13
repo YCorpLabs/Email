@@ -216,6 +216,15 @@ pub fn redirect_gmail(imap_port: u16, smtp_port: u16) -> RedirectGuard {
     RedirectGuard(previous)
 }
 
+/// Also dial `localhost:to_port` for `host:port` in this process, for
+/// example a guessed `imap.example.org:993`. Restored when the guard drops.
+pub fn redirect_host(host: &str, port: u16, to_port: u16) -> RedirectGuard {
+    let mut redirects = in_process_redirects().lock().expect("fixture redirects");
+    let previous = redirects.clone();
+    redirects.push((host.into(), port, "localhost".into(), to_port));
+    RedirectGuard(previous)
+}
+
 pub(crate) fn redirect(host: &str, port: u16) -> Option<(String, u16)> {
     if let Some((_, _, to_host, to_port)) = in_process_redirects()
         .lock()
