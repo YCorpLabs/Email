@@ -286,10 +286,11 @@ fn client_state(client: &Client, name: &str, helper: Option<&Path>, dirs: &[Path
         }
         Err(error) => (false, None, Some(error)),
     };
+    // The row's sub line; a found client that's ready to connect needs none.
     let subtitle = match (connected, same_helper, &error) {
-        (_, _, Some(_)) => format!("Found on {THIS_COMPUTER} · couldn't check whether it's connected"),
-        (true, Some(false), _) => format!("Found on {THIS_COMPUTER} · connected to another copy of mail-mcp"),
-        _ => format!("Found on {THIS_COMPUTER}"),
+        (_, _, Some(_)) => "Couldn't check whether it's connected".to_string(),
+        (true, Some(false), _) => "Connected to another copy of mail-mcp".to_string(),
+        _ => String::new(),
     };
     json!({
         "id": client.id,
@@ -461,7 +462,7 @@ exit 2
         let state = overview_in(&db, other_helper.to_str(), &dirs);
         assert_eq!(state["clients"][0]["connected"], true);
         assert_eq!(state["clients"][0]["same_helper"], false);
-        assert!(state["clients"][0]["subtitle"].as_str().unwrap().contains("another copy of mail-mcp"));
+        assert_eq!(state["clients"][0]["subtitle"], "Connected to another copy of mail-mcp");
 
         // Codex uses its own add syntax.
         fake_cli(&bin, "codex");

@@ -452,8 +452,14 @@ impl MailServer {
     /// Record a refusal caused by missing consent so the app can point the user
     /// at Agent access, then return the refusal for the agent.
     fn blocked(&self, accounts: &[String], op: &str, reason: &str) -> String {
+        self.blocked_needing(accounts, op, reason, consent_grants(op))
+    }
+
+    /// As `blocked`, naming the permissions the call needed, so the app can
+    /// offer to allow exactly those. The agent's error is the same.
+    fn blocked_needing(&self, accounts: &[String], op: &str, reason: &str, needed: &[&str]) -> String {
         if let Ok(store) = self.store.lock() {
-            let _ = store.record_agent_block(accounts, op, reason, self.client_name().as_deref());
+            let _ = store.record_agent_block_needing(accounts, op, reason, self.client_name().as_deref(), needed);
         }
         reason.to_string()
     }
@@ -508,7 +514,7 @@ impl MailServer {
                 && !policy.accounts.iter().any(|a| policy.allows(a, grant))
             {
                 let missing = policy.consents.keys().cloned().collect::<Vec<_>>();
-                return Err(self.blocked(&missing, op, &grant_missing(grant)));
+                return Err(self.blocked_needing(&missing, op, &grant_missing(grant), &[grant]));
             }
             return Ok(Authorized::default());
         }
@@ -717,7 +723,7 @@ impl MailServer {
                 .collect::<Vec<_>>();
             if accounts.is_empty() {
                 let named = policy.readable.iter().cloned().collect::<Vec<_>>();
-                return Err(self.blocked(&named, op, &grant_missing("sync")));
+                return Err(self.blocked_needing(&named, op, &grant_missing("sync"), &["sync"]));
             }
             let mut results = Vec::new();
             for account in accounts {
@@ -965,6 +971,10 @@ fn approval_reply(action: &AgentAction) -> serde_json::Value {
         "approved" => (
             "approved",
             "The user already approved this request. It was applied once and is not applied again.",
+        ),
+        "edited" => (
+            "edited",
+            "The user opened this draft to edit and send it themselves. Nothing was sent by this request. Do not request it again unless the user asks.",
         ),
         other => (other, "This request is closed. Ask the user before requesting it again."),
     };
