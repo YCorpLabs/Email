@@ -187,7 +187,9 @@ pass "testing channel A=100 updated to C=102"
 # Fixture-only install path is refused by a non-fixture bundle ID.
 app="$(fresh_app idcheck)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $(python3 "$repo_root/scripts/distribution-profile.py" get MACOS_BUNDLE_ID --profile official)" "$app/Contents/Info.plist"
-codesign --force --sign "$EMAIL_RELEASE_CODESIGN_IDENTITY" --keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" --timestamp=none --identifier "$fixture_domain" "$app" 2>/dev/null
+email_codesign_home "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" "$work/codesign-home"
+HOME="$work/codesign-home" codesign --force --sign "$EMAIL_RELEASE_CODESIGN_IDENTITY" --keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" \
+  --timestamp=none --identifier "$fixture_domain" "$app" 2>/dev/null
 [[ "$(status_of "$app")" == *'"reason":"fixture-not-allowed"'* ]] || fail "fixture settings on production ID: $(status_of "$app")"
 if run_update "$app" "$work/idcheck.log"; then fail "production ID ran the fixture installer"; fi
 pass "fixture settings re-signed under the production bundle ID are refused"

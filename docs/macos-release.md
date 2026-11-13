@@ -82,9 +82,11 @@ It writes `email-macos-beta-signing.keychain-db` and
 `email-macos-beta-signing.password`, both mode 600, to `~/.config/ycorp-release/`
 (`EMAIL_BETA_SIGNING_DIR` selects another directory). The keychain is a
 standalone file. It is never added to the keychain search list or made the
-default, the login keychain is not touched, and codesign reads the file with
-`--keychain`. The password reaches `security` on standard input, never as an
-argument. Back up both files together, outside source control.
+default, and the login keychain is not touched. codesign reads the file with
+`--keychain` and, because codesign before macOS 27 needs it on a search list, a
+private search list (see `--fixture` in [macOS updates](macos-updates.md)).
+The password reaches `security` on standard input, never as an argument. Back
+up both files together, outside source control.
 
 Build and check each beta:
 

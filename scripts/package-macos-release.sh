@@ -228,18 +228,32 @@ if [[ "$mode" == --beta ]]; then
   signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
 fi
 sign_args=(--force --sign "$signing_identity")
-if [[ -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then sign_args+=(--keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN"); fi
+codesign_home=""
+if [[ -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then
+  sign_args+=(--keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN")
+  # Before macOS 27, codesign also needs the keychain file on a search list.
+  # It gets a private one; the user's search list is not changed.
+  codesign_home="$stage/codesign-home"
+  email_codesign_home "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" "$codesign_home"
+fi
 if [[ "$mode" == --distribute ]]; then sign_args+=(--options runtime --timestamp); else sign_args+=(--timestamp=none); fi
+sign() {
+  if [[ -n "$codesign_home" ]]; then
+    HOME="$codesign_home" codesign "${sign_args[@]}" "$@"
+  else
+    codesign "${sign_args[@]}" "$@"
+  fi
+}
 # Inside-out, without --deep, as Sparkle's documentation requires.
 sparkle="$app/Contents/Frameworks/Sparkle.framework"
-codesign "${sign_args[@]}" "$sparkle/Versions/B/Autoupdate"
-codesign "${sign_args[@]}" "$sparkle/Versions/B/Updater.app"
-codesign "${sign_args[@]}" "$sparkle"
+sign "$sparkle/Versions/B/Autoupdate"
+sign "$sparkle/Versions/B/Updater.app"
+sign "$sparkle"
 for binary in "$app/Contents/Frameworks/libEmailUI.dylib" "$app/Contents/Frameworks/libEmailUpdater.dylib" \
               "$app/Contents/Frameworks/libmail_service.dylib" "$app/Contents/Helpers/mail-mcp"; do
-  codesign "${sign_args[@]}" --identifier "$EMAIL_RELEASE_BUNDLE_ID" "$binary"
+  sign --identifier "$EMAIL_RELEASE_BUNDLE_ID" "$binary"
 done
-codesign "${sign_args[@]}" "$app"
+sign "$app"
 codesign --verify --deep --strict "$app"
 if [[ "$mode" == --beta ]]; then
   # Fail closed: the app must carry the beta certificate, never an ad-hoc signature.
