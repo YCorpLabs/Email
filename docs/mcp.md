@@ -6,16 +6,19 @@
 
 Every account is off for agents until you turn it on in the desktop app.
 Open **Agent access** in the sidebar (also in the command palette and in
-Manage accounts), choose **Turn On…** for an account, review the disclosure and
-pick the optional grants. The disclosure names the data categories an agent can
-read, says that the agent's AI provider's terms then apply, and says how to
-turn access off. Turning access off applies to the agent's next request.
+Manage accounts) and switch an account on. The turn-on sheet says what an
+agent can read (with the full list one click away), that the agent's AI
+provider's terms then apply, and how to turn access off; reading is the only
+permission checked by default. Turning access off applies to the agent's next
+request. [agent-access.md](agent-access.md) describes the window.
 
 - **Reading** an account needs agent access for it. List and search tools
   return only accounts with agent access.
-- **Changing** an account also needs the matching in-app grant: Drafts,
-  Triage, Send requests, Sync or Calendar changes. Command-line flags still
-  apply; neither can widen the other.
+- **Changing** an account also needs the matching in-app permission: Drafts,
+  Archive and snooze, Ask to send, Fetch mail or Calendar changes.
+  Command-line flags still apply; neither can widen the other. A registration
+  made with **Connect** in Agent access passes every mail flag, so the in-app
+  permissions decide.
 - **Sending and bulk changes wait for you.** `send_draft`, `queue_send_draft`,
   `schedule_draft`, `batch_triage`, `undo_triage` and `confirm_sender_cleanup` return
   `{approval_id, status: "pending_approval"}`. Nothing happens until you choose
@@ -33,8 +36,9 @@ turn access off. Turning access off applies to the agent's next request.
 Existing registrations, including `email-write`, are then refused until you
 turn on agent access for each account they should use. The
 first refused call shows a badge and an "Agent access needed" banner with a
-one-click **Turn On** button. Choose the grants that match the registration,
-for example Drafts, Triage, Send requests and Sync for `--allow-write`.
+one-click **Turn on** button. Choose the permissions that match the
+registration, for example Write drafts, Archive, mark read and snooze, Ask to
+send mail and Fetch new mail for `--allow-write`.
 Review the Outbox once: mail scheduled through MCP before the approval gate
 existed is not retroactively gated.
 
@@ -57,6 +61,40 @@ On macOS, use `./scripts/build-mcp-macos.sh` to build and sign with Email's stab
 
 ## Connect Codex and Claude Code
 
+In the app: open **Agent access** and choose **Connect** next to Claude Code
+or Codex. The row says whether the CLI is installed and whether Email is
+already registered in it ("✓ Connected"). Connect runs the same command as
+the script below, with the helper that ships with the app
+(`Email.app/Contents/Helpers/mail-mcp` on macOS) and the app's own cache:
+
+```sh
+claude mcp add --scope user --transport stdio <name> -- <helper> --db <cache> \
+  --allow-draft --allow-triage --allow-send --allow-sync --allow-calendar-write
+codex mcp add <name> -- <helper> --db <cache> <same flags>
+```
+
+`<name>` is the profile's `MCP_SERVER_NAME` (`email` for official builds).
+An existing registration under that name is never replaced; remove it with
+`claude mcp remove <name>` or `codex mcp remove <name>` first if you want the
+app's. **Copy** on "Other MCP client" copies the same command and an
+`mcpServers` JSON snippet for any other client. Start a new agent session
+afterwards so it picks up the server.
+
+Why every mail flag: the registration is an upper bound and the in-app
+permissions narrow it per account, so passing every mail flag makes Agent
+access the one place you decide. Nothing works until you switch an account
+on, and then only reading until you check more. Sends and bulk changes still
+wait for your approval. `--allow-booking-settings` is left out: Scheduling
+settings aren't tied to an account, have no permission in the app, and have
+their own browser approval. To give an agent less than the app allows, use the
+script below with fewer flags.
+
+On Linux the packages don't include `mail-mcp` yet; it is a separate download
+with each release. Put it in `~/.local/bin` or next to `email-linux` and
+Connect finds it. Without a helper, Agent access says so and Connect stays off.
+
+### From a source checkout
+
 Once Email has created its local cache, run this from the repository root:
 
 ```sh
@@ -67,11 +105,11 @@ This registers the existing release binary with both installed CLIs, building it
 
 Verify the connection with `codex mcp get <name>` or `claude mcp get <name>`, where the name is the profile's `MCP_SERVER_NAME` (`email-unofficial` for a plain build); in Claude Code, `/mcp` also shows server status. Restart an already-open agent session if it does not discover the newly registered tools.
 
-Registration names come from the [distribution profile](distribution-profile.md)'s `MCP_SERVER_NAME`: `email` for the official and development profiles, `email-unofficial` for the neutral default. The default cache path follows the profile's data directory.
+Registration names come from the [distribution profile](distribution-profile.md)'s `MCP_SERVER_NAME`: `email` for the official and development profiles, `email-unofficial` for the neutral default. The default cache path follows the profile's data directory. The script's default `email` registration is read-only, while one made with Connect in the app passes every mail flag; `claude mcp get <name>` shows which you have.
 
 If you intentionally want agent-controlled mail changes, run `./scripts/connect-mcp.sh --allow-write`. This creates a **separate** `email-write` registration with `--allow-write`; it does not change the read-only `email` registration. Sends and bulk changes still wait for your approval in Agent access, and each account still needs agent access with the matching grants. The registration is local to this computer; it does not expose an HTTP server.
 
-The script uses the official [Codex MCP CLI](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code MCP CLI](https://code.claude.com/docs/en/mcp) commands rather than editing either client's config file.
+The script and the app use the official [Codex MCP CLI](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) and [Claude Code MCP CLI](https://code.claude.com/docs/en/mcp) commands rather than editing either client's config file.
 
 The helper also accepts individual grants and repeated account restrictions. For
 example, prepare drafts for one account without permission to send:
@@ -112,9 +150,9 @@ Write operations are disabled by default. Grant independent capabilities with th
 | `--allow-write` | Grant all four capabilities for compatibility. |
 | `--allow-booking-settings` | Independently enable scheduling-settings authorization and reviewed configuration apply. Requires separate browser-approved `booking:settings` permission. Does not grant mail, calendar-event or booking mutations. |
 
-Each flag also needs the matching in-app grant for the account (Drafts,
-Triage, Send requests, Sync, Calendar changes). `step_sender_cleanup` needs
-both Triage and Sync.
+Each flag also needs the matching in-app permission for the account (Drafts,
+Archive and snooze, Ask to send, Fetch mail, Calendar changes).
+`step_sender_cleanup` needs both Archive and snooze and Fetch mail.
 
 Capabilities combine explicitly. For example, an agent that can prepare drafts
 but cannot send them can run:
@@ -169,7 +207,7 @@ The one-shot `--allow-send --dispatch-due` mode sends due items and exits withou
 to the selected conversations; the desktop app applies it with the shared
 atomic batch implementation only after approval. `undo_triage(operation_id)`
 likewise asks the user to approve reversing an applied batch. Both require
-`--allow-triage` (or `--allow-write`) and the Triage grant; discovery does not
+`--allow-triage` (or `--allow-write`) and the Archive and snooze permission; discovery does not
 grant write access. Supported kinds are
 archive, restore, spam, read, unread. Undo supports placement changes only.
 The supplied operation ID must be unique per logical request and reused only

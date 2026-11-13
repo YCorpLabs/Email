@@ -146,9 +146,9 @@ put "invoice" in every message, so its 2.7 ms only measured the best case.
 
 1. Start the demo: `./scripts/dev.sh --demo`. It also builds `mail-mcp` and
    writes `mail.claude-mcp.json` next to the store, and prints its path.
-2. In Email, open **Agent access** in the sidebar. For each demo account choose
-   **Turn On…**, read the disclosure and tick **Drafts** and **Triage** (add
-   **Send requests** only if you want the approval card for a send; sending
+2. In Email, open **Agent access** in the sidebar. Switch each demo account
+   on and check **Write drafts** and **Archive, mark read and snooze** (add
+   **Ask to send mail** only if you want the approval card for a send; sending
    itself fails, since there is no mail server).
 3. In another terminal: `claude --mcp-config <store directory>/mail.claude-mcp.json`.
    This adds an `email-demo` server for that session only and leaves your

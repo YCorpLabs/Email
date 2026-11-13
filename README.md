@@ -137,23 +137,25 @@ See [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## MCP permission model
 
-`./scripts/connect-mcp.sh` registers the local MCP server with installed AI
-clients such as Codex and Claude Code.
+Email includes a local MCP server so AI tools such as Claude Code and Codex
+can work with your mail. In the app, **Agent access** connects them
+(**Connect**) and decides what they may do.
 
 - It is a **local stdio process** started by your client, not a network
   service.
-- It is **read-only by default**: it reads the same local cache as the app.
-- Each write capability needs an explicit grant at registration:
-  - `--allow-draft`: drafts;
-  - `--allow-triage`: archive, read state and snooze;
-  - `--allow-sync`: provider sync;
-  - `--allow-send`: send or schedule existing drafts;
-  - `--allow-write`: all of the above.
+- **Every account is off** until you switch it on in Agent access. Then
+  agents can read it; writing drafts, archiving, asking to send, fetching
+  mail and calendar changes are separate checkboxes, all off by default.
+- **Sends and bulk changes wait for you**: they appear in Agent access and
+  happen only when you approve them, with the usual undo window.
+- Mail content reaches agents labelled as untrusted.
 
-  Scheduling settings need the separate `--allow-booking-settings` and browser
-  approval.
-- `--account` limits a registration to specific accounts. Granted and read-only
-  registrations use separate names, so you can see what each one can do.
+From a source checkout, `./scripts/connect-mcp.sh` registers the server
+instead. Its registration is read-only by default; `--allow-draft`,
+`--allow-triage`, `--allow-sync`, `--allow-send` (or `--allow-write`) widen it,
+and `--account` limits it to specific accounts. The registration's flags and
+the in-app permissions both apply. Scheduling settings need the separate
+`--allow-booking-settings` and browser approval.
 
 See [docs/mcp.md](docs/mcp.md) for the tool list and limits.
 

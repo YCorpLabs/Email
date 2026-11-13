@@ -49,9 +49,11 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 Agent access operations are for the desktop shells only. `mail-mcp` has no
 policy rule for them, so it refuses them ([mcp-security.md](mcp-security.md)).
 
-- `{"op":"agent_access_status"}` → accounts with their consent (`null` when off), `current`, `grant_labels`, and the pending summary.
-- `{"op":"agent_access_disclosure","account_id":"..."}` → the disclosure both shells render: `version`, `title`, `change_title`, `intro`, `data_categories`, `shared_note`, `provider_terms`, `safeguards`, `grants_heading`, `read_label`, `grants[{id,label,detail}]`, `revoke`, `confirm`, `change_confirm`.
-- `{"op":"grant_agent_access","account_id":"...","grants":["draft","send"],"disclosure_version":1}` → stored consent. Narrowing grants rejects pending requests they no longer cover.
+- `{"op":"agent_access_status"}` → accounts with their consent (`null` when off), `current`, `grant_labels`, `grant_summary` ("Read · Drafts · Ask to send", `null` when off), and the pending summary.
+- `{"op":"agent_access_disclosure","account_id":"..."}` → the turn-on sheet both shells render: `version`, `title`, `lead`, `read{label,note}`, `grants[{id,label,note,warning,detail,short_label}]`, `provider_terms`, `revoke`, `details_title`, `details[]` (the full list), `cancel`, `confirm`, `change_confirm`.
+- `{"op":"grant_agent_access","account_id":"...","grants":["draft","send"],"disclosure_version":2}` → stored consent. The version must be the current one. Narrowing grants rejects pending requests they no longer cover.
+- `{"op":"agent_clients","helper_path":"..."}` → Connect an agent: `server_name`, `db_path`, `flags`, `helper` (or `null` with `helper_problem`), `clients[{id,name,installed,path,connected,same_helper,subtitle,error}]` for Claude Code and Codex, and `manual{command,json,copy_text}` for other MCP clients. Runs each CLI's `mcp get`; `helper_path` is the app bundle's helper on macOS.
+- `{"op":"connect_agent_client","client":"claude"|"codex","helper_path":"..."}` → registers the helper like `scripts/connect-mcp.sh` (never replacing an existing registration) and returns that client's row with `already_registered`.
 - `{"op":"revoke_agent_access","account_id":"..."}` → `{account_id, revoked}`; rejects that account's pending requests.
 - `{"op":"agent_pending_summary"}` → `{count, items, blocked, revision}`. `blocked` is the latest refusal that still needs action, with `affected_account_ids` and `needs_access`; `revision` changes whenever a request, decision, activity or consent changes.
 - `{"op":"agent_access_overview","history_limit":60}` → the status plus `requests` (waiting, oldest first) and `history` (newest first).
