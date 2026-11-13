@@ -1491,14 +1491,10 @@ impl MailService {
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| format!("message not found: {message_id}"))?;
                 let safe_html = message.body_html.as_ref().map(|html| {
-                    let mut sanitizer = ammonia::Builder::default();
-                    sanitizer
-                        .add_generic_attributes(&["style", "align", "width", "height", "bgcolor"]);
-                    sanitizer.add_url_schemes(&["cid"]);
                     // Many legitimate newsletters still ship HTTP image URLs.
                     // The reader permits only HTTPS images; upgrade those URLs
                     // after sanitizing so branding does not render as broken alt text.
-                    tracking::strip_tracking_pixels(&upgrade_image_urls(&sanitizer.clean(&html).to_string()))
+                    tracking::strip_tracking_pixels(&upgrade_image_urls(&message_html_sanitizer().clean(&html).to_string()))
                 });
                 let safe_html = if include_inline_images == Some(true) {
                     match safe_html {
@@ -2489,6 +2485,15 @@ fn raw_inline_images(safe_html: &str, raw: &[u8]) -> Result<String, String> {
         attachment_bytes(raw, id).map_err(|e| e.to_string())
     }))
 }
+/// The sanitizer for message HTML shown in the reader on both platforms:
+/// ammonia's default tags and URL schemes, plus `cid:` images and a few
+/// layout attributes.
+fn message_html_sanitizer() -> ammonia::Builder<'static> {
+    let mut sanitizer = ammonia::Builder::default();
+    sanitizer.add_generic_attributes(&["style", "align", "width", "height", "bgcolor"]);
+    sanitizer.add_url_schemes(&["cid"]);
+    sanitizer
+}
 fn upgrade_image_urls(html: &str) -> String {
     // Ammonia serializes allowed image attributes with double quotes. Keep
     // links and other URL-bearing attributes untouched.
@@ -3121,6 +3126,32 @@ mod tests {
         drop(first);
         assert!(SyncLease::acquire(&path, "a").unwrap().is_some());
         drop((other_account, other_store));
+    }
+
+    #[test]
+    fn message_sanitizer_strips_svg_and_mathml_mutation_payloads() {
+        // The first two are the RUSTSEC-2026-0533 payloads fixed in ammonia
+        // 4.2.5. They need svg/math tags allowed and comments kept, which the
+        // reader's sanitizer never does; this pins that it stays that way.
+        let payloads = [
+            "<svg><foreignObject><math><iframe><!--</iframe><img src onerror=alert(1)>-->",
+            "<math><mi><svg><iframe><!--</iframe><img src onerror=alert(1)>-->",
+            r#"<math><mtext><table><mglyph><style><!--</style><img title="--&gt;&lt;/mglyph&gt;&lt;img&Tab;src=1&Tab;onerror=alert(1)&gt;">"#,
+            "<svg><style><img src=x onerror=alert(1)></style></svg>",
+            "<svg></p><style><a id=\"</style><img src=1 onerror=alert(1)>\">",
+            r#"<math><annotation-xml encoding="text/html"><img src=x onerror=alert(1)></annotation-xml></math>"#,
+            r#"<svg><a xlink:href="javascript:alert(1)"><text>x</text></a></svg>"#,
+        ];
+        for payload in payloads {
+            let safe = message_html_sanitizer().clean(payload).to_string();
+            let lower = safe.to_ascii_lowercase();
+            for needle in ["onerror", "<svg", "<math", "<iframe", "<style", "<script", "javascript:"] {
+                assert!(!lower.contains(needle), "{payload} -> {safe}");
+            }
+            // Mutation XSS changes meaning when sanitized output is parsed
+            // again; sanitizing it again must be a no-op.
+            assert_eq!(message_html_sanitizer().clean(&safe).to_string(), safe, "{payload}");
+        }
     }
 
     #[test]

@@ -14,8 +14,8 @@ an artifact-specific redistribution review, including any modifications to depen
 
 ## Source identity
 
-- `Cargo.lock`: `4c609f14010b1ed4db1b8c8ea9d8ed538314b60e64e0edaaf53b10e327bc73a9`
-- `apps/linux/Cargo.lock`: `41118a7f68ecf92a437427912d29aadcf79e611ccc12356865cee3ca980fa5c3`
+- `Cargo.lock`: `e91a2954c184a026c9a709d2ecb0a395aacb590a1217e2b1293da4dd9f479fa2`
+- `apps/linux/Cargo.lock`: `4cc5883d7e7a7534b8b555b82eac10dfded626002d8e5a910adca59e4ab797dc`
 - `apps/macos/Package.resolved`: `85314a4fe908f03a2e32abc40f0ea54fe1e12204c6e740c79922218f9cf82b3d`
 
 Regenerate with `python3 scripts/generate-third-party-notices.py`; check lock identities with `--check`.
@@ -173,7 +173,7 @@ POSSIBILITY OF SUCH DAMAGE.
 | --- | --- | --- |
 | [aes 0.8.4](https://crates.io/api/v1/crates/aes/0.8.4/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-a9040321c3712d8f), [LICENSE-MIT](#notice-f7e8ab639afef155) |
 | [aho-corasick 1.1.5](https://crates.io/api/v1/crates/aho-corasick/1.1.5/download) | Unlicense OR MIT | [COPYING](#notice-01c266bced4a434d), [LICENSE-MIT](#notice-0f96a83840e146e4), [UNLICENSE](#notice-7e12e5df4bae12cb) |
-| [ammonia 4.2.4](https://crates.io/api/v1/crates/ammonia/4.2.4/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-c6596eb7be8581c1), [LICENSE-MIT](#notice-6ced8d1b9d96dae2) |
+| [ammonia 4.2.5](https://crates.io/api/v1/crates/ammonia/4.2.5/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-c6596eb7be8581c1), [LICENSE-MIT](#notice-6ced8d1b9d96dae2) |
 | [android_system_properties 0.1.6](https://crates.io/api/v1/crates/android_system_properties/0.1.6/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-216486f29671a426), [LICENSE-MIT](#notice-80f275e90d799911) |
 | [arrayvec 0.5.2](https://crates.io/api/v1/crates/arrayvec/0.5.2/download) | MIT/Apache-2.0 | [LICENSE-APACHE](#notice-a60eea8175145316), [LICENSE-MIT](#notice-0245ee104228a100) |
 | [asn1-rs 0.7.2](https://crates.io/api/v1/crates/asn1-rs/0.7.2/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-a60eea8175145316), [LICENSE-MIT](#notice-a5c61b93b6ee1d10) |
