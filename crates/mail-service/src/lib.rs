@@ -552,6 +552,9 @@ pub struct MailService {
     token_cache: Mutex<HashMap<String, CachedTokens>>,
     credentials: std::sync::Arc<dyn CredentialStore>,
     warmed_google_photo_accounts: Mutex<HashMap<String,String>>,
+    /// Where removal revokes a Google sign-in grant. Unit tests start with
+    /// none, so they never reach Google, and point it at a local server.
+    google_revoke_endpoint: Option<String>,
 }
 // Native shells use independent services for cached reads and network work.
 // Coalesce overlapping syncs across those handles, rather than letting Linux's
@@ -737,6 +740,8 @@ impl MailService {
             token_cache: Mutex::new(HashMap::new()),
             credentials: credential_store(),
             warmed_google_photo_accounts: Mutex::new(HashMap::new()),
+            google_revoke_endpoint: (!cfg!(test))
+                .then(|| mail_cloud::GOOGLE_REVOKE_ENDPOINT.to_owned()),
         })
     }
     pub fn request_json(&self, raw: &str) -> Result<Value, String> {
@@ -2053,8 +2058,38 @@ impl MailService {
             .remove(id);
         Ok(())
     }
+    /// Best effort: ask Google to end this app's grant while the token is still
+    /// stored. Runs without the lifecycle lock and never fails the removal.
+    fn revoke_google_grant(&self, saved: &SavedConfig) {
+        let Some(endpoint) = self.google_revoke_endpoint.as_deref() else {
+            return;
+        };
+        // Mail and Calendar tokens share one grant; revoking either ends it.
+        let tokens = self
+            .client_for_generation(saved, false)
+            .or_else(|error| {
+                if saved.google_calendar_enabled {
+                    self.client_for_generation(saved, true)
+                } else {
+                    Err(error)
+                }
+            })
+            .map(|client| client.tokens());
+        // Log a short status only, never the token or the provider's reply.
+        let status = match tokens.map(|tokens| mail_cloud::revoke_google_token(endpoint, &tokens)) {
+            Err(_) => "no stored token".to_owned(),
+            Ok(Ok(())) => "ok".to_owned(),
+            Ok(Err(mail_cloud::CloudError::OAuthToken { status, .. })) => format!("HTTP {status}"),
+            Ok(Err(mail_cloud::CloudError::Http(error))) if error.is_timeout() => "timed out".to_owned(),
+            Ok(Err(_)) => "failed".to_owned(),
+        };
+        eprintln!("Email: Google access revoke on account removal: {status}");
+    }
     fn remove_account(&self, id: &str) -> Result<(), String> {
         let saved = self.saved_config(id)?;
+        if saved.provider == Provider::Gmail {
+            self.revoke_google_grant(&saved);
+        }
         let _lifecycle = self.lifecycle_lock()?;
         let mut configs = self
             .configs

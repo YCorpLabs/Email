@@ -24,7 +24,7 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 
 - `{"op":"add_imap_account","provider":"icloud"|"imap","email":"...","display_name":"...","username":"...","imap_host":"...","imap_port":993,"smtp_host":"...","smtp_port":587,"password":"..."}` → account object. The password goes to the OS credential store; never SQLite/logs. The service tests credentials before saving the account.
 - `{"op":"start_oauth","provider":"gmail"|"microsoft","client_id":"..."}` → account object after system-browser OAuth with PKCE and a local loopback callback. This call blocks while the user authorizes; run it on a background thread.
-- `{"op":"remove_account","account_id":"..."}` → null; removes local configuration, cache, and stored credential after explicit UI confirmation.
+- `{"op":"remove_account","account_id":"..."}` → null; removes local configuration, cache, and stored credential after explicit UI confirmation. For a Google sign-in account it first asks Google to revoke the grant. That step is best effort with a 4-second timeout; removal finishes even if it fails. This call can block on the network; run it on a background thread.
 
 ## Mail operations
 

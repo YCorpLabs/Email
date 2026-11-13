@@ -276,9 +276,139 @@ pub fn refresh(config: &OAuthConfig, old: &TokenSet) -> Result<TokenSet> {
     Ok(token_set(response.json()?, old.refresh_token.clone()))
 }
 
+/// Google's OAuth token revocation endpoint.
+pub const GOOGLE_REVOKE_ENDPOINT: &str = "https://oauth2.googleapis.com/revoke";
+
+/// Ask Google to end this app's grant, for example when the user removes the
+/// account. Sends the refresh token, or the access token when none is stored,
+/// form-encoded in the body. Revoking either token ends the whole grant,
+/// Calendar access included. HTTP 200, or 400 `invalid_token` (already revoked
+/// or expired), counts as done. Pass [`GOOGLE_REVOKE_ENDPOINT`]; tests pass a
+/// local server. The timeout is short, so callers can treat this as best effort.
+pub fn revoke_google_token(endpoint: &str, tokens: &TokenSet) -> Result<()> {
+    let token = tokens
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .unwrap_or(&tokens.access_token);
+    if token.is_empty() {
+        return Err(CloudError::Response("no token to revoke"));
+    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(4))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let response = client.post(endpoint).form(&[("token", token)]).send()?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    match token_error(response) {
+        CloudError::OAuthToken { status: 400, reason } if reason == "invalid_token" => Ok(()),
+        error => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serves one canned response per connection and returns each raw request.
+    fn revoke_server(responses: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/revoke", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            responses
+                .into_iter()
+                .map(|response| {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 2048];
+                    loop {
+                        let n = stream.read(&mut buffer).unwrap();
+                        if n == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&buffer[..n]);
+                        let text = String::from_utf8_lossy(&request).to_string();
+                        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                            continue;
+                        };
+                        let length = head
+                            .to_ascii_lowercase()
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse().ok())
+                            .unwrap_or(0usize);
+                        if body.len() >= length {
+                            break;
+                        }
+                    }
+                    stream.write_all(response.as_bytes()).unwrap();
+                    String::from_utf8(request).unwrap()
+                })
+                .collect()
+        });
+        (url, server)
+    }
+
+    #[test]
+    fn revoke_posts_the_token_in_a_form_body_and_accepts_already_revoked() {
+        const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        const INVALID: &str = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 28\r\nConnection: close\r\n\r\n{\"error\": \"invalid_token\"}\r\n";
+        const BAD: &str = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: 30\r\nConnection: close\r\n\r\n{\"error\": \"invalid_request\"}\r\n";
+        const DOWN: &str = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let (url, server) = revoke_server(vec![OK, OK, INVALID, BAD, DOWN]);
+        let with_refresh = TokenSet {
+            access_token: "synthetic-access".into(),
+            refresh_token: Some("1//synthetic-refresh".into()),
+            expires_at_ms: 0,
+        };
+        let access_only = TokenSet {
+            refresh_token: None,
+            ..with_refresh.clone()
+        };
+        revoke_google_token(&url, &with_refresh).unwrap();
+        revoke_google_token(&url, &access_only).unwrap();
+        revoke_google_token(&url, &with_refresh).unwrap();
+        assert!(matches!(
+            revoke_google_token(&url, &with_refresh),
+            Err(CloudError::OAuthToken { status: 400, .. })
+        ));
+        assert!(matches!(
+            revoke_google_token(&url, &with_refresh),
+            Err(CloudError::OAuthToken { status: 503, .. })
+        ));
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("POST /revoke HTTP/1.1\r\n"));
+        assert!(
+            requests[0]
+                .to_ascii_lowercase()
+                .contains("content-type: application/x-www-form-urlencoded")
+        );
+        assert!(requests[0].ends_with("\r\n\r\ntoken=1%2F%2Fsynthetic-refresh"));
+        assert!(requests[1].ends_with("\r\n\r\ntoken=synthetic-access"));
+        for request in &requests {
+            let (head, _) = request.split_once("\r\n\r\n").unwrap();
+            assert!(!head.contains("synthetic"), "token outside the body: {head}");
+        }
+    }
+
+    #[test]
+    fn revoke_reports_an_unreachable_server() {
+        let closed = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let tokens = TokenSet {
+            access_token: "synthetic-access".into(),
+            refresh_token: None,
+            expires_at_ms: 0,
+        };
+        assert!(matches!(
+            revoke_google_token(&format!("http://{closed}/revoke"), &tokens),
+            Err(CloudError::Http(_))
+        ));
+    }
 
     #[test]
     fn invalid_local_requests_cannot_abort_or_complete_oauth() {

@@ -7,7 +7,7 @@
 - Google: create an OAuth **Desktop app** client in Google Cloud, enable the Gmail API, and configure the consent screen. Supply the client ID and any desktop client secret through `OAuthConfig`. The app uses a random local `127.0.0.1` port, PKCE, and the `gmail.modify` scope.
 - Microsoft: register a public client application with delegated `Mail.ReadWrite`, `Mail.Send`, and `User.Read` permissions. Add a **Mobile and desktop applications** redirect URI of `http://localhost/callback` and allow personal Microsoft accounts if Hotmail/Outlook.com support is wanted. The app uses a random local port, PKCE, and `offline_access`.
 
-Call `authorize_interactive` from a worker thread. It opens the system browser and waits up to five minutes for the callback. Then create `CloudClient`, call `identity()` for the account address/name, and use `sync_batch` with a saved cursor. Message and thread IDs include the account ID namespace.
+Call `authorize_interactive` from a worker thread. It opens the system browser and waits up to five minutes for the callback. Then create `CloudClient`, call `identity()` for the account address/name, and use `sync_batch` with a saved cursor. Message and thread IDs include the account ID namespace. When a Google account is removed, `revoke_google_token` ends its grant at Google; it has a short timeout and callers should treat it as best effort.
 
 ## Sync behavior
 
