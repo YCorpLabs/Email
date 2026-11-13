@@ -1,6 +1,6 @@
 # Native service JSON ABI (v1)
 
-The desktop app keeps one `mail-service` library handle open. `mail_service_open(path)` opens the SQLite cache and account configuration. `mail_service_request_json(handle, json)` returns `{"ok":true,"data":...}` or `{"ok":false,"error":"..."}`. Calls can perform network I/O; run them off the UI thread.
+The desktop app keeps one `mail-service` library handle open. `mail_service_open(path)` opens the SQLite cache and account configuration. `mail_service_request_json(handle, json)` returns `{"ok":true,"data":...}` or `{"ok":false,"error":"..."}`; a failed `add_imap_account` also carries `setup_error` (below). Rust callers get the same envelope from `MailService::request_envelope`, or a plain `Result` from `request_json`. Calls can perform network I/O; run them off the UI thread.
 
 ## Read operations
 
@@ -22,7 +22,9 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 
 ## Account setup
 
-- `{"op":"add_imap_account","provider":"icloud"|"imap","email":"...","display_name":"...","username":"...","imap_host":"...","imap_port":993,"smtp_host":"...","smtp_port":587,"password":"..."}` → account object. The password goes to the OS credential store; never SQLite/logs. The service tests credentials before saving the account.
+- `{"op":"setup_provider","email":"..."}` → `{"provider":"gmail"|"icloud"|"outlook"|"other"}` from the address's domain alone (no network): `gmail.com` and `googlemail.com` are Gmail; `icloud.com`, `me.com` and `mac.com` are iCloud.
+- `{"op":"add_imap_account","provider":"icloud"|"imap","email":"...","display_name":"...","username":"...","imap_host":"...","imap_port":993,"smtp_host":"...","smtp_port":587,"password":"..."}` → account object. The password goes to the OS credential store; never SQLite/logs. The service tests credentials before saving the account. iCloud and `"preset":"gmail"` own their servers and usernames. For `imap` without a preset, leaving out both hosts makes the engine guess them from the address (`mail_imap::guess_servers`, no lookup).
+  On failure the envelope adds `setup_error`: `{"code","message","action":{"label","url"}|null,"detail","servers"|null}`. `message` is one line for the person; `action` is an `https` link that fixes it; `detail` is what the server said (password redacted); `servers` is the guess when `code` is `servers_not_found`. Codes: `google_password`, `apple_password`, `wrong_password`, `imap_disabled`, `web_login`, `too_many_connections`, `unreachable`, `tls`, `mailbox`, `smtp`, `connect`, `servers_not_found`, `invalid` (checked before connecting).
 - `{"op":"start_oauth","provider":"gmail"|"microsoft","client_id":"..."}` → account object after system-browser OAuth with PKCE and a local loopback callback. This call blocks while the user authorizes; run it on a background thread.
 - `{"op":"remove_account","account_id":"..."}` → null; removes local configuration, cache, and stored credential after explicit UI confirmation. For a Google sign-in account it first asks Google to revoke the grant. That step is best effort with a 4-second timeout; removal finishes even if it fails. This call can block on the network; run it on a background thread.
 

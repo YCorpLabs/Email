@@ -306,14 +306,15 @@ fn regular_google_password_is_refused_before_contacting_google() {
         "abcd-efgh-ijkl-mnop",
     ] {
         let error = h.add(FIXTURE_USER, typed).unwrap_err();
-        assert!(
-            error.starts_with("That isn't a Google app password."),
-            "{typed}: {error}"
-        );
-        assert!(
-            error.contains("myaccount.google.com/apppasswords"),
-            "{error}"
-        );
+        assert_eq!(error, "That looks like your Google password.", "{typed}");
+        let problem = &h.service.request_envelope(
+            &json!({"op": "add_imap_account", "provider": "imap", "preset": "gmail",
+                "email": FIXTURE_USER, "display_name": FIXTURE_USER, "password": typed})
+            .to_string(),
+        )["setup_error"];
+        assert_eq!(problem["code"], "google_password");
+        assert_eq!(problem["action"]["label"], "Create an app password instead");
+        assert_eq!(problem["action"]["url"], "https://myaccount.google.com/apppasswords");
     }
     assert!(
         h.fixture.commands().is_empty(),
@@ -345,45 +346,58 @@ fn google_sign_in_failures_point_to_app_passwords() {
 fn gmail_app_password_setup_failures_are_explained_and_save_nothing() {
     let h = Harness::new();
     let cases = [
+        (FIXTURE_USER, "zzzzyyyyxxxxwwww", "wrong_password", "Wrong email or app password."),
         (
             FIXTURE_USER,
-            "zzzzyyyyxxxxwwww",
-            "Google didn't accept this app password",
+            "my regular google password",
+            "google_password",
+            "That looks like your Google password.",
         ),
         (
             FIXTURE_APP_PASSWORD_REQUIRED,
             "qrstqrstqrstqrst",
-            "Google needs an app password here",
+            "google_password",
+            "That looks like your Google password.",
         ),
         (
             FIXTURE_IMAP_DISABLED,
             FIXTURE_APP_PASSWORD,
-            "Your Google Workspace administrator has turned off IMAP",
+            "imap_disabled",
+            "Your Google Workspace admin has turned off IMAP for this account.",
         ),
         (
             FIXTURE_WEB_LOGIN,
             FIXTURE_APP_PASSWORD,
-            "Google blocked this sign-in",
+            "web_login",
+            "Google blocked this sign-in. Confirm it was you in Gmail, then try again.",
         ),
     ];
-    for (address, password, expected) in cases {
-        let error = h.add(address, password).unwrap_err();
-        assert!(error.starts_with(expected), "{address}: {error}");
-        assert!(
-            !error.contains(password),
-            "the password never appears in an error"
-        );
+    for (address, password, code, message) in cases {
+        let request = json!({
+            "op": "add_imap_account", "provider": "imap", "preset": "gmail",
+            "email": address, "display_name": address, "password": password,
+        });
+        // request_json keeps a plain one-line error for any caller.
+        let error = h.call(request.clone()).unwrap_err();
+        assert_eq!(error, message, "{address}");
+        // The envelope the shells read adds the structured problem.
+        let envelope = h.service.request_envelope(&request.to_string());
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["error"], message);
+        let problem = &envelope["setup_error"];
+        assert_eq!(problem["code"], code, "{address}: {problem}");
+        assert_eq!(problem["message"], message);
+        assert!(!problem.to_string().contains(password), "the password never appears in an error");
+        if code == "google_password" || code == "wrong_password" {
+            assert_eq!(problem["action"]["url"], "https://myaccount.google.com/apppasswords", "{problem}");
+        }
+        if code != "google_password" || password.len() == 16 {
+            assert!(
+                problem["detail"].as_str().unwrap().contains("imap.gmail.com:993 said:"),
+                "server words go to the details: {problem}"
+            );
+        }
     }
-    let wrong = h.add(FIXTURE_USER, "zzzzyyyyxxxxwwww").unwrap_err();
-    assert!(
-        wrong.contains("security keys"),
-        "explains accounts without app passwords: {wrong}"
-    );
-    assert_eq!(
-        wrong.contains("sign in with Google instead"),
-        release::GOOGLE_OAUTH_PUBLIC,
-        "{wrong}"
-    );
 
     // A server that is not listening.
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
@@ -396,7 +410,7 @@ fn gmail_app_password_setup_failures_are_explained_and_save_nothing() {
         let error = h.add(FIXTURE_USER, FIXTURE_APP_PASSWORD).unwrap_err();
         assert_eq!(
             error,
-            "Couldn't reach imap.gmail.com:993. Check your internet connection, then try again."
+            "Couldn't reach imap.gmail.com. Check your internet connection, then try again."
         );
     }
 
@@ -405,6 +419,81 @@ fn gmail_app_password_setup_failures_are_explained_and_save_nothing() {
         h.vault.0.lock().unwrap().is_empty(),
         "failed setup stores no credential"
     );
+}
+
+#[test]
+fn other_accounts_without_servers_try_a_guess_and_return_it_when_nothing_answers() {
+    let h = Harness::new();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let request = json!({
+        "op": "add_imap_account", "provider": "imap",
+        "email": "person@example.org", "display_name": "person@example.org", "password": "secret",
+    });
+    {
+        let _nothing = mail_imap::fixture::redirect_host("imap.example.org", 993, closed);
+        let envelope = h.service.request_envelope(&request.to_string());
+        let problem = &envelope["setup_error"];
+        assert_eq!(problem["code"], "servers_not_found", "{envelope}");
+        assert_eq!(
+            envelope["error"],
+            "Couldn't find the mail servers for example.org. Check the server settings."
+        );
+        assert_eq!(problem["servers"]["imap_host"], "imap.example.org");
+        assert_eq!(problem["servers"]["imap_port"], 993);
+        assert_eq!(problem["servers"]["imap_security"], "implicit_tls");
+        assert_eq!(problem["servers"]["smtp_host"], "smtp.example.org");
+        assert_eq!(problem["servers"]["smtp_port"], 587);
+        assert_eq!(problem["servers"]["smtp_security"], "start_tls");
+        assert!(problem["detail"].as_str().unwrap().starts_with("imap.example.org:993 said:"), "{problem}");
+    }
+    {
+        // The guessed server answers but refuses the password: not a server problem.
+        let _fixture = mail_imap::fixture::redirect_host("imap.example.org", 993, h.fixture.imap_port);
+        let envelope = h.service.request_envelope(&request.to_string());
+        let problem = &envelope["setup_error"];
+        assert_eq!(problem["code"], "wrong_password", "{envelope}");
+        assert_eq!(problem["message"], "Wrong email or app password.");
+        assert!(problem["servers"].is_null());
+    }
+    assert_eq!(h.call(json!({"op": "list_accounts"})).unwrap(), json!([]));
+}
+
+#[test]
+fn setup_provider_comes_from_the_domain_alone() {
+    let h = Harness::new();
+    for (email, provider) in [
+        ("me@gmail.com", "gmail"),
+        ("me@googlemail.com", "gmail"),
+        ("me@icloud.com", "icloud"),
+        ("me@me.com", "icloud"),
+        ("me@mac.com", "icloud"),
+        ("me@outlook.com", "outlook"),
+        ("me@company.example", "other"),
+        ("", "other"),
+    ] {
+        let value = h.call(json!({"op": "setup_provider", "email": email})).unwrap();
+        assert_eq!(value, json!({"provider": provider}), "{email}");
+    }
+    assert!(h.fixture.commands().is_empty(), "no server is contacted");
+}
+
+#[test]
+fn every_failed_request_keeps_the_plain_envelope() {
+    let h = Harness::new();
+    let unknown = h.service.request_envelope(r#"{"op":"no_such_operation"}"#);
+    assert_eq!(unknown["ok"], false);
+    assert!(unknown["error"].is_string() && unknown.get("setup_error").is_none());
+    let accounts = h.service.request_envelope(r#"{"op":"list_accounts"}"#);
+    assert_eq!(accounts, json!({"ok": true, "data": []}));
+    let invalid = h.service.request_envelope(
+        &json!({"op": "add_imap_account", "provider": "imap", "email": "nobody", "display_name": "", "password": "x"}).to_string(),
+    );
+    assert_eq!(invalid["error"], "valid email required");
+    assert_eq!(invalid["setup_error"]["code"], "invalid");
 }
 
 #[test]
@@ -433,9 +522,7 @@ fn build_features_follow_the_release_channel() {
             .call(json!({"op": "start_oauth", "provider": "gmail", "client_id": "fixture"}))
             .unwrap_err();
         assert!(
-            gmail.starts_with(
-                "One-click Google sign-in is coming once Google finishes reviewing the app."
-            ),
+            gmail.starts_with("One-click Google sign-in isn't available in this build yet."),
             "{gmail}"
         );
     }
@@ -626,7 +713,9 @@ fn archive_follows_all_mail_renamed_after_setup() {
 }
 
 #[test]
-fn advice_names_google_sign_in_only_when_the_shell_offers_it() {
+fn advice_is_one_line_whether_or_not_the_shell_offers_google_sign_in() {
+    // Older shells send `google_sign_in`; it is accepted and no longer changes
+    // the advice. Accounts without app passwords are covered in the window.
     let h = Harness::new();
     let attempt = |offered: bool| {
         h.call(
@@ -636,11 +725,8 @@ fn advice_names_google_sign_in_only_when_the_shell_offers_it() {
         )
         .unwrap_err()
     };
-    assert!(!attempt(false).contains("sign in with Google instead"));
-    assert_eq!(
-        attempt(true).contains("sign in with Google instead"),
-        release::GOOGLE_OAUTH_PUBLIC
-    );
+    assert_eq!(attempt(false), "Wrong email or app password.");
+    assert_eq!(attempt(true), "Wrong email or app password.");
 }
 
 #[test]

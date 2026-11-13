@@ -68,6 +68,8 @@ Project policies live in the repository root:
 - [Interface direction](design.md) and [app icon](app-icon.md).
 - [Account setup](account-setup.md): Gmail app passwords, the Google sign-in
   gate and which features each build offers.
+- [First run](first-run.md): the welcome before the first account and when
+  Calendar is offered.
 - Features: [archive](archive.md), [bulk triage](bulk-triage.md),
   [desktop notifications](desktop-notifications.md),
   [discarding drafts](draft-discard.md), [draft navigation](draft-navigation.md),

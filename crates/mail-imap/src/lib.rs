@@ -16,7 +16,11 @@
 #[cfg(feature = "test-fixture")]
 pub mod fixture;
 mod setup;
-pub use setup::{ServerHint, SetupError, SetupStage};
+pub use setup::{
+    KnownProvider, ServerGuess, ServerHint, SetupAction, SetupError, SetupProblem, SetupStage,
+    guess_servers, looks_like_apple_app_password, looks_like_google_app_password,
+    provider_for_address,
+};
 
 use imap::types::{Flag, NameAttribute};
 use lettre::{
@@ -291,7 +295,7 @@ impl ImapConnector {
 
     /// Authenticate, select INBOX and check SMTP before an account is persisted.
     /// Blocking I/O. Records which step failed so account setup can explain it
-    /// (see `SetupError::message`). One IMAP session: on Gmail it also finds All
+    /// (see `SetupError::explain`). One IMAP session: on Gmail it also finds All
     /// Mail, so setup never logs in twice. All Mail is optional here.
     pub fn verify_account(&self) -> Result<SetupReport, SetupError> {
         let client = self

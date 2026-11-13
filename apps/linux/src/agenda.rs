@@ -2774,6 +2774,11 @@ impl Agenda {
     }
 }
 pub(super) fn open(ui: &Rc<Ui>) {
+    // G C and the palette follow the sidebar: no Calendar where none can be connected.
+    if !ui.calendar_available(&ui.accounts()) {
+        ui.window.error_bell();
+        return;
+    }
     ui.workspace.set_visible_child_name("calendar");
     ui.compact_navigation.set(false);
     ui.goto_pending.set(false);

@@ -41,8 +41,8 @@ use mail_cloud::{
 use mail_core::{Account, MailAction, MailStore, Provider};
 use mail_cloud::release;
 use mail_imap::{
-    GMAIL_IMAP_HOST, ImapConfig, ImapConnector, ServerHint, TransportSecurity, attachment_bytes,
-    attachment_metadata,
+    GMAIL_IMAP_HOST, ImapConfig, ImapConnector, ServerHint, SetupProblem, TransportSecurity,
+    attachment_bytes, attachment_metadata,
 };
 use percent_encoding::percent_decode_str;
 use regex::Regex;
@@ -112,6 +112,30 @@ enum ImapPreset {
     Gmail,
 }
 
+/// `add_imap_account`: a password-based account (iCloud, the Gmail app-password
+/// preset, or any IMAP server). Server fields may be left out for `imap`
+/// without a preset; the engine then guesses them from the address
+/// (`mail_imap::guess_servers`) and reports `servers_not_found` with its guess
+/// if they don't answer.
+#[derive(Deserialize)]
+struct AddImapAccount {
+    provider: Provider,
+    email: String,
+    display_name: String,
+    username: Option<String>,
+    smtp_username: Option<String>,
+    imap_host: Option<String>,
+    imap_port: Option<u16>,
+    imap_security: Option<TransportSecurity>,
+    smtp_host: Option<String>,
+    smtp_port: Option<u16>,
+    smtp_security: Option<TransportSecurity>,
+    archive_mailbox: Option<String>,
+    password: String,
+    #[serde(default)]
+    preset: Option<ImapPreset>,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Request {
@@ -123,6 +147,11 @@ enum Request {
     },
     /// What this build offers; both native shells shape account setup with it.
     BuildFeatures,
+    /// The provider an address belongs to, from its domain alone (no network):
+    /// account setup opens that provider's steps after the person enters it.
+    SetupProvider {
+        email: String,
+    },
     /// Desktop-only agent access operations. Never add these to mail-mcp's policy.
     AgentAccessStatus,
     AgentAccessOverview {
@@ -464,27 +493,7 @@ enum Request {
         part_id: String,
     },
     PendingActions,
-    AddImapAccount {
-        provider: Provider,
-        email: String,
-        display_name: String,
-        username: Option<String>,
-        smtp_username: Option<String>,
-        imap_host: Option<String>,
-        imap_port: Option<u16>,
-        imap_security: Option<TransportSecurity>,
-        smtp_host: Option<String>,
-        smtp_port: Option<u16>,
-        smtp_security: Option<TransportSecurity>,
-        archive_mailbox: Option<String>,
-        password: String,
-        #[serde(default)]
-        preset: Option<ImapPreset>,
-        /// Whether the shell offers Google sign-in right now (a client is
-        /// configured and the build allows it); shapes the setup advice.
-        #[serde(default)]
-        google_sign_in: Option<bool>,
-    },
+    AddImapAccount(AddImapAccount),
     StartOauth {
         provider: Provider,
         client_id: String,
@@ -647,10 +656,6 @@ fn build_features() -> Value {
 }
 /// Google app passwords are 16 letters, shown in groups of four. Checking the
 /// shape first keeps a regular Google password from being sent to IMAP at all.
-fn looks_like_google_app_password(secret: &str) -> bool {
-    let compact: Vec<char> = secret.chars().filter(|c| !c.is_whitespace()).collect();
-    compact.len() == 16 && compact.iter().all(char::is_ascii_alphabetic)
-}
 /// Google sign-in failures, in words that point to the way forward.
 fn google_sign_in_failure(error: mail_cloud::CloudError) -> String {
     use mail_cloud::CloudError;
@@ -747,6 +752,23 @@ impl MailService {
     pub fn request_json(&self, raw: &str) -> Result<Value, String> {
         let request: Request = serde_json::from_str(raw).map_err(|e| e.to_string())?;
         self.respond(request)
+    }
+    /// The response envelope both shells read: `{"ok":true,"data":…}` or
+    /// `{"ok":false,"error":"…"}`. A failed `add_imap_account` also carries
+    /// `setup_error` (`code`, `message`, `action`, `detail`, `servers`; see
+    /// docs/service-api.md), so account setup can show a one-line fix and keep
+    /// the server's words behind a Details disclosure.
+    pub fn request_envelope(&self, raw: &str) -> Value {
+        let result = match serde_json::from_str::<Request>(raw) {
+            Ok(Request::AddImapAccount(request)) => self.add_imap(request).map_err(|problem| {
+                json!({"ok": false, "error": problem.message.clone(), "setup_error": problem})
+            }),
+            Ok(request) => self
+                .respond(request)
+                .map_err(|error| json!({"ok": false, "error": error})),
+            Err(error) => Err(json!({"ok": false, "error": error.to_string()})),
+        };
+        result.map_or_else(|envelope| envelope, |data| json!({"ok": true, "data": data}))
     }
     fn value<T: Serialize>(&self, result: mail_core::Result<T>) -> Result<Value, String> {
         serde_json::to_value(result.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
@@ -1164,6 +1186,9 @@ impl MailService {
                 limit,
             } => self.value(self.store.suggest_recipients(&account_id, &query, limit)),
             Request::BuildFeatures => Ok(build_features()),
+            Request::SetupProvider { email } => {
+                Ok(json!({"provider": mail_imap::provider_for_address(&email)}))
+            }
             Request::SeedDemo {
                 set,
                 utc_offset_minutes,
@@ -1579,39 +1604,7 @@ impl MailService {
                 Ok(json!({"data_base64": STANDARD.encode(bytes)}))
             }
             Request::PendingActions => self.value(self.store.pending_actions()),
-            Request::AddImapAccount {
-                provider,
-                email,
-                display_name,
-                username,
-                smtp_username,
-                imap_host,
-                imap_port,
-                imap_security,
-                smtp_host,
-                smtp_port,
-                smtp_security,
-                archive_mailbox,
-                password,
-                preset,
-                google_sign_in,
-            } => self.add_imap(
-                provider,
-                email,
-                display_name,
-                username,
-                smtp_username,
-                imap_host,
-                imap_port,
-                imap_security,
-                smtp_host,
-                smtp_port,
-                smtp_security,
-                archive_mailbox,
-                password,
-                preset,
-                google_sign_in.unwrap_or(true),
-            ),
+            Request::AddImapAccount(request) => self.add_imap(request).map_err(|problem| problem.message),
             Request::StartOauth {
                 provider,
                 client_id,
@@ -1819,25 +1812,23 @@ impl MailService {
         }
         Ok(())
     }
-    #[allow(clippy::too_many_arguments)]
-    fn add_imap(
-        &self,
-        provider: Provider,
-        email: String,
-        display_name: String,
-        username: Option<String>,
-        smtp_username: Option<String>,
-        imap_host: Option<String>,
-        imap_port: Option<u16>,
-        imap_security: Option<TransportSecurity>,
-        smtp_host: Option<String>,
-        smtp_port: Option<u16>,
-        smtp_security: Option<TransportSecurity>,
-        archive_mailbox: Option<String>,
-        password: String,
-        preset: Option<ImapPreset>,
-        google_sign_in_offered: bool,
-    ) -> Result<Value, String> {
+    fn add_imap(&self, request: AddImapAccount) -> Result<Value, SetupProblem> {
+        let AddImapAccount {
+            provider,
+            email,
+            display_name,
+            username,
+            smtp_username,
+            mut imap_host,
+            mut imap_port,
+            mut imap_security,
+            mut smtp_host,
+            mut smtp_port,
+            mut smtp_security,
+            archive_mailbox,
+            password,
+            preset,
+        } = request;
         if !matches!(provider, Provider::Icloud | Provider::Imap) {
             return Err("provider must be icloud or imap".into());
         }
@@ -1850,11 +1841,27 @@ impl MailService {
         }
         // Before any network call; persist_account checks again under its lock.
         self.ensure_mailbox_not_connected(&email)?;
-        if gmail_preset && !looks_like_google_app_password(&password) {
-            return Err("That isn't a Google app password. App passwords are 16 letters, like “abcd efgh ijkl mnop”. \
-                Create one at myaccount.google.com/apppasswords and paste all of it. Your regular Google password won't work here."
-                .into());
+        if gmail_preset && !mail_imap::looks_like_google_app_password(&password) {
+            return Err(SetupProblem::google_password());
         }
+        // No servers given: guess them from the address (no lookup), try them
+        // once, and hand the guess back for editing if nothing answers.
+        let guessed = if provider == Provider::Imap
+            && !gmail_preset
+            && imap_host.is_none()
+            && smtp_host.is_none()
+        {
+            let guess = mail_imap::guess_servers(&email).ok_or("Enter your mail server names.")?;
+            imap_host = Some(guess.imap_host.clone());
+            imap_port = Some(guess.imap_port);
+            imap_security = Some(guess.imap_security);
+            smtp_host = Some(guess.smtp_host.clone());
+            smtp_port = Some(guess.smtp_port);
+            smtp_security = Some(guess.smtp_security);
+            Some(guess)
+        } else {
+            None
+        };
         let account = Account {
             id: Uuid::new_v4().to_string(),
             provider: provider.clone(),
@@ -1923,11 +1930,22 @@ impl MailService {
         };
         let connector =
             ImapConnector::new(config.clone(), provider.clone()).map_err(|e| e.to_string())?;
-        let report = connector
-            .verify_account()
-            .map_err(|failure| {
-                failure.message(&config, hint, release::GOOGLE_OAUTH_PUBLIC && google_sign_in_offered)
-            })?;
+        let report = connector.verify_account().map_err(|failure| {
+            let problem = failure.explain(&config, hint);
+            match &guessed {
+                Some(guess) if failure.servers_may_be_wrong() => SetupProblem {
+                    code: "servers_not_found",
+                    message: format!(
+                        "Couldn't find the mail servers for {}. Check the server settings.",
+                        email.trim().rsplit('@').next().unwrap_or_default()
+                    ),
+                    action: None,
+                    servers: Some(guess.clone()),
+                    ..problem
+                },
+                _ => problem,
+            }
+        })?;
         if config.archive_mailbox.is_none() {
             // Gmail: archive moves mail to All Mail, which drops only the Inbox
             // label. If All Mail was not listed, archive looks it up later.
@@ -1962,7 +1980,7 @@ impl MailService {
     ) -> Result<Value, String> {
         let cloud_provider = match provider {
             Provider::Gmail if !release::GOOGLE_OAUTH_PUBLIC => {
-                return Err("One-click Google sign-in is coming once Google finishes reviewing the app. Add Gmail with an app password.".into());
+                return Err("One-click Google sign-in isn't available in this build yet. Add Gmail with an app password.".into());
             }
             Provider::Gmail => CloudProvider::Gmail,
             Provider::Microsoft if !release::MICROSOFT_ACCOUNTS => {
@@ -2693,10 +2711,7 @@ pub unsafe extern "C" fn mail_service_request_json(
             return json!({"ok":false,"error":"null pointer"});
         }
         match unsafe { CStr::from_ptr(raw) }.to_str() {
-            Ok(request) => match unsafe { &*service }.request_json(request) {
-                Ok(data) => json!({"ok":true,"data":data}),
-                Err(error) => json!({"ok":false,"error":error}),
-            },
+            Ok(request) => unsafe { &*service }.request_envelope(request),
             Err(_) => json!({"ok":false,"error":"request must be UTF-8"}),
         }
     }))

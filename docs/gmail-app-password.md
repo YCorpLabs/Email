@@ -1,9 +1,8 @@
 # Connect Gmail with an app password
 
-Until Google finishes reviewing Email, the released app connects Gmail with an
-**app password** instead of one-click Google sign-in. It takes about two
-minutes. One-click Google sign-in is coming once Google finishes reviewing the
-app; accounts you connect now keep working afterwards.
+For now, Email connects Gmail with an **app password**. It takes about two
+minutes. Accounts you add now keep working when one-click Google sign-in
+arrives.
 
 ## What an app password is
 
@@ -28,29 +27,31 @@ password.
    [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords),
    enter a name such as "Email" and select **Create**. Google shows the
    16-letter password once.
-3. **Add it in Email.** Choose **Add account**, then **Gmail**. Enter your Gmail
-   address, paste the app password (spaces don't matter) and select
+3. **Add it in Email.** Choose **Add an account**, enter your Gmail address and
+   select **Continue**. Paste the app password (spaces are fine) and select
    **Add account**. Email checks the password with Google before saving
    anything, then downloads your inbox.
 
 Google Workspace addresses work the same way if your organization allows it.
+For an address on your own domain, choose **Choose provider › Gmail** under
+the email field.
 
 ## If it doesn't work
 
 | Email says | What to do |
 | --- | --- |
-| "That isn't a Google app password" | You entered something other than the 16 letters, often your regular Google password. Create an app password (step 2) and paste all of it. With the Gmail choice, Email never sends a value that isn't shaped like an app password. |
-| "Google didn't accept this app password" | Check the address. Create a new app password and paste it; an old one may have been revoked, for example after a Google password change. |
-| "Google needs an app password here" | Google refused your regular password. Use an app password. |
-| "Your Google Workspace administrator has turned off IMAP" | Your administrator controls this in the Google Admin console (Apps › Google Workspace › Gmail › End User Access). Ask them to enable IMAP access. |
-| "Google blocked this sign-in" | Open Gmail in your browser on this computer and confirm that the sign-in was you, then try again. |
-| "Couldn't reach imap.gmail.com:993" | Check your internet connection, or a firewall or VPN that blocks mail ports 993 and 465. |
+| "That looks like your Google password." | You entered something other than the 16 letters, often your regular Google password, or Google asked for an app password. Select **Create an app password instead** and paste all of it. With the Gmail choice, Email never sends a value that isn't shaped like an app password. |
+| "Wrong email or app password." | Check the address. Create a new app password and paste it; an old one may have been revoked, for example after a Google password change. |
+| "Your Google Workspace admin has turned off IMAP for this account." | Your administrator controls this in the Google Admin console (Apps › Google Workspace › Gmail › End User Access). Ask them to enable IMAP access. |
+| "Google blocked this sign-in." | Open Gmail in your browser on this computer and confirm that the sign-in was you, then try again. |
+| "Couldn't reach imap.gmail.com." | Check your internet connection, or a firewall or VPN that blocks mail ports 993 and 465. |
+
+Select **Details** under the message to see exactly what Google's server said.
 
 **No App passwords option in your Google Account?** Google doesn't offer app
 passwords to accounts that use only security keys for 2-Step Verification, to
 accounts enrolled in Advanced Protection, or to some work and school accounts.
-Those accounts can connect once one-click Google sign-in is available, or your
-administrator can help. See Google's
+Your administrator may be able to help. See Google's
 [app password help](https://support.google.com/accounts/answer/185833).
 
 ## What works
