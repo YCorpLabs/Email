@@ -234,7 +234,13 @@ fn approval(store: &MailStore, action: &AgentAction) -> Result<Value, String> {
         // Conversations that left the cache still show what the request saved.
         Ok(sample
             .iter()
-            .map(|t| rows.iter().find(|r| r["id"] == t["id"]).cloned().unwrap_or_else(|| t.clone()))
+            .map(|t| {
+                let mut row = rows.iter().find(|r| r["id"] == t["id"]).cloned().unwrap_or_else(|| t.clone());
+                if let Some(snippet) = row["snippet"].as_str() {
+                    row["snippet"] = json!(one_line(snippet, 140));
+                }
+                row
+            })
             .collect())
     };
     let senders = |rows: &[Value]| {
@@ -376,6 +382,7 @@ fn access(request: &Value) -> Value {
         "note": Value::Null,
         "level": level,
         "grants": grants,
+        "changing": request["needs_access"].as_bool() == Some(false),
     })
 }
 
@@ -423,7 +430,12 @@ pub(crate) fn summary(store: &MailStore) -> Result<Value, String> {
     summary["access_on"] = json!(access_on);
     summary["notices"] = json!(rows
         .iter()
-        .map(|r| json!({"id": r["id"], "text": notice(r)}))
+        .map(|r| {
+            let text = notice(r);
+            let agent = r["agent"].as_str().unwrap_or("An agent");
+            let body = text.strip_prefix(agent).map(str::trim_start).unwrap_or(&text).to_string();
+            json!({"id": r["id"], "text": text, "title": agent, "body": body})
+        })
         .collect::<Vec<_>>());
     Ok(summary)
 }
