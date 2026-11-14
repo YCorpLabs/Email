@@ -263,3 +263,70 @@ fn sent_scope_keeps_delivered_mail_after_outbox_removal() {
     s.upsert_message(&incoming).unwrap();
     assert!(s.search_scoped("", 100, 0, &scope).unwrap().iter().any(|t| t.id == incoming.thread_id));
 }
+
+/// What Gmail sync stores for mail sent from Gmail or a phone: the message is
+/// marked sent, and the thread's labels never include Gmail's SENT label.
+struct GmailSentAdapter;
+impl mail_core::MailAdapter for GmailSentAdapter {
+    fn provider(&self) -> Provider {
+        Provider::Gmail
+    }
+    fn sync(&self, account: &Account, _: Option<&str>) -> mail_core::Result<mail_core::SyncBatch> {
+        let mut message = mail_core::Message {
+            id: "demo:personal:gmail-message:sent-elsewhere".into(),
+            thread_id: "demo:personal:gmail-thread:sent-elsewhere".into(),
+            account_id: account.id.clone(),
+            sender: format!("Alex <{}>", account.email),
+            to: vec!["pat@example.net".into()],
+            subject: "Venue proposal".into(),
+            body_plain: "Here is the venue proposal we discussed.".into(),
+            body_html: None,
+            unsubscribe_header: None,
+            has_attachments: Some(false),
+            received_at: 1_767_225_600_000,
+            is_read: true,
+            is_draft: false,
+            is_sent: true,
+            recipient_headers: None,
+        };
+        message.recipient_headers = Some(RecipientHeaders::default());
+        Ok(mail_core::SyncBatch {
+            message_states: vec![],
+            thread_labels: vec![(
+                message.thread_id.clone(),
+                vec!["IMPORTANT".into(), "__EMAIL_ARCHIVE__".into()],
+            )],
+            messages: vec![message],
+            removed_message_ids: vec![],
+            full_reset: false,
+            reset_phase: None,
+            next_cursor: "sent".into(),
+        })
+    }
+}
+
+#[test]
+fn gmail_sent_mail_is_found_by_every_sent_spelling_and_for_agents() {
+    let s = store();
+    s.run_sync(&GmailSentAdapter, "demo:personal").unwrap();
+    let thread = "demo:personal:gmail-thread:sent-elsewhere".to_string();
+    // Agents read Gmail's label list, which has INBOX and IMPORTANT but no SENT.
+    assert!(!s.list_labels().unwrap().iter().any(|l| l.name.eq_ignore_ascii_case("sent")));
+    for q in ["in:sent", "in:Sent", "label:SENT", "label:sent", "is:sent", "label:SENT venue", "is:sent subject:proposal"] {
+        assert_eq!(ids(&s, q), vec![thread.clone()], "{q}");
+    }
+    // The app's Sent folder and the MCP account-scoped search agree.
+    let scope = SearchScope { folder: Some("sent".into()), ..Default::default() };
+    assert!(s.search_scoped("", 100, 0, &scope).unwrap().iter().any(|t| t.id == thread));
+    let scoped = |accounts: &[&str]| -> Vec<String> {
+        let accounts: Vec<String> = accounts.iter().map(|a| a.to_string()).collect();
+        s.search_for_accounts("label:SENT", 100, &accounts).unwrap().into_iter().map(|t| t.id).collect()
+    };
+    assert_eq!(scoped(&["demo:personal"]), vec![thread.clone()]);
+    assert!(scoped(&["other"]).is_empty());
+    // Received mail is not sent mail, and a real label named Sent still matches.
+    assert!(!ids(&s, "label:sent").contains(&"demo:1".to_string()));
+    s.apply_action("sent-label", MailAction::AddLabel { thread_id: "demo:1".into(), label: "Sent".into() }).unwrap();
+    assert!(ids(&s, "label:sent").contains(&"demo:1".to_string()));
+    assert!(!ids(&s, "in:sent").contains(&"demo:1".to_string()));
+}

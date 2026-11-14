@@ -111,8 +111,12 @@ fn open_browser(url: &Url) -> Result<()> {
 
 /// Open the system browser for a desktop PKCE flow and wait up to five minutes for the callback.
 /// Call this from a background thread in graphical applications.
-pub fn authorize_interactive(config: &OAuthConfig) -> Result<TokenSet> {
-    authorize_interactive_scoped(config, config.provider.scope(), None)
+///
+/// `login_hint` is an address the person already gave (Google only): Google
+/// then skips its account chooser. It is a convenience, never trusted; the
+/// account comes from the provider's identity after sign-in.
+pub fn authorize_interactive(config: &OAuthConfig, login_hint: Option<&str>) -> Result<TokenSet> {
+    authorize_interactive_scoped(config, config.provider.scope(), login_hint, false)
 }
 
 /// Request additional Google permissions for an existing account without
@@ -130,6 +134,7 @@ pub fn authorize_google_photos(config: &OAuthConfig, email: &str) -> Result<Toke
         config,
         "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/contacts.readonly https://www.googleapis.com/auth/contacts.other.readonly",
         Some(email),
+        true,
     )
 }
 
@@ -151,13 +156,61 @@ pub fn authorize_google_calendar(config: &OAuthConfig, email: &str) -> Result<To
         config,
         "openid email https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/calendar.calendarlist.readonly",
         Some(email),
+        true,
     )
+}
+
+/// A plausible address for `login_hint`, or nothing. Google treats the hint
+/// as a suggestion, so a bad one is dropped rather than failing sign-in.
+fn usable_login_hint(hint: Option<&str>) -> Option<&str> {
+    let hint = hint?.trim();
+    (hint.len() <= 254
+        && hint.split('@').count() == 2
+        && hint.split('@').all(|part| !part.is_empty())
+        && !hint.chars().any(|c| c.is_control() || c.is_whitespace()))
+    .then_some(hint)
+}
+
+/// The browser URL for one sign-in. `incremental` adds scopes to an existing
+/// grant (Calendar, photos) instead of starting a new one.
+fn authorization_url(
+    config: &OAuthConfig,
+    scope: &str,
+    redirect: &str,
+    challenge: &str,
+    state: &str,
+    login_hint: Option<&str>,
+    incremental: bool,
+) -> Result<Url> {
+    let mut url = Url::parse(config.provider.auth_endpoint())?;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("client_id", &config.client_id)
+            .append_pair("redirect_uri", redirect)
+            .append_pair("response_type", "code")
+            .append_pair("scope", scope)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("state", state);
+        if config.provider == CloudProvider::Gmail {
+            q.append_pair("access_type", "offline");
+            q.append_pair("prompt", "consent");
+            if incremental {
+                q.append_pair("include_granted_scopes", "true");
+            }
+            if let Some(email) = usable_login_hint(login_hint) {
+                q.append_pair("login_hint", email);
+            }
+        }
+    }
+    Ok(url)
 }
 
 fn authorize_interactive_scoped(
     config: &OAuthConfig,
     scope: &str,
     login_hint: Option<&str>,
+    incremental: bool,
 ) -> Result<TokenSet> {
     if config.client_id.trim().is_empty() {
         return Err(CloudError::Response("OAuth client ID is empty"));
@@ -177,25 +230,15 @@ fn authorize_interactive_scoped(
     let verifier = random_urlsafe();
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let state = random_urlsafe();
-    let mut url = Url::parse(config.provider.auth_endpoint())?;
-    {
-        let mut q = url.query_pairs_mut();
-        q.append_pair("client_id", &config.client_id)
-            .append_pair("redirect_uri", &redirect)
-            .append_pair("response_type", "code")
-            .append_pair("scope", scope)
-            .append_pair("code_challenge", &challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("state", &state);
-        if config.provider == CloudProvider::Gmail {
-            q.append_pair("access_type", "offline");
-            q.append_pair("prompt", "consent");
-            if let Some(email) = login_hint {
-                q.append_pair("include_granted_scopes", "true");
-                q.append_pair("login_hint", email);
-            }
-        }
-    }
+    let url = authorization_url(
+        config,
+        scope,
+        &redirect,
+        &challenge,
+        &state,
+        login_hint,
+        incremental,
+    )?;
     open_browser(&url)?;
     let deadline = Instant::now() + Duration::from_secs(300);
     let code = loop {
@@ -311,6 +354,42 @@ pub fn revoke_google_token(endpoint: &str, tokens: &TokenSet) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn query(url: &Url) -> std::collections::HashMap<String, String> {
+        url.query_pairs().into_owned().collect()
+    }
+
+    #[test]
+    fn google_sign_in_needs_no_address_and_passes_a_known_one_as_hint() {
+        let config = OAuthConfig {
+            provider: CloudProvider::Gmail,
+            client_id: "client".into(),
+            client_secret: None,
+        };
+        let url = |hint, incremental| {
+            authorization_url(&config, "scope", "http://127.0.0.1:1/callback", "c", "s", hint, incremental).unwrap()
+        };
+        // Continue with Google: no address yet, so Google shows its account chooser.
+        let plain = query(&url(None, false));
+        assert!(!plain.contains_key("login_hint"));
+        assert!(!plain.contains_key("include_granted_scopes"));
+        assert_eq!(plain["prompt"], "consent");
+        // A typed address skips the chooser; a sign-in is not an incremental grant.
+        let hinted = query(&url(Some(" Someone@gmail.com "), false));
+        assert_eq!(hinted["login_hint"], "Someone@gmail.com");
+        assert!(!hinted.contains_key("include_granted_scopes"));
+        // Calendar and photos add to the existing grant, as before.
+        let added = query(&url(Some("someone@gmail.com"), true));
+        assert_eq!(added["include_granted_scopes"], "true");
+        assert_eq!(added["login_hint"], "someone@gmail.com");
+        for bad in ["", "no-at-sign", "two@@example.com", "a b@example.com", "x@example.com\r\nprompt=none"] {
+            assert!(!query(&url(Some(bad), false)).contains_key("login_hint"), "{bad:?}");
+        }
+        // Microsoft is unchanged.
+        let microsoft = OAuthConfig { provider: CloudProvider::Microsoft, ..config.clone() };
+        let url = authorization_url(&microsoft, "scope", "http://localhost:1/callback", "c", "s", Some("a@example.com"), false).unwrap();
+        assert!(!query(&url).contains_key("login_hint"));
+    }
 
     /// Serves one canned response per connection and returns each raw request.
     fn revoke_server(responses: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {

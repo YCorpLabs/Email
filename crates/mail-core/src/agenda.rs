@@ -314,6 +314,29 @@ impl MailStore {
         Ok(())
     }
 
+    /// Drop one event the provider confirmed deleted. Like a cached mutation,
+    /// it invalidates the calendar's coverage; other events stay readable.
+    pub fn forget_agenda_event(
+        &self,
+        account_id: &str,
+        calendar_id: &str,
+        event_id: &str,
+    ) -> Result<()> {
+        let mut db = self.lock()?;
+        collection(&db, account_id, calendar_id)?;
+        let tx = db.transaction()?;
+        tx.execute(
+            "DELETE FROM agenda_windows WHERE account_id=?1 AND calendar_id=?2",
+            params![account_id, calendar_id],
+        )?;
+        tx.execute(
+            "DELETE FROM agenda_events WHERE account_id=?1 AND calendar_id=?2 AND id=?3",
+            params![account_id, calendar_id, event_id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Atomically refresh the account's complete connected-calendar list. Removed
     /// collections and their cached events are removed through foreign keys.
     pub fn replace_calendar_collections(

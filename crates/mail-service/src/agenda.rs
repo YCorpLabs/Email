@@ -236,6 +236,43 @@ impl MailService {
         )
     }
 
+    /// Delete one editable event (or one occurrence with `instance`). Guests
+    /// get Google's cancellation. Never retried: a lost response can follow a
+    /// successful delete.
+    pub(super) fn delete_calendar_event(
+        &self,
+        account_id: &str,
+        calendar_id: &str,
+        event_id: &str,
+        expected_etag: &str,
+        edit_scope: &str,
+    ) -> Result<Value, String> {
+        mail_cloud::validate_event_version(expected_etag, edit_scope).map_err(|e| e.to_string())?;
+        self.writable_calendar(account_id, calendar_id)?;
+        let client = self.calendar_client(account_id)?;
+        self.store
+            .invalidate_agenda_coverage(account_id, calendar_id)
+            .map_err(|e| e.to_string())?;
+        let result =
+            client.google_calendar_delete(account_id, calendar_id, event_id, expected_etag, edit_scope);
+        let saved = self.save_calendar_tokens(account_id, &client);
+        result.map_err(|error| match error {
+            mail_cloud::CloudError::CalendarConflict => error.to_string(),
+            _ => format!("Deletion was not confirmed. Refresh Google Calendar before trying again; the event may have been deleted. {error}"),
+        })?;
+        let warning = saved
+            .err()
+            .map(|e| format!("Event deleted, but refreshed credentials could not be saved: {e}"));
+        let cache_warning = self
+            .store
+            .forget_agenda_event(account_id, calendar_id, event_id)
+            .err()
+            .map(|e| e.to_string());
+        Ok(
+            json!({"deleted":true,"refresh_required":true,"warning":warning,"cache_warning":cache_warning}),
+        )
+    }
+
     pub(super) fn calendar_availability(
         &self,
         account_id: Option<&str>,

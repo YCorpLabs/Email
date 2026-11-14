@@ -267,6 +267,13 @@ enum Request {
         description: Option<String>,
         location: Option<String>,
     },
+    DeleteCalendarEvent {
+        account_id: String,
+        calendar_id: String,
+        event_id: String,
+        expected_etag: String,
+        edit_scope: Option<String>,
+    },
     Availability {
         account_id: Option<String>,
         start_ms: i64,
@@ -498,6 +505,8 @@ enum Request {
         provider: Provider,
         client_id: String,
         client_secret: Option<String>,
+        /// An address the person already typed (Google only); optional.
+        login_hint: Option<String>,
     },
     EnableGooglePhotos {
         account_id: String,
@@ -1125,6 +1134,19 @@ impl MailService {
                     location,
                 },
             ),
+            Request::DeleteCalendarEvent {
+                account_id,
+                calendar_id,
+                event_id,
+                expected_etag,
+                edit_scope,
+            } => self.delete_calendar_event(
+                &account_id,
+                &calendar_id,
+                &event_id,
+                &expected_etag,
+                edit_scope.as_deref().unwrap_or("single"),
+            ),
             Request::Availability {
                 account_id,
                 start_ms,
@@ -1609,7 +1631,8 @@ impl MailService {
                 provider,
                 client_id,
                 client_secret,
-            } => self.start_oauth(provider, client_id, client_secret),
+                login_hint,
+            } => self.start_oauth(provider, client_id, client_secret, login_hint.as_deref()),
             Request::EnableGooglePhotos { account_id } => self.enable_google_photos(&account_id),
             Request::GooglePhotoState { account_id } => {
                 let saved = self.saved_config(&account_id)?;
@@ -1977,6 +2000,7 @@ impl MailService {
         provider: Provider,
         client_id: String,
         client_secret: Option<String>,
+        login_hint: Option<&str>,
     ) -> Result<Value, String> {
         let cloud_provider = match provider {
             Provider::Gmail if !release::GOOGLE_OAUTH_PUBLIC => {
@@ -1994,7 +2018,8 @@ impl MailService {
             client_id: client_id.clone(),
             client_secret: client_secret.clone(),
         };
-        let tokens = authorize_interactive(&config).map_err(|error| {
+        // No address is needed: the account comes from Google's identity below.
+        let tokens = authorize_interactive(&config, login_hint).map_err(|error| {
             if provider == Provider::Gmail {
                 google_sign_in_failure(error)
             } else {
