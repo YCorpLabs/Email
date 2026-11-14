@@ -27,6 +27,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 source "$repo_root/scripts/package-notices.sh"
+source "$repo_root/scripts/release-version.sh"
 require_package_notices "$repo_root"
 command -v docker >/dev/null || { echo "Docker is required." >&2; exit 1; }
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
@@ -44,7 +45,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 commit="$(git rev-parse HEAD)"
-version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/linux/Cargo.toml | head -1)"
+version="$(email_release_version "$repo_root")"
 
 # Resolve the profile and OAuth application values once on the host and fail
 # before any container work if they are not acceptable for this channel.
@@ -114,9 +115,11 @@ install -m755 /target/linux/release/email-linux "/out/email-linux-$EMAIL_PACKAGE
 install -m755 /target/workspace/release/mail-mcp "/out/mail-mcp-$EMAIL_PACKAGE_ARCH"
 install -m644 /target/workspace/release/libmail_service.so "/out/libmail_service-$EMAIL_PACKAGE_ARCH.so"
 . /etc/os-release
+source scripts/release-version.sh
 {
   echo "commit=$EMAIL_COMMIT"
   echo "version=$EMAIL_VERSION"
+  echo "deb_version=$(email_deb_version "$EMAIL_VERSION")"
   echo "build_id=$EMAIL_BUILD_ID"
   echo "profile=$EMAIL_PROFILE_PROFILE"
   echo "linux_app_id=$EMAIL_PROFILE_LINUX_APP_ID"

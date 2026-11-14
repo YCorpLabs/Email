@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 source "$repo_root/scripts/package-notices.sh"
 source "$repo_root/scripts/linux-desktop-entry.sh"
+source "$repo_root/scripts/release-version.sh"
 require_package_notices "$repo_root"
 source "$repo_root/scripts/linux-build-config.sh"
 require_linux_oauth_config
@@ -20,7 +21,10 @@ CARGO_TARGET_DIR="$mcp_target_dir" cargo build --manifest-path Cargo.toml --rele
 
 target_dir="${CARGO_TARGET_DIR:-$repo_root/apps/linux/target}"
 binary="$target_dir/release/email-linux"
-version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/linux/Cargo.toml | head -1)"
+version="$(email_release_version "$repo_root")"
+# The package's Debian version (docs/release-versions.md). The file name keeps
+# the release version, which matches the tag and has no ':' or '~'.
+deb_version="$(email_deb_version "$version")"
 architecture="$(dpkg --print-architecture)"
 package_dir="$(mktemp -d)"
 trap 'rm -rf "$package_dir"' EXIT
@@ -39,7 +43,7 @@ printf '/etc/apparmor.d/email-linux\n' > "$package_dir/DEBIAN/conffiles"
 
 cat > "$package_dir/DEBIAN/control" <<EOF
 Package: email-linux
-Version: $version
+Version: $deb_version
 Architecture: $architecture
 Maintainer: Email Desktop
 Description: Keyboard-first desktop email client

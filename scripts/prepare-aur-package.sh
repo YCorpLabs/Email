@@ -55,9 +55,14 @@ value() { sed -n "s/^$2=//p" "$1"; }
 pkgver="$(value "$source_pkgbuild" pkgver)"
 tag="$(value "$source_pkgbuild" _tag)"
 version="${tag#v}"
-cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' apps/linux/Cargo.toml | head -1)"
-[[ "$tag" == "v$cargo_version"* ]] || {
+source scripts/release-version.sh
+cargo_version="$(email_release_version "$repo_root")"
+[[ "$tag" == "v$cargo_version" ]] || {
   echo "PKGBUILD _tag $tag does not match apps/linux/Cargo.toml version $cargo_version." >&2
+  exit 1
+}
+[[ "$pkgver" == "$(email_arch_pkgver "$cargo_version")" ]] || {
+  echo "PKGBUILD pkgver $pkgver is not $(email_arch_pkgver "$cargo_version") (docs/release-versions.md)." >&2
   exit 1
 }
 for key in pkgver _tag pkgrel; do

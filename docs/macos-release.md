@@ -94,8 +94,8 @@ Build and check each beta:
 export EMAIL_DISTRIBUTION_PROFILE=official
 export EMAIL_RELEASE_GOOGLE_CLIENT_ID='your-production-desktop-client-id'
 # Supply EMAIL_RELEASE_GOOGLE_CLIENT_SECRET through your release environment.
-export EMAIL_VERSION='0.1.0'
-export EMAIL_BUILD_NUMBER='1'   # raise it for every beta
+export EMAIL_VERSION='0.1.0-beta.2'
+export EMAIL_BUILD_NUMBER='2'   # one more for every release
 ./scripts/package-macos-release.sh --beta
 ./scripts/verify-macos-release.sh dist-release/beta/Email.app
 ```
@@ -103,7 +103,8 @@ export EMAIL_BUILD_NUMBER='1'   # raise it for every beta
 Output goes to `dist-release/beta/`: `Email.app`, the download
 `Email-<version>-<build>-<arch>.zip` with its `.sha256`, and `STATUS.txt`,
 which says the build is not notarized. There is no DMG. The zip can be renamed
-for the release, for example `Email-0.1.0-beta.1-macos-arm64.zip`. Like
+for the release, for example `Email-0.1.0-beta.2-macos-arm64.zip`.
+[Release versions](release-versions.md) lists both values for each release. Like
 `--distribute`, it packages the architecture of the Mac it runs on.
 
 Later betas reuse the same identity: run the build again. The packager unlocks
