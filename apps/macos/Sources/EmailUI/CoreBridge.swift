@@ -13,6 +13,14 @@ struct RenderedMessage: Sendable {
     let bodyHTMLSafe: String?
 }
 
+/// The time in a list row, as the inbox shows it: today the time, older the date.
+enum MailListTime {
+    static func string(for date: Date) -> String {
+        let today = Calendar.current.isDateInToday(date)
+        return DateFormatter.localizedString(from: date, dateStyle: today ? .none : .short, timeStyle: today ? .short : .none)
+    }
+}
+
 struct MailDraft: Sendable {
     let id: String
     let accountID: String
@@ -322,6 +330,9 @@ final class CoreBridge: @unchecked Sendable {
         // Account setup can wait on a browser or a slow mail server. Run it on its
         // own handle so the window and cached reads never queue behind it.
         let isOAuth = operation == "start_oauth" || operation == "add_imap_account"
+        // Connecting an agent runs the claude or codex CLI, which can take a few
+        // seconds; give it its own handle so cached reads never wait behind it.
+        let isAgentClient = operation == "agent_clients" || operation == "connect_agent_client"
         let isPhotoOAuth = operation == "enable_google_photos"
         let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event" || operation == "delete_calendar_event"
         let dedicatedCalendar = isCalendarNetwork ? calendarBridge : nil
@@ -353,6 +364,12 @@ final class CoreBridge: @unchecked Sendable {
                     if let attachmentBridge { _ = try attachmentBridge.exchange(reload) }
                 }
                 return result
+            }
+            if isAgentClient {
+                guard let separateHandle = CoreBridge() else {
+                    throw MailServiceError(message: "Could not open the mail engine to check agents.")
+                }
+                return try separateHandle.exchange(data)
             }
             if isOAuth {
                 guard let separateHandle = CoreBridge() else {
@@ -472,7 +489,7 @@ final class CoreBridge: @unchecked Sendable {
                   let preview = item["snippet"] as? String else { return nil }
             let milliseconds = (item["last_message_at"] as? NSNumber)?.doubleValue ?? 0
             let date = Date(timeIntervalSince1970: milliseconds / 1000)
-            let time = DateFormatter.localizedString(from: date, dateStyle: Calendar.current.isDateInToday(date) ? .none : .short, timeStyle: Calendar.current.isDateInToday(date) ? .short : .none)
+            let time = MailListTime.string(for: date)
             return MailThread(id: id, accountID: accountID, account: accounts[accountID] ?? accountID, sender: sender, subject: subject, preview: preview, time: time, unread: ((item["unread_count"] as? NSNumber)?.intValue ?? 0) > 0, html: "", labels: item["labels"] as? [String] ?? [], pinned: item["is_pinned"] as? Bool ?? false, snoozedUntil: (item["snoozed_until_ms"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) })
         }
     }

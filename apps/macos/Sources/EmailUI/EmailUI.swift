@@ -24,6 +24,8 @@ enum EmailTheme {
     static let accentSoft = adaptive(light: 0xEAEAEC, dark: 0x303134)
     static let line = adaptive(light: 0xE5E4E1, dark: 0x353637)
     static let compose = adaptive(light: 0xFFFFFF, dark: 0x262728)
+    /// Cautions, such as an agent permission that takes effect without approval.
+    static let warning = adaptive(light: 0xA4500C, dark: 0xF2A541)
     static func cgColor(_ color: NSColor, in appearance: NSAppearance) -> CGColor {
         var resolved = color.cgColor
         appearance.performAsCurrentDrawingAppearance { resolved = color.cgColor }
@@ -241,7 +243,7 @@ let fixtureThreads: [MailThread] = [
 
 @MainActor
 final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    private enum Folder { case inbox, drafts, outbox }
+    private enum Folder { case inbox, drafts, outbox, agentRequests }
     private enum InboxScope: Equatable, Sendable { case all, unread, pinned, snoozed, followups, archived, sent, account(String), split(String), label(String) }
     private var folder: Folder = .inbox
     private var inboxScope: InboxScope = .all
@@ -397,7 +399,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case toggleLabel(String), createLabel(String), snoozeUntil(Date), unsnooze
         case toggleImages, contact, appearance(Int), notifications, testNotifications, notificationPreviews
         case sendDraft, saveDraft, scheduleDraft, attachFile, chooseFrom, focusRecipient, focusCc, focusBcc, focusBody
-        case agentAccess
+        case agentAccess, agentRequests
         case snippets, saveSnippet, insertSnippet(String), about, support, feedback, invitations, followup, followups, signature, bookings, insertBooking, trackingActivity, toggleTracking
         case calendarSearch, calendarCreate, calendarRefresh, calendarView(Int), calendarMove(Int), calendarToday, calendarJump, calendarHelp, calendarDate(Date)
 
@@ -428,9 +430,19 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private var mailSyncTimer: Timer?
     private var agentAccess: AgentAccessController?
     private weak var agentSidebarButton: NSButton?
-    private let agentBadge = NSTextField(labelWithString: "")
     private var agentPollInFlight = false
     private var agentRevision = ""
+    /// Agent requests in the main window: waiting approvals and refused agents.
+    private var agentRequests: [[String: Any]] = []
+    private weak var agentRequestsSidebarButton: NSButton?
+    private let agentRequestsPill = AgentPill()
+    private let agentRequestReader = AgentRequestReader()
+    private var controlsBelowSearch: NSLayoutConstraint?
+    private var controlsBelowStatus: NSLayoutConstraint?
+    private var agentAccessOn = false
+    private var agentRequestTotal = 0
+    private var agentRequestBusy = false
+    private var agentUndoTimer: Timer?
     private var queuedActionRetryTimer: Timer?
     private var pendingNotificationThreadID: String?
     private var pendingActivityThread: MailThread?
@@ -618,6 +630,17 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         sentSidebarButton = sentFolder
         sentFolder.toolTip = "Sent mail — G then T (downloaded messages)"
         let outboxFolder = sidebarButton("Outbox", symbol: "paperplane", action: #selector(showOutboxClicked))
+        let agentRequestsFolder = sidebarButton("Agent requests", symbol: "sparkles", action: #selector(showAgentRequestsClicked))
+        agentRequestsFolder.toolTip = "Agent requests: what agents are waiting for you to OK"
+        agentRequestsPill.translatesAutoresizingMaskIntoConstraints = false
+        agentRequestsPill.isHidden = true
+        agentRequestsFolder.addSubview(agentRequestsPill)
+        NSLayoutConstraint.activate([
+            agentRequestsPill.trailingAnchor.constraint(equalTo: agentRequestsFolder.trailingAnchor, constant: -2),
+            agentRequestsPill.centerYAnchor.constraint(equalTo: agentRequestsFolder.centerYAnchor),
+        ])
+        agentRequestsFolder.isHidden = true
+        agentRequestsSidebarButton = agentRequestsFolder
         for (button, key) in [(allInboxes, "i"), (unreadFolder, "u"), (pinnedFolder, "f"), (snoozedFolder, "s"), (draftFolder, "d"), (outboxFolder, "o"), (archiveFolder, "a"), (followupsFolder, "w"), (invitationsFolder, "c"), (sentFolder, "t")] {
             button.toolTip = "\(button.title) — g then \(key)"
             let badge = ShortcutBadge(frame: .zero)
@@ -670,6 +693,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         railStack.addArrangedSubview(draftFolder)
         railStack.addArrangedSubview(sentFolder)
         railStack.addArrangedSubview(outboxFolder)
+        railStack.addArrangedSubview(agentRequestsFolder)
         railStack.setCustomSpacing(19, after: railStack.arrangedSubviews.last!)
         let splitsHeading = heading("SPLITS", size: 10, weight: .semibold, color: EmailTheme.muted)
         railStack.addArrangedSubview(splitsHeading)
@@ -693,18 +717,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let manageAccounts = sidebarButton("Manage accounts", symbol: "gearshape", action: #selector(manageAccountsClicked))
         railStack.addArrangedSubview(manageAccounts)
         let agentButton = sidebarButton("Agent access", symbol: "checkmark.shield", action: #selector(agentAccessClicked))
-        agentButton.toolTip = "Agent access: accounts AI agents may use and requests waiting for your approval"
-        agentBadge.font = .monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
-        agentBadge.textColor = EmailTheme.accent
-        agentBadge.alignment = .right
-        agentBadge.isHidden = true
-        agentBadge.translatesAutoresizingMaskIntoConstraints = false
-        agentButton.addSubview(agentBadge)
-        NSLayoutConstraint.activate([
-            agentBadge.trailingAnchor.constraint(equalTo: agentButton.trailingAnchor, constant: -6),
-            agentBadge.centerYAnchor.constraint(equalTo: agentButton.centerYAnchor),
-            agentBadge.widthAnchor.constraint(lessThanOrEqualToConstant: 28)
-        ])
+        agentButton.toolTip = "Agent access: what AI agents may do with each account"
         agentSidebarButton = agentButton
         railStack.addArrangedSubview(agentButton)
         railStack.addArrangedSubview(sidebarButton("Support & feedback", symbol: "questionmark.circle", action: #selector(supportClicked)))
@@ -833,6 +846,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inboxControls.spacing = 6
         inboxControls.translatesAutoresizingMaskIntoConstraints = false
         inbox.addSubview(inboxControls)
+        // Agent requests hide the search field; the list then moves up under the count.
+        let belowSearch = inboxControls.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12)
+        controlsBelowSearch = belowSearch
+        controlsBelowStatus = inboxControls.topAnchor.constraint(equalTo: syncStatus.bottomAnchor, constant: 8)
         inbox.addSubview(inboxScroll)
         inbox.addSubview(inboxEmpty)
         NSLayoutConstraint.activate([
@@ -843,7 +860,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             searchFiltersButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), searchFiltersButton.centerYAnchor.constraint(equalTo: search.centerYAnchor), searchFiltersButton.widthAnchor.constraint(equalToConstant: 24), searchFiltersButton.heightAnchor.constraint(equalToConstant: 24),
             inboxControls.leadingAnchor.constraint(equalTo: search.leadingAnchor),
             inboxControls.trailingAnchor.constraint(lessThanOrEqualTo: search.trailingAnchor),
-            inboxControls.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12),
+            belowSearch,
             inboxScroll.leadingAnchor.constraint(equalTo: inbox.leadingAnchor), inboxScroll.trailingAnchor.constraint(equalTo: inbox.trailingAnchor), inboxScroll.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 8), inboxScroll.bottomAnchor.constraint(equalTo: inbox.bottomAnchor),
             inboxEmpty.centerXAnchor.constraint(equalTo: inbox.centerXAnchor), inboxEmpty.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 82), inboxEmpty.widthAnchor.constraint(lessThanOrEqualToConstant: 290)
         ])
@@ -1061,6 +1078,21 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         readerKeyboardHint.translatesAutoresizingMaskIntoConstraints = false
         updateReaderShortcuts()
         reader.addSubview(readerKeyboardHint)
+        agentRequestReader.isHidden = true
+        agentRequestReader.translatesAutoresizingMaskIntoConstraints = false
+        agentRequestReader.onApprove = { [weak self] request in self?.approveAgentRequest(request) }
+        agentRequestReader.onReject = { [weak self] request in self?.rejectAgentRequest(request) }
+        agentRequestReader.onEdit = { [weak self] request in self?.editAgentRequest(request) }
+        agentRequestReader.onSaveAttachment = { [weak self] requestID, attachmentID, filename in
+            self?.saveAgentAttachment(requestID: requestID, attachmentID: attachmentID, filename: filename)
+        }
+        reader.addSubview(agentRequestReader)
+        NSLayoutConstraint.activate([
+            agentRequestReader.leadingAnchor.constraint(equalTo: reader.leadingAnchor),
+            agentRequestReader.trailingAnchor.constraint(equalTo: reader.trailingAnchor),
+            agentRequestReader.topAnchor.constraint(equalTo: reader.topAnchor),
+            agentRequestReader.bottomAnchor.constraint(equalTo: reader.bottomAnchor),
+        ])
         NSLayoutConstraint.activate([
             readerKeyboardHint.leadingAnchor.constraint(equalTo: reader.leadingAnchor, constant: 28),
             readerKeyboardHint.trailingAnchor.constraint(equalTo: reader.trailingAnchor, constant: -28),
@@ -1341,6 +1373,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.drafts, "Go to Drafts", "GO TO", shortcut: "G D"))
             items.append(paletteItem(.sent, "Go to Sent", "GO TO", shortcut: "G T", aliases: ["sent mail", "sent messages"]))
             items.append(paletteItem(.outbox, "Go to Outbox", "GO TO", shortcut: "G O", aliases: ["scheduled", "undo send"]))
+            if agentAccessOn || agentRequestTotal > 0 {
+                items.append(paletteItem(.agentRequests, "Go to Agent requests", "GO TO", detail: agentRequestTotal > 0 ? "\(agentRequestTotal) waiting" : "", aliases: ["approve", "approval", "agent", "claude", "codex"]))
+            }
             for split in splits {
                 items.append(paletteItem(.split(split.id), "Go to \(split.name)", "GO TO", detail: "Split inbox", aliases: [split.query]))
             }
@@ -1358,7 +1393,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.testNotifications, "Send test notification", "SETTINGS", aliases: ["test alerts", "test banner", "notifications"]))
             items.append(paletteItem(.notificationPreviews, MailNotifications.shared.previews ? "Hide sender and subject in notifications" : "Show sender and subject in notifications", "SETTINGS", aliases: ["notification previews", "alert privacy"]))
             items.append(paletteItem(.manageAccounts, "Manage accounts", "SETTINGS", aliases: ["account settings"]))
-            items.append(paletteItem(.agentAccess, "Agent access", "SETTINGS", detail: agentBadge.isHidden ? "" : "Waiting for you", aliases: ["mcp", "ai", "agent", "approve", "approval", "codex", "claude", "assistant"]))
+            items.append(paletteItem(.agentAccess, "Agent access", "SETTINGS", aliases: ["mcp", "ai", "agent", "codex", "claude", "assistant", "connect"]))
             items.append(paletteItem(.toggleImages, RemoteImagePreference.isEnabled(.standard) ? "Block remote images by default" : "Load remote images by default", "SETTINGS", shortcut: "I", aliases: ["privacy", "pictures", "tracking"]))
             items.append(paletteItem(.appearance(0), "Appearance: Follow System", "SETTINGS", aliases: ["theme", "system"]))
             items.append(paletteItem(.appearance(1), "Appearance: Light", "SETTINGS", aliases: ["theme", "light mode"]))
@@ -1762,9 +1797,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .about: showNotice("Email 0.1.0\nBuild: \(EmailBuildIdentity.value)")
         case .saveSnippet: composePane?.saveBodyAsSnippet()
         case .insertSnippet(let text): composePane?.insertSnippet(text)
-        case .search: search.becomeFirstResponder()
+        // Agent requests have no search field; searching goes back to the inbox.
+        case .search: if folder == .agentRequests { showInbox(scope: .all) }; search.becomeFirstResponder()
         case .searchHelp: showNotice(Self.searchSyntaxHelp)
-        case .searchFilters: openSearchFilters()
+        case .searchFilters: if folder == .agentRequests { showInbox(scope: .all) }; openSearchFilters()
         case .invitations: showCalendarWorkspace()
         case .followup: openWorkflow(calendar: false)
         case .followups: showInbox(scope: .followups)
@@ -1799,6 +1835,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             syncStatus.stringValue = MailNotifications.shared.previews ? "Notifications show sender and subject" : "Notifications hide sender and subject"
         case .manageAccounts: manageAccounts()
         case .agentAccess: openAgentAccess()
+        case .agentRequests: showAgentRequests()
         case .shortcuts: showNotice("g then i/u/f/a/s/d/o: Inbox, Unread, Favorites, Archive, Snoozed, Drafts, Outbox\nj / k: next / previous email · Ctrl-D / Ctrl-U: half-page down / up\n/: search · Esc: leave search · e: archive · !: spam · m/u: read/unread\nf: favorite · r/⇧r: reply/reply all · c: compose · l: labels · s: snooze\nx: select · ⇧J/⇧K: extend selection · ⌘A: select loaded results\nz: undo archive/move · ⌘K: commands · ⌘R: sync · ⌘U: unsubscribe\nIn Drafts: ↵ edit · ⌫ or # discard · z: undo discard")
         case .unsubscribe: unsubscribeSelection()
         case .inbox: showInbox(scope: .all)
@@ -2427,63 +2464,246 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         guard let core else { showNotice("Mail engine unavailable."); return }
         let controller = agentAccess ?? AgentAccessController(core: core)
         if agentAccess == nil {
-            controller.onApprovedSend = { [weak self] messageID, sendAt, scheduled in
-                guard let self else { return }
-                // Reuse the composer's undo affordance for approved agent sends.
-                self.lastQueuedMessageID = messageID
-                let seconds = max(1, Int(sendAt.timeIntervalSinceNow.rounded()))
-                self.syncStatus.stringValue = scheduled ? "Agent request approved · Scheduled · View in Outbox" : "Agent request approved · Sending in \(seconds) seconds · Undo send"
-                self.cancelSendButton.title = scheduled ? "Cancel send" : "Undo send"
-                self.cancelSendButton.isHidden = false
-            }
-            controller.onCancelledSend = { [weak self] messageID in
-                guard let self, self.lastQueuedMessageID == messageID else { return }
-                self.lastQueuedMessageID = nil
-                self.cancelSendButton.isHidden = true
-                self.syncStatus.stringValue = "Send cancelled · Message returned to Drafts"
-            }
-            controller.onUndoneTriage = { [weak self] operationID in
-                guard let self else { return }
-                if self.lastUndoBatch?.id == operationID { self.lastUndoBatch = nil }
-                self.refreshInbox()
-                self.updateTriageBar()
-            }
-            controller.onApprovedTriage = { [weak self] operationID, accounts in
-                guard let self else { return }
-                self.lastUndoBatch = (operationID, accounts)
-                self.refreshInbox()
-                self.updateTriageBar()
-            }
+            controller.onReviewRequests = { [weak self] in self?.openAgentRequest(id: nil) }
             controller.onChanged = { [weak self] in
                 guard let self else { return }
                 Task { @MainActor in await self.refreshAgentRequests() }
-                if self.folder == .outbox, let core = self.core { self.refreshOutbox(using: core) }
-                else if self.folder == .drafts { self.showDrafts() }
-                else { self.refreshInbox() }
             }
             agentAccess = controller
         }
         controller.open()
     }
 
-    /// Cheap local poll: badge, notifications and an open Agent access window.
+    /// From a notification or the settings window: the main window on that request.
+    func openAgentRequest(id: String?) {
+        makeKeyAndOrderFront(nil)
+        showAgentRequests(select: id)
+    }
+
+    @objc private func showAgentRequestsClicked() { showAgentRequests() }
+
+    private func showAgentRequests(select target: String? = nil) {
+        closeCalendarWorkspace()
+        clearGoTo()
+        guard core != nil else { return }
+        markedThreadIDs.removeAll()
+        folder = .agentRequests
+        selection = -1
+        updateTriageBar()
+        inboxTitle?.stringValue = "Agent requests"
+        search.stringValue = ""
+        syncStatus.stringValue = ""
+        updateSidebarSelection()
+        dismissComposePane()
+        table.deselectAll(nil)
+        table.reloadData()
+        updateEmptyInbox()
+        clearReader()
+        agentRequestReader.show(nil)
+        updateAgentRequestsChrome()
+        makeFirstResponder(table)
+        reloadAgentRequestList(select: target)
+    }
+
+    /// Re-read the requests, keeping the selected one, or the row in its place
+    /// when it was just decided, so J and K pick up where you were.
+    private func reloadAgentRequestList(select target: String? = nil) {
+        guard let core else { return }
+        Task { @MainActor in
+            let rows = (try? await core.callAsync(["op": "agent_requests"]) as? [[String: Any]]) ?? []
+            guard folder == .agentRequests else { return }
+            let current = target ?? (agentRequestReader.request?["id"] as? String)
+            let previousIndex = max(0, table.selectedRow)
+            agentRequests = rows
+            agentRequestTotal = rows.count
+            updateAgentRequestsChrome()
+            syncStatus.stringValue = rows.isEmpty ? "" : "\(rows.count) waiting"
+            suppressSelectionChanges = true
+            table.reloadData()
+            updateEmptyInbox()
+            let visible = agentRequests
+            var index = current.flatMap { id in visible.firstIndex { $0["id"] as? String == id } }
+            if index == nil, !visible.isEmpty { index = min(previousIndex, visible.count - 1) }
+            if let index {
+                selection = index
+                table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                table.scrollRowToVisible(index)
+            }
+            suppressSelectionChanges = false
+            agentRequestReader.show(index.map { visible[$0] })
+        }
+    }
+
+    private func updateAgentRequestsChrome() {
+        let total = agentRequestTotal
+        agentRequestsPill.text = total > 99 ? "99+" : String(total)
+        agentRequestsPill.isHidden = total == 0
+        agentRequestsSidebarButton?.isHidden = hasNoAccounts || !(agentAccessOn || total > 0 || folder == .agentRequests)
+        let attention = total > 0 ? "\(total) waiting" : "nothing waiting"
+        agentRequestsSidebarButton?.setAccessibilityLabel("Agent requests, \(attention)")
+    }
+
+    private func approveAgentRequest(_ request: [String: Any]) {
+        guard let core, !agentRequestBusy, let id = request["id"] as? String else { return }
+        if request["type"] as? String == "access" { return allowAgentRequest(request) }
+        agentRequestBusy = true
+        let kind = request["kind"] as? String ?? ""
+        Task { @MainActor in
+            defer { agentRequestBusy = false }
+            do {
+                let action = try await core.callAsync(["op": "approve_agent_action", "id": id, "undo_seconds": AgentRequestReader.undoSeconds]) as? [String: Any] ?? [:]
+                let result = action["result"] as? [String: Any] ?? [:]
+                switch kind {
+                case "send_draft", "queue_send_draft", "schedule_draft":
+                    let messageID = result["message_id"] as? String ?? ""
+                    let sendAt = Date(timeIntervalSince1970: ((result["send_at_ms"] as? NSNumber)?.doubleValue ?? 0) / 1000)
+                    let scheduled = result["status"] as? String == "scheduled"
+                    // The composer's undo affordance, here and in the reader.
+                    lastQueuedMessageID = messageID
+                    cancelSendButton.title = scheduled ? "Cancel send" : "Undo send"
+                    cancelSendButton.isHidden = false
+                    if scheduled {
+                        agentRequestReader.showUndo("Scheduled for \(sendAt.formatted(date: .abbreviated, time: .shortened))", action: "Cancel", until: nil) { [weak self] in self?.cancelAgentSend(messageID) }
+                    } else {
+                        let seconds = max(1, Int(sendAt.timeIntervalSinceNow.rounded()))
+                        agentRequestReader.showUndo("Sending in \(seconds) seconds", action: "Undo", until: sendAt) { [weak self] in self?.cancelAgentSend(messageID) }
+                    }
+                case "batch_triage":
+                    if result["undoable"] as? Bool == true {
+                        let operation = result["operation_id"] as? String ?? ""
+                        lastUndoBatch = (operation, request["account_ids"] as? [String] ?? [])
+                        agentRequestReader.showUndo("Done", action: "Undo", until: Date().addingTimeInterval(30)) { [weak self] in self?.undoAgentBatch(operation) }
+                    }
+                case "undo_triage":
+                    if lastUndoBatch?.id == result["operation_id"] as? String { lastUndoBatch = nil }
+                default:
+                    break
+                }
+                updateTriageBar()
+            } catch {
+                showNotice(error.localizedDescription)
+            }
+            await refreshAgentRequests()
+            reloadAgentRequestList()
+        }
+    }
+
+    private func rejectAgentRequest(_ request: [String: Any]) {
+        guard let core, !agentRequestBusy, let id = request["id"] as? String else { return }
+        agentRequestBusy = true
+        Task { @MainActor in
+            defer { agentRequestBusy = false }
+            do {
+                if request["type"] as? String == "access" {
+                    _ = try await core.callAsync(["op": "dismiss_agent_access_request", "account_id": request["account_id"] as? String ?? ""])
+                } else {
+                    _ = try await core.callAsync(["op": "reject_agent_action", "id": id])
+                }
+            } catch { showNotice(error.localizedDescription) }
+            await refreshAgentRequests()
+            reloadAgentRequestList()
+        }
+    }
+
+    /// Edit closes the request without sending and opens its draft in the
+    /// composer; only the user's own Send sends it.
+    private func editAgentRequest(_ request: [String: Any]) {
+        guard let core, !agentRequestBusy, let id = request["id"] as? String else { return }
+        agentRequestBusy = true
+        Task { @MainActor in
+            defer { agentRequestBusy = false }
+            do {
+                let action = try await core.callAsync(["op": "edit_agent_action", "id": id]) as? [String: Any] ?? [:]
+                let messageID = ((action["details"] as? [String: Any])?["request"] as? [String: Any])?["message_id"] as? String
+                await refreshAgentRequests()
+                showDrafts(thenEdit: messageID)
+            } catch {
+                showNotice(error.localizedDescription)
+                reloadAgentRequestList()
+            }
+        }
+    }
+
+    /// Allow… on a refused agent: the turn-on sheet with the level it needs.
+    private func allowAgentRequest(_ request: [String: Any]) {
+        guard let core, let accountID = request["account_id"] as? String else { return }
+        let level = request["level"] as? String ?? "read"
+        AgentAccessFlow.allow(core: core, window: self, accountID: accountID, level: level,
+                              grants: request["grants"] as? [String] ?? ["sync"], custom: level == "custom",
+                              changing: request["changing"] as? Bool == true) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.refreshAgentRequests()
+                self.reloadAgentRequestList()
+                if let agentAccess = self.agentAccess, agentAccess.isOpen { await agentAccess.reload() }
+            }
+        }
+    }
+
+    private func cancelAgentSend(_ messageID: String) {
+        guard let core else { return }
+        Task { @MainActor in
+            do {
+                _ = try await core.callAsync(["op": "cancel_scheduled_draft", "message_id": messageID])
+                if lastQueuedMessageID == messageID {
+                    lastQueuedMessageID = nil
+                    cancelSendButton.isHidden = true
+                }
+                agentRequestReader.hideUndo()
+                syncStatus.stringValue = "Send cancelled · back in Drafts"
+            } catch { showNotice(error.localizedDescription) }
+        }
+    }
+
+    private func undoAgentBatch(_ operationID: String) {
+        guard let core else { return }
+        Task { @MainActor in
+            do {
+                _ = try await core.callAsync(["op": "undo_triage", "operation_id": operationID])
+                if lastUndoBatch?.id == operationID { lastUndoBatch = nil }
+                agentRequestReader.hideUndo()
+                updateTriageBar()
+            } catch { showNotice(error.localizedDescription) }
+        }
+    }
+
+    private func saveAgentAttachment(requestID: String, attachmentID: String, filename: String) {
+        guard let core else { return }
+        Task { @MainActor in
+            do {
+                let file = try await core.callAsync(["op": "agent_request_attachment", "id": requestID, "attachment_id": attachmentID]) as? [String: Any] ?? [:]
+                guard let encoded = file["data_base64"] as? String, let data = Data(base64Encoded: encoded) else { return }
+                let panel = NSSavePanel()
+                panel.nameFieldStringValue = filename
+                guard panel.runModal() == .OK, let url = panel.url else { return }
+                try data.write(to: url, options: .atomic)
+                // The agent chose these bytes: mark the copy as downloaded so
+                // Gatekeeper checks it before anything can run it.
+                var values = URLResourceValues()
+                values.quarantineProperties = [kLSQuarantineTypeKey as String: kLSQuarantineTypeOtherDownload, kLSQuarantineAgentNameKey as String: "Email"]
+                var marked = url
+                try? marked.setResourceValues(values)
+            } catch { showNotice(error.localizedDescription) }
+        }
+    }
+
+    /// Cheap local poll: the Agent requests item and its count, notifications,
+    /// and an open requests list or settings window.
     private func refreshAgentRequests() async {
         guard let core, !agentPollInFlight else { return }
         agentPollInFlight = true
         defer { agentPollInFlight = false }
         guard let summary = try? await core.callAsync(["op": "agent_pending_summary"]) as? [String: Any] else { return }
-        let count = (summary["count"] as? NSNumber)?.intValue ?? 0
-        // "!" only while a refused agent still needs access turned on.
-        let blocked = (summary["blocked"] as? [String: Any]).flatMap { $0["needs_access"] as? Bool == true ? $0 : nil }
-        agentBadge.stringValue = count > 0 ? (count > 99 ? "99+" : String(count)) : (blocked != nil ? "!" : "")
-        agentBadge.isHidden = agentBadge.stringValue.isEmpty
-        let attention = count > 0 ? "\(count) request\(count == 1 ? "" : "s") waiting for your approval" : (blocked != nil ? "An agent was blocked because agent access is off" : "No requests waiting")
-        agentSidebarButton?.toolTip = "Agent access · \(attention)"
-        agentSidebarButton?.setAccessibilityLabel("Agent access, \(attention)")
+        agentRequestTotal = (summary["total"] as? NSNumber)?.intValue ?? 0
+        agentAccessOn = summary["access_on"] as? Bool == true
+        updateAgentRequestsChrome()
         await MailNotifications.shared.recordAgentRequests(summary)
-        // Re-read the full window only when a request, decision or consent changed.
+        // Re-read the list only when a request, decision or consent changed.
         let revision = summary["revision"] as? String ?? ""
-        if let agentAccess, agentAccess.isOpen, revision != agentRevision { await agentAccess.reload() }
+        if revision != agentRevision {
+            if folder == .agentRequests { reloadAgentRequestList() }
+            if let agentAccess, agentAccess.isOpen { await agentAccess.reload() }
+        }
         agentRevision = revision
     }
     @objc private func syncClicked() { syncAll() }
@@ -2553,7 +2773,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         }
     }
 
-    private func showDrafts() {
+    private func showDrafts(thenEdit editID: String? = nil) {
         closeCalendarWorkspace()
         clearGoTo()
         guard let core else { showNotice("Mail engine unavailable."); return }
@@ -2581,6 +2801,12 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             table.reloadData()
             updateEmptyInbox()
             clearReader()
+            if let editID, let row = filteredDrafts.firstIndex(where: { $0.id == editID }) {
+                selection = row
+                table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                table.scrollRowToVisible(row)
+                showComposePane(core: core, draft: filteredDrafts[row])
+            }
         }
     }
 
@@ -3478,6 +3704,21 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 goToBadges[index].textColor = active ? EmailTheme.accent : EmailTheme.muted
             }
         }
+        let requestsActive = folder == .agentRequests && calendarWorkspace == nil
+        if let button = agentRequestsSidebarButton {
+            let color = requestsActive ? EmailTheme.accent : EmailTheme.ink
+            button.layer?.backgroundColor = requestsActive ? EmailTheme.cgColor(EmailTheme.accentSoft, in: effectiveAppearance) : NSColor.clear.cgColor
+            button.attributedTitle = NSAttributedString(string: button.title, attributes: [.foregroundColor: color, .font: NSFont.systemFont(ofSize: 12.5, weight: requestsActive ? .semibold : .regular)])
+            button.contentTintColor = color
+        }
+        agentRequestReader.isHidden = !requestsActive
+        // No search or filters in Agent requests; they come back on leaving.
+        let searchHidden = folder == .agentRequests
+        search.isHidden = searchHidden
+        searchFiltersButton.isHidden = searchHidden
+        controlsBelowStatus?.isActive = false
+        controlsBelowSearch?.isActive = !searchHidden
+        controlsBelowStatus?.isActive = searchHidden
         refreshSidebar()
     }
 
@@ -3519,6 +3760,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let empty = switch folder {
         case .drafts: filteredDrafts.isEmpty
         case .outbox: filteredOutbox.isEmpty
+        case .agentRequests: agentRequests.isEmpty
         case .inbox: threads.isEmpty
         }
         inboxScroll.isHidden = empty
@@ -3526,6 +3768,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inboxEmpty.stringValue = switch folder {
         case .drafts: search.stringValue.isEmpty ? "No drafts yet." : "No drafts match your search."
         case .outbox: search.stringValue.isEmpty ? "Nothing scheduled to send." : "No outgoing messages match."
+        case .agentRequests: "Nothing waiting."
         case .inbox: search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : "No messages in this view.") : "No messages match your search."
         }
     }
@@ -3551,6 +3794,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         switch folder {
         case .drafts: filteredDrafts.count
         case .outbox: filteredOutbox.count
+        case .agentRequests: agentRequests.count
         case .inbox: threads.count
         }
     }
@@ -3575,6 +3819,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if folder == .agentRequests {
+            return AgentRequestRows.cell(agentRequests[row])
+        }
         if folder == .outbox {
             let item = filteredOutbox[row]
             let cell = NSTableCellView()
@@ -3665,6 +3912,12 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelectionChanges else { return }
         if readerMode { setReaderMode(false) }
+        if folder == .agentRequests {
+            let visible = agentRequests
+            selection = table.selectedRow
+            agentRequestReader.show(visible.indices.contains(table.selectedRow) ? visible[table.selectedRow] : nil)
+            return
+        }
         if folder == .outbox {
             guard table.selectedRow >= 0, table.selectedRow < filteredOutbox.count else { return }
             showOutboxItem(filteredOutbox[table.selectedRow])
@@ -4622,6 +4875,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         if field == paletteSearch { refreshPalette(); return }
         guard field == search else { return }
         clearGoTo()
+        if folder == .agentRequests { reloadAgentRequestList(); return }
         if folder == .drafts || folder == .outbox { table.reloadData(); updateEmptyInbox(); clearReader() }
         else {
             searchRefreshTask?.cancel()
@@ -4783,6 +5037,17 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         }
         if let editor = firstResponder as? NSTextView, editor.isEditable { return false }
         if let field = firstResponder as? NSTextField, field.isEditable { return false }
+        if folder == .agentRequests, calendarWorkspace == nil, let request = agentRequestReader.request {
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            if event.keyCode == 36 || event.keyCode == 76, modifiers == .command {
+                if agentRequestReader.approveReady { approveAgentRequest(request) }
+                return true
+            }
+            if modifiers.isEmpty {
+                if event.charactersIgnoringModifiers?.lowercased() == "e", request["can_edit"] as? Bool == true { editAgentRequest(request); return true }
+                if event.keyCode == 51 || event.keyCode == 117 { rejectAgentRequest(request); return true }
+            }
+        }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "a", folder == .inbox {
             selectLoadedClicked(); return true
         }
@@ -4863,7 +5128,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case "k":
             if event.modifierFlags.contains(.shift) { extendMarkedSelection(-1) } else { select(selection - 1) }
             return true
-        case "/": search.becomeFirstResponder(); return true
+        case "/" where folder != .agentRequests: search.becomeFirstResponder(); return true
         case "e" where folder == .inbox: archiveSelection(allowRestore: event.modifierFlags.contains(.shift)); return true
         case "m" where folder == .inbox: setRead(true); return true
         case "u" where folder == .inbox: setRead(false); return true
@@ -4916,6 +5181,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let empty = hasNoAccounts
         accountOnlySidebarViews.forEach { $0.isHidden = empty }
         calendarSidebarButton?.isHidden = !calendarAvailable
+        updateAgentRequestsChrome()
         inboxPanel?.isHidden = empty && activityController == nil
         if scopeTabButtons.count > 1 && empty { scopeTabButtons[1].title = "Unread" }
         updateReaderShortcuts()
@@ -4986,6 +5252,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let count = switch folder {
         case .drafts: filteredDrafts.count
         case .outbox: filteredOutbox.count
+        case .agentRequests: agentRequests.count
         case .inbox: threads.count
         }
         guard count > 0 else { return }
@@ -5050,9 +5317,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.window?.triageFromNotification(kind: kind, accountID: accountID, threadID: threadID)
         }
         MailNotifications.shared.onOpenActivity = { [weak self] in self?.window?.refreshTrackingButton() }
-        MailNotifications.shared.onOpenAgent = { [weak self] in
+        MailNotifications.shared.onOpenAgent = { [weak self] requestID in
             self?.showMainWindow()
-            self?.window?.openAgentAccess()
+            self?.window?.openAgentRequest(id: requestID)
         }
         MailNotifications.shared.isReadingThread = { [weak self] accountID, threadID in
             self?.window?.isReadingNotificationThread(accountID: accountID, threadID: threadID) ?? false

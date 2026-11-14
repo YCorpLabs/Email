@@ -18,12 +18,15 @@ build() {
   source scripts/linux-build-config.sh
   require_linux_oauth_config || return 1
   cargo build --manifest-path apps/linux/Cargo.toml --release --locked
+  # The MCP helper, from the root workspace in its own target directory.
+  CARGO_TARGET_DIR="${EMAIL_MCP_TARGET_DIR:-$_repo/target}" cargo build --manifest-path Cargo.toml --release --locked -p mail-mcp
 }
 package() {
   install_package_notices "$_repo" "$pkgdir/usr/share/licenses/$pkgname" || return 1
   printf '%s\n' "${EMAIL_LINUX_RELEASE_CHANNEL:-local-alpha}" > "$pkgdir/usr/share/licenses/$pkgname/RELEASE-CHANNEL.txt"
   local target_dir="${CARGO_TARGET_DIR:-$_repo/apps/linux/target}"
   install -Dm755 "$target_dir/release/email-linux" "$pkgdir/usr/bin/email-linux"
+  install -Dm755 "${EMAIL_MCP_TARGET_DIR:-$_repo/target}/release/mail-mcp" "$pkgdir/usr/lib/email-linux/mail-mcp"
   # package() runs in a fresh process; resolve the same profile build() used.
   local app_id
   app_id="$(python3 "$_repo/scripts/distribution-profile.py" --root "$_repo" get LINUX_APP_ID)" || return 1

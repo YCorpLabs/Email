@@ -163,9 +163,10 @@ Unset values remove features rather than falling back:
 
 ## Known gaps
 
-- The `official` and `development` profiles both register MCP as `email`. On a
-  Mac with both, `connect-mcp.sh` keeps the existing registration; use `--name`
-  for the second one.
+- The `official` and `development` profiles both register MCP as `email`, in
+  `connect-mcp.sh` and in Agent access's Connect. On a Mac with both, each
+  keeps the existing registration (Agent access says it points at another copy
+  of `mail-mcp`); use the script's `--name` for the second one.
 
 - Account setup without a Google client differs between the shells. macOS says
   sign-in isn't configured in this build. Linux shows a field for an OAuth

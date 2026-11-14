@@ -53,6 +53,10 @@ prepare() {
 package() {
   local root="$srcdir/deb"
   install -Dm755 "$root/usr/bin/email-linux" "$pkgdir/usr/bin/email-linux"
+  # The MCP helper ships in the .deb from the release after v0.1.0-beta.1.
+  if [[ -f "$root/usr/lib/email-linux/mail-mcp" ]]; then
+    install -Dm755 "$root/usr/lib/email-linux/mail-mcp" "$pkgdir/usr/lib/email-linux/mail-mcp"
+  fi
   install -Dm644 "$root/usr/share/applications/$_appid.desktop" -t "$pkgdir/usr/share/applications"
   install -Dm644 "$root/usr/share/metainfo/$_appid.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
   install -Dm644 "$root/usr/share/icons/hicolor/1024x1024/apps/$_appid.png" \

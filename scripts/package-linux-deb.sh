@@ -13,6 +13,10 @@ command -v dpkg-deb >/dev/null || { echo "dpkg-deb is required" >&2; exit 1; }
 command -v dpkg-shlibdeps >/dev/null || { echo "dpkg-shlibdeps is required" >&2; exit 1; }
 
 cargo build --manifest-path apps/linux/Cargo.toml --release --locked
+# The MCP helper that Agent access connects Claude Code and Codex to. It is in
+# the root workspace, which must not share a target directory with apps/linux.
+mcp_target_dir="${EMAIL_MCP_TARGET_DIR:-$repo_root/target}"
+CARGO_TARGET_DIR="$mcp_target_dir" cargo build --manifest-path Cargo.toml --release --locked -p mail-mcp
 
 target_dir="${CARGO_TARGET_DIR:-$repo_root/apps/linux/target}"
 binary="$target_dir/release/email-linux"
@@ -22,6 +26,7 @@ package_dir="$(mktemp -d)"
 trap 'rm -rf "$package_dir"' EXIT
 
 install -Dm755 "$binary" "$package_dir/usr/bin/email-linux"
+install -Dm755 "$mcp_target_dir/release/mail-mcp" "$package_dir/usr/lib/email-linux/mail-mcp"
 install_package_notices "$repo_root" "$package_dir/usr/share/doc/email-linux"
 install -m644 LICENSE "$package_dir/usr/share/doc/email-linux/copyright"
 printf '%s\n' "${EMAIL_LINUX_RELEASE_CHANNEL:-local-alpha}" > "$package_dir/usr/share/doc/email-linux/RELEASE-CHANNEL.txt"
@@ -52,7 +57,7 @@ Package: email-linux
 Architecture: any
 Description: Keyboard-first desktop email client
 EOF
-depends="$(cd "$dependency_dir" && dpkg-shlibdeps -O -e"$package_dir/usr/bin/email-linux" | sed -n 's/^shlibs:Depends=//p')"
+depends="$(cd "$dependency_dir" && dpkg-shlibdeps -O -e"$package_dir/usr/bin/email-linux" -e"$package_dir/usr/lib/email-linux/mail-mcp" | sed -n 's/^shlibs:Depends=//p')"
 [[ -n "$depends" ]] || { echo "Could not determine shared-library dependencies" >&2; exit 1; }
 sed -i "/^Architecture:/a Depends: $depends" "$package_dir/DEBIAN/control"
 
