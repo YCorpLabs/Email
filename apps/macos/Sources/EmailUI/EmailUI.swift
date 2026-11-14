@@ -2700,6 +2700,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 let accounts = await Task.detached { core.accountRecords() }.value
                 self?.knownAccounts = accounts
                 self?.updateAccountChrome()
+                self?.accountsChanged()
                 self?.refreshInbox()
                 self?.syncAll()
             }
@@ -2744,9 +2745,23 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             do {
                 _ = try await core.callAsync(["op": "remove_account", "account_id": chosen.id])
                 syncStatus.stringValue = "Account removed"
+                if inboxScope == .account(chosen.id) { inboxScope = .all }
+                knownAccounts = await Task.detached { core.accountRecords() }.value
+                updateAccountChrome()
+                accountsChanged()
                 refreshInbox()
             } catch { showNotice(error.localizedDescription) }
         }
+    }
+
+    /// Calendar keeps its own account list and saved events: update it now,
+    /// and leave it when no account can show a calendar any more.
+    private func accountsChanged() {
+        if !calendarAvailable {
+            closeCalendarWorkspace()
+            cachedCalendarWorkspace = nil
+        }
+        NotificationCenter.default.post(name: AgendaPanel.accountsChanged, object: nil)
     }
 
     func isReadingNotificationThread(accountID: String, threadID: String) -> Bool {

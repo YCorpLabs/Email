@@ -323,7 +323,7 @@ final class CoreBridge: @unchecked Sendable {
         // own handle so the window and cached reads never queue behind it.
         let isOAuth = operation == "start_oauth" || operation == "add_imap_account"
         let isPhotoOAuth = operation == "enable_google_photos"
-        let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event"
+        let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event" || operation == "delete_calendar_event"
         let dedicatedCalendar = isCalendarNetwork ? calendarBridge : nil
         let dedicatedSync = operation == "refresh_recipient_headers" ? headersBridge : operation == "sync_archives" ? archiveBridge : nil
         let dedicatedAttachment = (operation == "list_attachments" || operation == "fetch_attachment" || operation == "refresh_calendar_invitation") ? attachmentBridge : nil

@@ -45,8 +45,11 @@ struct OverviewEntry<'a> {
 pub(super) struct Agenda {
     ui: Rc<Ui>,
     window: gtk::ApplicationWindow,
-    accounts: Vec<Account>,
+    /// Refreshed when an account is added or removed (`accounts_changed`).
+    accounts: RefCell<Vec<Account>>,
     account: gtk::DropDown,
+    /// Shown once the next reload settles, e.g. "Event deleted."
+    notice: RefCell<Option<&'static str>>,
     date: RefCell<glib::DateTime>,
     date_label: gtk::Label,
     status: gtk::Label,
@@ -628,6 +631,7 @@ impl Agenda {
 
     fn id(&self) -> Option<String> {
         self.accounts
+            .borrow()
             .get((self.account.selected() as usize).wrapping_sub(1))
             .map(|a| a.id.clone())
     }
@@ -842,6 +846,7 @@ impl Agenda {
                                         let ids =
                                             this.id().map(|id| vec![id]).unwrap_or_else(|| {
                                                 this.accounts
+                                                    .borrow()
                                                     .iter()
                                                     .map(|account| account.id.clone())
                                                     .collect()
@@ -872,7 +877,10 @@ impl Agenda {
             self.connect
                 .set_sensitive(self.id().is_some() && !self.busy.get());
             self.refresh.set_sensitive(any && !self.busy.get());
-            self.status.set_text(if any {
+            let notice = self.notice.take();
+            self.status.set_text(if let Some(notice) = notice {
+                notice
+            } else if any {
                 "Saved for offline access · Checking connected calendars"
             } else if self.id().is_none() {
                 "Choose an account to connect its calendar. Saved calendars stay available."
@@ -1330,11 +1338,11 @@ impl Agenda {
             let edit = gtk::Button::with_label("Edit event");
             edit.add_css_class("agenda-new");
             let this = self.clone();
-            let event = event.clone();
+            let editing = event.clone();
             let edit_popup = popup.clone();
             edit.connect_clicked(move |_| {
                 edit_popup.popdown();
-                this.new_event_at(None, Some(event.clone()));
+                this.new_event_at(None, Some(editing.clone()));
             });
             let keys = gtk::EventControllerKey::new();
             keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -1353,7 +1361,22 @@ impl Agenda {
                 glib::Propagation::Proceed
             });
             popup.add_controller(keys);
-            details.append(&edit);
+            let delete = gtk::Button::with_label("Delete event");
+            delete.add_css_class("calendar-delete");
+            delete.set_tooltip_text(Some("Delete event"));
+            {
+                let this = self.clone();
+                let event = event.clone();
+                let popup = popup.clone();
+                delete.connect_clicked(move |_| {
+                    popup.popdown();
+                    this.confirm_delete(&event);
+                });
+            }
+            let buttons = gtk::Box::new(Orientation::Horizontal, 8);
+            buttons.append(&edit);
+            buttons.append(&delete);
+            details.append(&buttons);
         } else {
             let note = text(
                 if event["all_day"].as_bool() == Some(true) {
@@ -1829,11 +1852,11 @@ impl Agenda {
             if owner != previous_account {
                 let name = self
                     .accounts
+                    .borrow()
                     .iter()
                     .find(|account| account.id == owner)
-                    .map(|account| account.email.as_str())
-                    .unwrap_or(owner);
-                let caption = text(name, false);
+                    .map_or_else(|| owner.to_owned(), |account| account.email.clone());
+                let caption = text(&name, false);
                 caption.set_wrap(false);
                 caption.set_ellipsize(gtk::pango::EllipsizeMode::End);
                 caption.set_max_width_chars(23);
@@ -2170,6 +2193,121 @@ impl Agenda {
             },
         );
     }
+    /// Guests are attendees other than the organizer and this account (macOS `hasGuests`).
+    fn has_guests(&self, event: &Value) -> bool {
+        let own: Vec<String> = [
+            event["organizer_email"].as_str().map(str::to_owned),
+            self.accounts
+                .borrow()
+                .iter()
+                .find(|a| Some(a.id.as_str()) == event["account_id"].as_str())
+                .map(|a| a.email.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|e| e.to_lowercase())
+        .collect();
+        event["attendees"].as_array().into_iter().flatten().any(|attendee| {
+            !own.contains(&attendee["email"].as_str().unwrap_or("").to_lowercase())
+        })
+    }
+    fn confirm_delete(self: &Rc<Self>, event: &Value) {
+        if self.busy.get() {
+            return;
+        }
+        let recurring = event["recurring_event_id"].as_str().is_some_and(|v| !v.is_empty());
+        let detail = [
+            recurring.then_some("Only this occurrence will be deleted."),
+            self.has_guests(event).then_some("Guests will be notified."),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+        // Cancel stays the default, as for removing an account.
+        let confirm = gtk::AlertDialog::builder()
+            .message(format!("Delete “{}”?", event["title"].as_str().unwrap_or("Untitled event")))
+            .detail(detail)
+            .buttons(["Cancel", "Delete"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        let this = self.clone();
+        let event = event.clone();
+        confirm.choose(Some(&self.window), None::<&gtk::gio::Cancellable>, move |result| {
+            if result == Ok(1) {
+                this.delete_event(&event);
+            } else {
+                this.ui.calendar_host.grab_focus();
+            }
+        });
+    }
+    fn delete_event(self: &Rc<Self>, event: &Value) {
+        let Some(etag) = event["etag"].as_str().filter(|v| !v.is_empty()) else {
+            return;
+        };
+        if self.busy.replace(true) {
+            return;
+        }
+        self.account.set_sensitive(false);
+        self.status.set_text("Deleting event…");
+        let scope = if event["recurring_event_id"].as_str().is_some_and(|v| !v.is_empty()) {
+            "instance"
+        } else {
+            "single"
+        };
+        self.request(
+            json!({"op":"delete_calendar_event","account_id":event["account_id"],"calendar_id":event["calendar_id"],"event_id":event["id"],"expected_etag":etag,"edit_scope":scope}),
+            |this, result| {
+                this.set_busy(false);
+                match result {
+                    Ok(_) => {
+                        *this.notice.borrow_mut() = Some("Event deleted.");
+                        this.reload();
+                    }
+                    Err(error) => this.status.set_text(&error),
+                }
+            },
+        );
+    }
+    /// An account was added or removed: rebuild the account picker, keep the
+    /// chosen account if it still exists, and reload from the store at once
+    /// (macOS `AgendaPanel.resume`).
+    pub(super) fn accounts_changed(self: &Rc<Self>) {
+        let previous = self.id();
+        let records = self.ui.accounts();
+        let titles: Vec<&str> = std::iter::once("All accounts")
+            .chain(records.iter().map(|a| a.email.as_str()))
+            .collect();
+        let selected = previous
+            .and_then(|id| records.iter().position(|a| a.id == id))
+            .map_or(0, |index| index as u32 + 1);
+        let empty = records.is_empty();
+        let model = gtk::StringList::new(&titles);
+        *self.accounts.borrow_mut() = records;
+        // Setting the model fires the selection handler, which reloads.
+        self.account.set_model(Some(&model));
+        self.account.set_selected(selected);
+        if empty {
+            self.generation.set(self.generation.get() + 1);
+            if let Some(popup) = self.detail_popup.borrow_mut().take() {
+                popup.popdown();
+            }
+            if let Some(popup) = self.editor_popup.borrow_mut().take() {
+                popup.popdown();
+            }
+            self.calendars.borrow_mut().clear();
+            self.connected_accounts.borrow_mut().clear();
+            self.clear();
+            self.update_legend();
+            self.status
+                .set_text("Add a Gmail account in Email to connect your calendar.");
+            self.connect.set_sensitive(false);
+            self.refresh.set_sensitive(false);
+        } else {
+            self.reload();
+        }
+    }
     fn respond(self: &Rc<Self>, event: &Value, response: &str) {
         let Some(id) = event["account_id"]
             .as_str()
@@ -2217,7 +2355,7 @@ impl Agenda {
                     .and_then(|c| c["account_id"].as_str())
                     .map(str::to_owned)
             })
-            .or_else(|| self.accounts.first().map(|account| account.id.clone()));
+            .or_else(|| self.accounts.borrow().first().map(|account| account.id.clone()));
         let Some(id) = id else {
             return;
         };
@@ -2289,10 +2427,11 @@ impl Agenda {
                         let account = calendar["account_id"].as_str().unwrap_or("");
                         let owner = self
                             .accounts
+                            .borrow()
                             .iter()
                             .find(|a| a.id == account)
-                            .map(|a| a.email.as_str())
-                            .unwrap_or(account);
+                            .map_or_else(|| account.to_owned(), |a| a.email.clone());
+                        let owner = owner.as_str();
                         if title.eq_ignore_ascii_case(owner)
                             || title.to_lowercase().contains(&owner.to_lowercase())
                         {
@@ -2803,6 +2942,8 @@ pub(super) fn open(ui: &Rc<Ui>) {
     design_css.push_str(" .calendar-mini-custom {min-width:184px;} .calendar-mini-custom button {min-width:20px;min-height:20px;padding:0;border:none;box-shadow:none;background:transparent;border-radius:5px;font-size:10px;} .calendar-mini-custom button:hover {background:@hover;} .calendar-mini-custom button.calendar-mini-selected {background:@selected;color:@ink;font-weight:700;} .calendar-mini-custom .heading {font-size:11px;} ");
     design_css.push_str(" .calendar-editor {min-width:0;} .calendar-editor entry {min-height:28px;padding:4px 8px;border-radius:6px;} .calendar-editor entry.calendar-editor-title {font-size:20px;font-weight:600;background:transparent;border:none;box-shadow:none;padding:6px 0;min-height:34px;} .calendar-editor-caption {font-size:11px;color:@muted;font-weight:600;} .calendar-editor dropdown button {min-height:28px;padding:3px 8px;border-radius:6px;background:@hover;} .calendar-editor button {min-height:28px;padding:4px 10px;border-radius:6px;} .calendar-editor .agenda-new {background:@ink;color:@surface;font-weight:600;} .calendar-editor expander {font-size:12px;color:@secondary;} ");
     design_css.push_str(" .calendar-draft-summary {font-size:12px;font-weight:500;color:@ink;padding:2px 0;} .calendar-time-disclosure {padding:4px 0;min-height:24px;} .calendar-draft-error {color:#b55d54;} ");
+    // Delete is destructive: red text, like macOS (systemRed).
+    design_css.push_str(" button.calendar-delete, button.calendar-delete label {color:@problem;} ");
     css.load_from_data(&design_css);
     gtk::style_context_add_provider_for_display(
         &gtk::prelude::WidgetExt::display(&window),
@@ -3113,7 +3254,8 @@ pub(super) fn open(ui: &Rc<Ui>) {
     let agenda = Rc::new(Agenda {
         ui: ui.clone(),
         window: window.clone(),
-        accounts: records,
+        accounts: RefCell::new(records),
+        notice: RefCell::new(None),
         account: account.clone(),
         date: RefCell::new(day),
         date_label,
@@ -3310,7 +3452,7 @@ pub(super) fn open(ui: &Rc<Ui>) {
     *ui.calendar.borrow_mut() = Some(agenda.clone());
     window.present();
     ui.calendar_host.grab_focus();
-    if agenda.accounts.is_empty() {
+    if agenda.accounts.borrow().is_empty() {
         agenda
             .status
             .set_text("Add a Gmail account in Email to connect your calendar.");

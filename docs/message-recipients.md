@@ -7,3 +7,13 @@ Recipient metadata is persisted in an additive nullable SQLite column. Gmail, Mi
 Existing Gmail cache entries fetch missing recipient headers once on opening the conversation. This metadata-only request uses the shared Gmail quota budget and updates only recipient fields. Cached bodies appear immediately; background results are checked against the current selection and do not replace the reader document or change read/archive state. Newly synced messages already contain the fields. Legacy Microsoft/IMAP entries receive additional fields when fetched through their normal sync path.
 
 Regression coverage includes Gmail quoted names, aliases, repeated Cc headers and Reply-To, plus recipient metadata persistence across reopening the database without changing message bodies or read state.
+
+## Composer address suggestions
+
+While a suggestion list shows under To, Cc or Bcc: ↑/↓ choose, Return adds the
+address, and **Tab adds it and moves to the next field** (Subject, or Cc when
+shown), as in Mail. Escape dismisses the list. macOS used to accept on Tab but
+keep focus in To, because it moved focus from the field editor rather than the
+field; it now uses `selectKeyView(following:)`. Linux already moved on.
+Verified 13 Nov 2026 on both shells: typing “ma”, Tab, then “Hello” filled To
+with Maya Chen and put Hello in Subject.

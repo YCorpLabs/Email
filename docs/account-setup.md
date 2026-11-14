@@ -59,6 +59,47 @@ Choose provider (and ⌘1…⌘n / Ctrl+1…Ctrl+n) picks a provider by hand, fo
 custom domains on Google Workspace or iCloud. Until then, editing the address
 follows it to its provider.
 
+### Continue with Google
+
+Only where Google sign-in is available: the build's `GOOGLE_OAUTH_PUBLIC` is on
+**and** a Google client is configured. Official builds with sign-in off show
+the screen above unchanged.
+
+The first screen then starts with **Continue with Google**, a thin **or**
+divider, and the Email field for iCloud and everything else. Nothing else is
+added. The button follows Google's sign-in branding guidelines: the standard
+four-colour “G” at 18 pt, 40 pt tall, 4 pt corners, 12 pt before the logo and
+the text centred; light theme white with a #747775 outline and #1F1F1F text,
+dark theme #131314 with a #8E918F outline and #E3E3E3 text. The text is Roboto
+Medium 14 when installed, otherwise the system font (macOS) or Inter (Linux).
+
+Continue with Google goes straight to browser sign-in without typing; the
+address comes from Google afterwards (`start_oauth` needs none). Where an
+address is already known it is passed as `login_hint`, so Google skips its
+account chooser: a gmail.com or googlemail.com address typed in the Email
+field (for this button and for the Gmail “Sign in with browser” step). Other
+typed addresses are not passed. Calendar and photo grants already hint the
+account's address.
+
+While “Waiting for browser sign-in…” shows (Google or Outlook), the window
+holds only that line, the “Use Gmail (app password) instead” link and Cancel.
+The Email field, Choose provider, the intro line and the disabled Sign in with
+browser button come back when sign-in fails, including a Cancel on Google's
+page. Cancel in the window closes it, as before. Verified 14 Nov 2026 on macOS
+and Linux (dark): the waiting state, then Google's Cancel callback
+(`error=access_denied` sent to the loopback redirect) brought the form back
+with the existing denial message.
+
+Verified (13 Nov 2026): macOS development build and the Linux shell in the
+verify container, `EMAIL_GOOGLE_OAUTH_PUBLIC=true` with a placeholder client ID,
+dark and light, and `EMAIL_GOOGLE_OAUTH_PUBLIC=false` (no button). The browser
+command was replaced by a logger: Continue with Google opened the sign-in URL
+with no `login_hint`; a typed `someone@gmail.com` plus the button, and a typed
+`someone@googlemail.com` through Sign in with browser, passed the address; a
+typed iCloud address plus the button passed none. `run-account-setup-checks.py`
+still passes 126 checks (its development run shows the button). Google's live
+consent screen was not opened.
+
 ### What each provider shows
 
 Gmail, about 40 words before any disclosure:

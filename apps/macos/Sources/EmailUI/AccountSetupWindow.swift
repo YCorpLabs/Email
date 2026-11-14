@@ -66,6 +66,7 @@ enum AccountSetupCopy {
     static let details = "Details"
     static let advanced = "Advanced"
     static let enterEmail = "Enter your email address."
+    static let or = "or"
 
     static let gmail = AppPasswordGuide(
         intro: "Gmail needs an app password.",
@@ -144,6 +145,11 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
     let details = NSTextField(wrappingLabelWithString: "")
     let switchToAppPassword = NSButton(title: "Use Gmail (app password) instead →", target: nil, action: nil)
     let connectButton = NSButton(title: AccountSetupCopy.continueTitle, target: nil, action: nil)
+    /// "Continue with Google" and the "or" divider, on the first screen only.
+    let googleButton = GoogleSignInButton()
+    private var googleRows: [NSView] = []
+    /// The Email row and provider menu, hidden while a browser sign-in waits.
+    private var emailRows: [NSView] = []
     private var fixURL: URL?
     private var signInFailed = false
     /// The server rows for Other: shown when the guess failed or opened by hand.
@@ -197,6 +203,29 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
         label.textColor = .secondaryLabelColor
         label.preferredMaxLayoutWidth = width - 60
         return label
+    }
+
+    /// A hairline, "or", a hairline: as wide as the fields.
+    private static func orDivider() -> NSView {
+        func hairline() -> NSBox {
+            let line = NSBox()
+            line.boxType = .custom
+            line.borderWidth = 0
+            line.fillColor = EmailTheme.line
+            line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            return line
+        }
+        let left = hairline(), right = hairline()
+        let or = NSTextField(labelWithString: AccountSetupCopy.or)
+        or.font = .systemFont(ofSize: 12)
+        or.textColor = .secondaryLabelColor
+        let divider = NSStackView(views: [left, or, right])
+        divider.orientation = .horizontal
+        divider.alignment = .centerY
+        divider.spacing = 10
+        left.widthAnchor.constraint(equalTo: right.widthAnchor).isActive = true
+        divider.widthAnchor.constraint(equalToConstant: fieldWidth).isActive = true
+        return divider
     }
 
     private func link(_ title: String, url: String) -> NSButton {
@@ -275,10 +304,25 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
         content.addArrangedSubview(headline)
         content.setCustomSpacing(18, after: headline)
 
+        // Google sign-in first where the build offers it, then email for the rest.
+        if googleSignInOffered {
+            googleButton.target = self
+            googleButton.action = #selector(continueWithGoogle)
+            googleButton.widthAnchor.constraint(equalToConstant: Self.fieldWidth).isActive = true
+            let google = indented(googleButton)
+            content.addArrangedSubview(google)
+            content.setCustomSpacing(14, after: google)
+            let divider = indented(Self.orDivider())
+            content.addArrangedSubview(divider)
+            content.setCustomSpacing(14, after: divider)
+            googleRows = [google, divider]
+        }
+
         email.placeholderString = "you@example.com"
         email.delegate = self
-        content.addArrangedSubview(row("Email", email))
-        content.setCustomSpacing(4, after: content.arrangedSubviews.last!)
+        let emailRow = row("Email", email)
+        content.addArrangedSubview(emailRow)
+        content.setCustomSpacing(4, after: emailRow)
 
         // Small "Choose provider" control for custom domains on Google or Apple.
         providerMenu.isBordered = false
@@ -295,8 +339,10 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
         }
         providerMenu.target = self
         providerMenu.action = #selector(providerMenuChanged(_:))
-        content.addArrangedSubview(indented(providerMenu))
-        content.setCustomSpacing(14, after: content.arrangedSubviews.last!)
+        let providerRow = indented(providerMenu)
+        content.addArrangedSubview(providerRow)
+        content.setCustomSpacing(14, after: providerRow)
+        emailRows = [emailRow, providerRow]
 
         intro.font = .systemFont(ofSize: 13, weight: .medium)
         intro.preferredMaxLayoutWidth = Self.width - 60
@@ -431,6 +477,7 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
     private func showChoice() {
         let choice = selected
         let guide = guide
+        googleRows.forEach { $0.isHidden = choice != nil }
         for item in providerMenu.itemArray.dropFirst() {
             item.state = choices.indices.contains(item.tag) && choices[item.tag] == choice ? .on : .off
         }
@@ -495,7 +542,24 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
                 : "Sign-in isn't configured in this build yet.")
         }
         updateSwitch()
+        updateWaiting()
         resizeToFit(recenter: false)
+    }
+
+    /// While the browser sign-in waits, only the wait message, the app-password
+    /// link and Cancel apply. The address, provider menu, intro and the disabled
+    /// sign-in button come back when it fails or is cancelled in the browser.
+    private func updateWaiting() {
+        let waiting = selected.map { !$0.usesPassword && inFlight.contains($0) } ?? false
+        emailRows.forEach { $0.isHidden = waiting }
+        intro.isHidden = selected == nil || waiting
+        connectButton.isHidden = waiting
+        // With no fields left, the wait message lines up with the title and link.
+        (problemRow as? NSStackView)?.arrangedSubviews.first?.isHidden = waiting
+        status.preferredMaxLayoutWidth = waiting ? Self.width - 60 : Self.fieldWidth
+        if waiting, let focused = firstResponder as? NSView, focused.isHiddenOrHasHiddenAncestor {
+            makeFirstResponder(nil)
+        }
     }
 
     /// The Advanced disclosure appears for Other once a first attempt failed.
@@ -658,6 +722,26 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
         choose(.gmailAppPassword)
     }
 
+    /// Google sign-in, offered only when the build allows it and has a client.
+    private var googleSignInOffered: Bool {
+        choices.contains(.gmail) && !oauthClientID(for: .gmail).isEmpty
+    }
+
+    /// Straight to the browser: no address needed, Google supplies it.
+    @objc private func continueWithGoogle() {
+        choose(.gmail)
+        connectClicked()
+    }
+
+    /// A typed gmail.com or googlemail.com address, so Google skips its
+    /// account chooser. Anything else could be someone else's account.
+    private func googleLoginHint() -> String? {
+        let address = email.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard address.contains("@") else { return nil }
+        let answer = core.call(["op": "setup_provider", "email": address]) as? [String: Any]
+        return answer?["provider"] as? String == "gmail" ? address : nil
+    }
+
     @objc private func openLink(_ sender: NSButton) {
         if let raw = sender.identifier?.rawValue, let url = URL(string: raw) { NSWorkspace.shared.open(url) }
     }
@@ -766,6 +850,9 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
             if let secret = oauthClientSecret(for: choice), !secret.isEmpty {
                 oauthPayload["client_secret"] = secret
             }
+            if choice == .gmail, let hint = googleLoginHint() {
+                oauthPayload["login_hint"] = hint
+            }
             payload = oauthPayload
         }
         inFlight.insert(choice)
@@ -779,6 +866,9 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
         }
         showStatus(waiting)
         updateSwitch(waiting: choice == .gmail)
+        updateWaiting()
+        // The switch link can appear now; fit it, or it clips the buttons.
+        resizeToFit(recenter: false)
         Task { @MainActor in
             defer { inFlight.remove(choice) }
             do {
@@ -808,8 +898,10 @@ final class AccountSetupWindow: NSWindow, NSTextFieldDelegate {
                     return
                 }
                 signInFailed = choice == .gmail
+                updateWaiting()
                 show(problem)
                 connectButton.isEnabled = true
+                if !choice.usesPassword { makeFirstResponder(connectButton) }
             }
         }
     }

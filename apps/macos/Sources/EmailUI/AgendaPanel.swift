@@ -2,6 +2,9 @@ import AppKit
 
 /// Connected calendar requests use a separate service lane from cached mail.
 @MainActor final class AgendaPanel: NSWindowController, NSSearchFieldDelegate, NSPopoverDelegate {
+  /// Posted when an account is added or removed. Calendar keeps its own account
+  /// list and cached events, so it reloads at once instead of on next visit.
+  static let accountsChanged = Notification.Name("EmailAccountsChanged")
   private static var active: AgendaPanel?
   static func present(core: CoreBridge, parent: NSWindow?) {
     if let mail = parent as? MailWindow { mail.showCalendarWorkspace(); return }
@@ -134,9 +137,12 @@ import AppKit
         return self.handleKeyboard(event) ? nil : event
       }
     }
+    // Selector observers are removed automatically when the panel goes away.
+    NotificationCenter.default.addObserver(self, selector: #selector(accountsDidChange), name: Self.accountsChanged, object: nil)
     Task { await loadAccounts() }
   }
   required init?(coder: NSCoder) { fatalError() }
+  @objc private func accountsDidChange() { resume() }
   override func close() {
     searchPopover?.close()
     detailPopover?.close()
@@ -418,6 +424,11 @@ import AppKit
       accounts.addItems(withTitles: records.map { $0["email"] as? String ?? "Account" })
       if let previous,let index=records.firstIndex(where:{$0["id"] as? String == previous}){accounts.selectItem(at:index+1)}
       if records.isEmpty {
+        // The last account went away: drop what it showed, not just the buttons.
+        generation += 1
+        detailPopover?.close();editorPopover?.close()
+        collections = [];selectedEvents = [];connectedAccountIDs = []
+        clear();currentGrid = nil;currentOverview = nil;updateLegend()
         status.stringValue = "Add a Gmail account in Email to connect your calendar."
         connect.isEnabled = false
         refresh.isEnabled = false
@@ -769,7 +780,11 @@ import AppKit
     var editButton:NSButton?
     if canEdit {
       let edit=action("Edit event",{[weak self,weak popover] in popover?.close();self?.newEvent(editing:event)})
-      edit.toolTip="Edit event (E)";(edit as? AgendaButton)?.prominent=true;stack.addArrangedSubview(edit);editButton=edit
+      edit.toolTip="Edit event (E)";(edit as? AgendaButton)?.prominent=true;editButton=edit
+      let delete=action("Delete event",{[weak self,weak popover] in popover?.close();self?.confirmDelete(event)})
+      delete.contentTintColor = .systemRed;delete.toolTip="Delete event"
+      let buttons=NSStackView(views:[edit,delete]);buttons.spacing=8
+      stack.addArrangedSubview(buttons)
     } else {
       let reason=label(event["all_day"] as? Bool == true ? "All-day events can be edited in Google Calendar." : writable ? "Editing is not available for this event. Use Google Calendar." : "This calendar is read-only.")
       reason.font = .systemFont(ofSize:10);stack.addArrangedSubview(reason)
@@ -826,6 +841,46 @@ import AppKit
       }
       freshRanges=Array(freshRanges.suffix(32));setBusy(false);await reload()
       if !failures.isEmpty{status.stringValue="Some calendars could not refresh; saved events remain available.";status.toolTip=failures.joined(separator:"\n")}
+    }
+  }
+  /// Guests are attendees other than the organizer and this account.
+  private func hasGuests(_ event: [String: Any]) -> Bool {
+    let own = Set([event["organizer_email"] as? String, records.first { $0["id"] as? String == event["account_id"] as? String }?["email"] as? String].compactMap { $0?.lowercased() })
+    return (event["attendees"] as? [[String: Any]] ?? []).contains { !own.contains(($0["email"] as? String ?? "").lowercased()) }
+  }
+  private func confirmDelete(_ event: [String: Any]) {
+    guard let window = interactionWindow, !busy else { return }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Delete “\(event["title"] as? String ?? "Untitled event")”?"
+    let recurring = !(event["recurring_event_id"] as? String ?? "").isEmpty
+    alert.informativeText = [recurring ? "Only this occurrence will be deleted." : nil, hasGuests(event) ? "Guests will be notified." : nil].compactMap { $0 }.joined(separator: " ")
+    // Cancel stays the default, as for removing an account.
+    alert.addButton(withTitle: "Cancel")
+    let delete = alert.addButton(withTitle: "Delete")
+    delete.hasDestructiveAction = true
+    alert.beginSheetModal(for: window) { [weak self] response in
+      guard response == .alertSecondButtonReturn else { self?.interactionWindow?.makeFirstResponder(self?.currentGrid); return }
+      self?.deleteEvent(event)
+    }
+  }
+  private func deleteEvent(_ event: [String: Any]) {
+    guard let id = event["account_id"] as? String, let cid = event["calendar_id"] as? String,
+      let eid = event["id"] as? String, let etag = event["etag"] as? String, !etag.isEmpty, !busy
+    else { return }
+    let scope = (event["recurring_event_id"] as? String ?? "").isEmpty ? "single" : "instance"
+    setBusy(true)
+    status.stringValue = "Deleting event…"
+    Task {
+      do {
+        _ = try await core.callAsync(["op": "delete_calendar_event", "account_id": id, "calendar_id": cid, "event_id": eid, "expected_etag": etag, "edit_scope": scope])
+        setBusy(false)
+        await reload()
+        status.stringValue = "Event deleted."
+      } catch {
+        setBusy(false)
+        status.stringValue = error.localizedDescription
+      }
     }
   }
   private func respond(_ event: [String: Any], _ response: String) {
