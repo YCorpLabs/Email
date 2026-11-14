@@ -256,3 +256,9 @@ calendars, QA engines with file credentials:
   If-Match, `sendUpdates=all`) is covered by `mail-cloud` tests.
 - Both: removing alex@example.com from Manage accounts while Calendar was open
   removed its events and legend entry immediately, and Calendar stayed open.
+- With Agent requests (14 Nov 2026), both shells: the sidebar shows Agent
+  requests and Calendar; going Agent requests → Calendar and removing the
+  account that had a waiting request also cleared that request and updated
+  the sidebar's accounts and All Inboxes count. macOS needed a fix for this:
+  its inbox refresh only runs in the Inbox folder, so account changes now
+  refresh the sidebar, counts, Drafts or Outbox and Agent requests directly.

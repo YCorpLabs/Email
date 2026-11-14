@@ -2988,6 +2988,30 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             cachedCalendarWorkspace = nil
         }
         NotificationCenter.default.post(name: AgendaPanel.accountsChanged, object: nil)
+        // refreshInbox only runs in the Inbox folder. From Agent requests,
+        // Drafts or Outbox, update the sidebar's accounts and counts and that
+        // folder's list here, so a removed account disappears at once.
+        guard let core else { return }
+        Task { @MainActor in
+            let raw = try? await core.callAsync(["op": "unread_counts"]) as? [String: Any]
+            if let raw {
+                var counts = (raw["accounts"] as? [String: Int]) ?? [:]
+                counts["__total"] = raw["total"] as? Int ?? 0
+                let followups = raw["followups"] as? [String: Int] ?? [:]
+                counts["__followup_due"] = followups["due"] ?? 0
+                counts["__followup_active"] = followups["active"] ?? 0
+                unreadCounts = counts
+                updateMailboxCounts()
+            }
+            refreshSidebar()
+            switch folder {
+            case .drafts: reloadDrafts(selectingID: nil, fallbackRow: 0)
+            case .outbox: refreshOutbox(using: core)
+            case .inbox, .agentRequests: break
+            }
+            // Requests for a removed account go away with it.
+            await refreshAgentRequests()
+        }
     }
 
     func isReadingNotificationThread(accountID: String, threadID: String) -> Bool {
