@@ -67,12 +67,12 @@ collections. Switching between them means adding accounts again.
 
 ## Publish a release
 
-1. In both PKGBUILDs, set `_tag` to the release tag (`v` plus the `version` in
-   `apps/linux/Cargo.toml` and any pre-release suffix, for example
-   `v0.1.0-beta.1`), `pkgver` to the same version in Arch form without `-`
-   (`0.1.0beta1`) and `pkgrel=1`. In `aur-bin`, set `_debver` to the Cargo
-   version. Set the `# Maintainer:` lines to the AUR account's name and
-   address. The script refuses mismatched values.
+1. Set the release version in `apps/linux/Cargo.toml`, then `_tag`, `pkgver`
+   and `pkgrel=1` in both PKGBUILDs and `_debver` in `aur-bin`, in the forms
+   [release versions](release-versions.md) lists (for v0.1.0-beta.2:
+   `v0.1.0-beta.2`, `0.1.0beta2`, `0.1.0-beta.2`). Set the `# Maintainer:`
+   lines to the AUR account's name and address. The script refuses mismatched
+   values.
 2. Build the Linux release from the release commit, with the production Google
    desktop client values in the environment
    ([Linux release packages](../apps/linux/README.md#release-packages-for-x86_64-and-arm64-from-one-machine)):

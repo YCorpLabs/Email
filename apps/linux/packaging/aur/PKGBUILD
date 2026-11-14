@@ -12,9 +12,9 @@
 # unless the builder supplies them. The default is the neutral profile.
 # email-ycorp-bin installs the official prebuilt build instead.
 pkgname=email-ycorp
-pkgver=0.1.0beta1
+pkgver=0.1.0beta2
 # The release tag; Arch versions cannot contain '-'.
-_tag=v0.1.0-beta.1
+_tag=v0.1.0-beta.2
 pkgrel=1
 pkgdesc='Keyboard-first, local-first desktop email client (beta, built from source)'
 arch=('x86_64' 'aarch64')
@@ -29,7 +29,7 @@ optdepends=('gnome-keyring: Secret Service credential storage (or another Secret
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/$_tag/Email-${_tag#v}.tar.gz")
 # Replaced by scripts/prepare-aur-package.sh for the published release.
-sha256sums=('57eddd196c1bb9ab2e39774314541978c4e7cc79495c1fe7a100414e8ec1a67a')
+sha256sums=('SKIP')
 
 _src() { printf '%s' "$srcdir/Email-${_tag#v}"; }
 
