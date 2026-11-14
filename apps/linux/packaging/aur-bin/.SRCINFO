@@ -24,11 +24,11 @@ pkgbase = email-ycorp-bin
 	options = !strip
 	options = !debug
 	source_x86_64 = email-ycorp-bin-0.1.0beta2-amd64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.2/email-linux_0.1.0-beta.2_amd64.deb
-	sha256sums_x86_64 = SKIP
+	sha256sums_x86_64 = 01998b639800a8108376f38f982270e89ccf3d3287c650ba5ff627bc4dbd52e0
 	source_aarch64 = email-ycorp-bin-0.1.0beta2-arm64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.2/email-linux_0.1.0-beta.2_arm64.deb
 	depends_aarch64 = gdk-pixbuf2
 	depends_aarch64 = libsoup3
 	depends_aarch64 = pango
-	sha256sums_aarch64 = SKIP
+	sha256sums_aarch64 = bb86e0b3fe9c81f71051dc8516dd0bf75130dc02298f7488145ad7336d71dc66
 
 pkgname = email-ycorp-bin
