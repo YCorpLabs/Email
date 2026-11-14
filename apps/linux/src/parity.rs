@@ -809,7 +809,8 @@ impl Ui {
                         "connect gmail icloud login",
                     ),
                     ("manage", "Manage accounts…", "", "remove account settings"),
-                    ("agent", "Agent access…", "", "mcp ai agent approve approval codex claude assistant"),
+                    ("agent", "Agent access…", "", "mcp ai agent codex claude assistant connect"),
+                    ("agent requests", "Go to Agent requests", "", "approve approval agent claude codex waiting"),
                     ("sync", "Refresh mail", "Ctrl R", "sync reload"),
                     (
                         "images",
@@ -862,8 +863,11 @@ impl Ui {
                     ("help", "Keyboard shortcuts", "?", "help keys"),
                 ] {
                     let command = Command::new(id, title, keys, words);
-                    items.push(if id == "agent" && agent::waiting() {
-                        command.detail("Waiting for you")
+                    if id == "agent requests" && !agent::requests_item_visible() {
+                        continue;
+                    }
+                    items.push(if id == "agent requests" && agent::waiting() {
+                        command.detail(&format!("{} waiting", agent::requests_total()))
                     } else {
                         command
                     });
@@ -1047,6 +1051,7 @@ impl Ui {
             "agent" => {
                 agent::open(self);
             }
+            "agent requests" => agent::open_request(self, None),
             "sync" => self.sync_all(),
             "images" => self.toggle_remote_images(),
             "dark" | "light" | "system" => self.set_appearance(id),

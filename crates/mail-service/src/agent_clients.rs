@@ -175,6 +175,10 @@ fn helper(hint: Option<&str>, dirs: &[PathBuf]) -> Result<PathBuf, String> {
     candidates.extend(std::env::var_os("EMAIL_MCP_HELPER").filter(|h| !h.is_empty()).map(PathBuf::from));
     if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
         candidates.push(dir.join("mail-mcp"));
+        // Where the Linux packages install it: /usr/lib/email-linux/mail-mcp.
+        if !cfg!(target_os = "macos") {
+            candidates.push(dir.join("../lib/email-linux/mail-mcp"));
+        }
     }
     if !cfg!(target_os = "macos") {
         candidates.extend(dirs.iter().map(|dir| dir.join("mail-mcp")));
@@ -183,8 +187,14 @@ fn helper(hint: Option<&str>, dirs: &[PathBuf]) -> Result<PathBuf, String> {
         return Err(if cfg!(target_os = "macos") {
             "This copy of Email doesn't include the mail-mcp helper, so it can't connect agents. Release builds include it; in a source checkout, use scripts/connect-mcp.sh.".into()
         } else {
-            "To connect agents, install mail-mcp (a separate download with each release) in ~/.local/bin or next to email-linux, then reopen Agent access.".into()
+            "To connect agents, install mail-mcp (it comes with the Email packages, or as a download with each release) in ~/.local/bin, then reopen Agent access.".into()
         });
+    };
+    // Register a clean path, not ".../bin/../lib/...".
+    let found = if found.components().any(|c| c == std::path::Component::ParentDir) {
+        std::fs::canonicalize(&found).unwrap_or(found)
+    } else {
+        found
     };
     // A helper built for another distribution profile uses other credentials
     // and data, so it couldn't use this app's accounts.

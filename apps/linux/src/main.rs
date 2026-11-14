@@ -454,6 +454,10 @@ fn mail_icon(name: &str) -> gtk::DrawingArea {
                 path(&[(12., 3.), (19., 6.), (19., 11.), (17.5, 16.), (12., 21.), (6.5, 16.), (5., 11.), (5., 6.), (12., 3.)]);
                 path(&[(8.5, 12.), (11., 14.5), (15.5, 9.5)]);
             }
+            "sparkles-symbolic" => {
+                path(&[(10., 4.), (11.6, 10.4), (18., 12.), (11.6, 13.6), (10., 20.), (8.4, 13.6), (2., 12.), (8.4, 10.4), (10., 4.)]);
+                path(&[(18., 2.5), (18.7, 5.3), (21.5, 6.), (18.7, 6.7), (18., 9.5), (17.3, 6.7), (14.5, 6.), (17.3, 5.3), (18., 2.5)]);
+            }
             "view-more-symbolic" => {
                 for y in [5., 12., 19.] {
                     circle(12., y, 0.8);
@@ -550,6 +554,7 @@ enum MailView {
     Sent,
     Drafts,
     Outbox,
+    AgentRequests,
 }
 enum AttachmentEvent {
     Portrait {
@@ -1163,10 +1168,20 @@ impl Ui {
         self.search_preview.borrow_mut().take();
         self.compact_navigation.set(false);
         self.compact_message.set(false);
+        // Agent requests have no inbox scopes, and search their own rows.
+        let requests = matches!(view, MailView::AgentRequests);
+        for button in &self.filter_buttons {
+            button.set_visible(!requests);
+        }
+        self.search.set_placeholder_text(Some(if requests { "Search requests   /" } else { "Search downloaded mail   /" }));
         *self.view.borrow_mut() = view;
         self.loaded_limit.set(500);
         self.can_load_older.set(true);
+        self.update_activity_layout();
         self.refresh();
+        if matches!(*self.view.borrow(), MailView::AgentRequests) {
+            agent::show_selected(self);
+        }
         if matches!(*self.view.borrow(), MailView::Archive) {
             self.loading_older.set(true);
             self.older_count_before.set(self.items.borrow().len());
@@ -1241,13 +1256,25 @@ impl Ui {
             ("mail-send-symbolic", "Sent", "t", MailView::Sent),
             ("mail-send-symbolic", "Outbox", "o", MailView::Outbox),
         ];
+        let mut fixed = fixed.to_vec();
+        let requests_visible = !accounts.is_empty()
+            && (agent::requests_item_visible() || matches!(*self.view.borrow(), MailView::AgentRequests));
+        if requests_visible {
+            fixed.push(("sparkles-symbolic", "Agent requests", "", MailView::AgentRequests));
+        }
         for (icon, name, shortcut, view) in fixed {
-            let count = match &view { MailView::Inbox => Some(unread), MailView::Followups => Some(followup_due), _ => None };
+            let count = match &view {
+                MailView::Inbox => Some(unread),
+                MailView::Followups => Some(followup_due),
+                MailView::AgentRequests => Some(agent::requests_total() as u64).filter(|n| *n > 0),
+                _ => None,
+            };
             let badge = if self.goto_pending.get() { shortcut.to_string() } else { count.map(|n| n.to_string()).unwrap_or_default() };
             let button = navigation_button(icon, name, &badge);
             let tooltip = match &view {
                 MailView::Inbox => format!("{unread} unread conversations in downloaded inboxes · G then I"),
                 MailView::Followups => format!("{followup_due} due · {followup_active} active follow-ups · G then W"),
+                MailView::AgentRequests => "Agent requests: what agents are waiting for you to OK".into(),
                 _ => format!("{name} · G then {}", shortcut.to_uppercase()),
             };
             button.set_tooltip_text(Some(&tooltip));
@@ -1257,6 +1284,12 @@ impl Ui {
                 button.add_css_class("active");
             }
             button.add_css_class("side-item");
+            if matches!(view, MailView::AgentRequests)
+                && agent::requests_total() > 0
+                && let Some(hint) = button.child().and_then(|c| c.last_child())
+            {
+                hint.add_css_class("agent-count-pill");
+            }
             let ui = self.clone();
             button.connect_clicked(move |_| ui.set_view(view.clone()));
             self.views_box.append(&button);
@@ -1373,6 +1406,7 @@ impl Ui {
                 MailView::Archive => "Archive",
                 MailView::Drafts => "Drafts",
                 MailView::Outbox => "Outbox",
+                MailView::AgentRequests => "Agent requests",
                 MailView::Sent => "Sent",
             }));
         if let Some(button) = self
@@ -1412,8 +1446,13 @@ impl Ui {
             | MailView::Sent => Value::Null,
             MailView::Drafts => json!({"op":"list_drafts"}),
             MailView::Outbox => json!({"op":"list_outbox"}),
+            MailView::AgentRequests => Value::Null,
         };
-        let mut fresh = if matches!(view, MailView::Drafts) {
+        let mut fresh = if matches!(view, MailView::AgentRequests) {
+            let rows = agent::request_rows(self);
+            self.status.set_text(&if rows.is_empty() { String::new() } else { format!("{} waiting", rows.len()) });
+            rows
+        } else if matches!(view, MailView::Drafts) {
             self.request(op)
                 .ok()
                 .and_then(|v| serde_json::from_value::<Vec<Message>>(v).ok())
@@ -1531,6 +1570,15 @@ impl Ui {
             self.list.remove(&row);
         }
         for (i, item) in self.items.borrow().iter().enumerate() {
+            if matches!(view, MailView::AgentRequests) {
+                let row = agent::request_row(item);
+                row.set_widget_name(&i.to_string());
+                self.list.append(&row);
+                if previous_id.as_ref() == Some(&item.thread_id) {
+                    self.list.select_row(Some(&row));
+                }
+                continue;
+            }
             let row = gtk::ListBoxRow::new();
             row.set_widget_name(&i.to_string());
             let content = gtk::Box::new(Orientation::Vertical, 0);
@@ -1690,6 +1738,10 @@ impl Ui {
     }
     fn show_selected(self: &Rc<Self>) {
         if self.reader_covered() {
+            return;
+        }
+        if matches!(*self.view.borrow(), MailView::AgentRequests) {
+            agent::show_selected(self);
             return;
         }
         let Some(i) = self.selected() else {
@@ -3023,7 +3075,7 @@ impl Ui {
             || self.items.borrow().is_empty()
             || matches!(
                 *self.view.borrow(),
-                MailView::Snoozed | MailView::Followups | MailView::Drafts | MailView::Outbox
+                MailView::Snoozed | MailView::Followups | MailView::Drafts | MailView::Outbox | MailView::AgentRequests
             )
         {
             return;
@@ -4201,7 +4253,10 @@ impl Ui {
         if let Some(viewport) = self.activity_host.parent() { viewport.set_hexpand(width < 1000); }
         self.mail_reading_host.set_visible(activity || !single || message);
         self.mail_inbox_viewport.set_visible((!activity && (!single || !message)) || (activity && width >= 1360));
-        self.mail_reader_viewport.set_visible(!activity || width >= 1000);
+        // Agent requests show their own reader in place of the mail reader.
+        let requests = matches!(*self.view.borrow(), MailView::AgentRequests);
+        self.mail_reader_viewport.set_visible((!activity || width >= 1000) && !requests);
+        agent::set_reader_visible(requests && (!activity || width >= 1000));
         self.contact.root.set_visible(!activity && width >= 1400 && self.contact_requested.get());
     }
 }
@@ -4666,6 +4721,7 @@ fn build(app: &gtk::Application) {
     let reading_and_contact = gtk::Box::new(Orientation::Horizontal, 0);
     reader_viewport.set_hexpand(true);
     reading_and_contact.append(&reader_viewport);
+    reading_and_contact.append(&agent::request_reader());
     let contact = parity::ContactPane::new();
     contact.root.set_visible(
         std::fs::read_to_string(database_path().unwrap().with_extension("contact-pane"))
@@ -4979,6 +5035,17 @@ fn build(app: &gtk::Application) {
         });
     }
     {
+        let action = gtk::gio::SimpleAction::new("open-agent-request", Some(String::static_variant_type().as_ref()));
+        let weak = Rc::downgrade(&ui);
+        action.connect_activate(move |_, target| {
+            if let Some(ui) = weak.upgrade() {
+                let id = target.and_then(|t| t.get::<String>());
+                agent::open_request(&ui, id.as_deref());
+            }
+        });
+        app.add_action(&action);
+    }
+    {
         let action = gtk::gio::SimpleAction::new("open-agent-access", None);
         let weak = Rc::downgrade(&ui);
         action.connect_activate(move |_, _| {
@@ -5268,6 +5335,14 @@ fn build(app: &gtk::Application) {
             }
             if ui.compose_pane.borrow().is_some() {
                 return glib::Propagation::Proceed;
+            }
+            // Agent requests take Ctrl+Enter, E and Backspace before the mail keys.
+            if matches!(*ui.view.borrow(), MailView::AgentRequests)
+                && !focus_within(&ui.search)
+                && !focus_within(&ui.command)
+                && agent::handle_key(&ui, key, mods)
+            {
+                return glib::Propagation::Stop;
             }
             if mods.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK)
                 && key == gdk::Key::f

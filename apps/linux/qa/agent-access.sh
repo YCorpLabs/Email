@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Linux GTK Agent access QA on a virtual X display in a disposable container:
-# a fresh demo store (EMAIL_DEMO=1), the real mail-mcp acting as an agent
-# through crates/mail-mcp/tests/agent_flow.py, and a fake `claude` CLI so
-# Connect is exercised without any real Claude Code or Codex. Captures the
-# window's states in dark and light. Synthetic data only; no account, keyring
+# Linux GTK Agent requests and Agent access QA on a virtual X display in a
+# disposable container: a fresh launch demo store (two accounts), the real
+# mail-mcp acting as Claude Code and Codex through
+# crates/mail-mcp/tests/agent_flow.py, and a fake `claude` CLI so Connect is
+# exercised without any real Claude Code or Codex. Captures the states in
+# dark, and the main ones in light. Synthetic data only; no account, keyring
 # or provider. Usage (from the repository root, with Linux builds of the shell
 # and the helper in ./qa-out):
 #
@@ -18,7 +19,7 @@ scratch="$(mktemp -d)"
 chmod 755 "$scratch"
 apt-get update -qq >/dev/null
 apt-get install -y -qq --no-install-recommends xvfb openbox xdotool imagemagick dbus dbus-x11 \
-  fonts-inter fonts-dejavu-core libgl1-mesa-dri libglib2.0-bin sqlite3 python3 >/dev/null 2>&1
+  fonts-inter fonts-dejavu-core libgl1-mesa-dri libglib2.0-bin sqlite3 python3 dunst >/dev/null 2>&1
 Xvfb :99 -screen 0 1280x1000x24 -nolisten tcp >"$scratch/xvfb.log" 2>&1 &
 sleep 1
 DISPLAY=:99 openbox >"$scratch/openbox.log" 2>&1 &
@@ -47,11 +48,14 @@ SH
 chmod 755 "$fake/claude"
 chown -R demo "$fake"
 
-app_window=""; panel=""; store=""; bus=""; appearance=""
-shot() { xdotool mousemove 2 990; sleep "${2:-1.2}"; import -frame -window "${3:-$panel}" "/shots/linux-$appearance-$1.png"; echo "shot $1"; }
-keys() { xdotool key --clearmodifiers "$@"; sleep 0.5; }
+app_window=""; settings=""; store=""; bus=""; appearance=""; app_id=""
+shot() { xdotool mousemove 2 990; sleep "${2:-1.2}"; import -frame -window "${3:-$app_window}" "/shots/linux-$appearance-$1.png"; echo "shot $1"; }
+keys() { xdotool key --clearmodifiers "$@"; sleep 0.6; }
+focus_app() { xdotool windowactivate --sync "$app_window" 2>/dev/null || true; sleep 0.4; }
 as_demo() { su demo -c "$1"; }
-agent() { as_demo "python3 /agent_flow.py /out/mail-mcp '$store' $1" ; echo; }
+agent() { # step account client [threads]
+  as_demo "AGENT_FLOW_CLIENT=$3 AGENT_FLOW_THREADS='${4:-}' python3 /agent_flow.py /out/mail-mcp '$store' $1 $2"; echo
+}
 newest_window() { # newest visible window with this exact title, other than $2
   for _ in $(seq 50); do
     local id; id=$(xdotool search --onlyvisible --name "^$1\$" 2>/dev/null | grep -vx "${2:-none}" | tail -1 || true)
@@ -60,6 +64,17 @@ newest_window() { # newest visible window with this exact title, other than $2
   done
   echo "window $1 did not open" >&2; return 1
 }
+click() { # client coordinates in window $3 (default: the main window)
+  xdotool mousemove --window "${3:-$app_window}" "$1" "$2" click 1; sleep 0.8
+}
+action() { # app action [string target]
+  local target='[]'
+  [[ $# -gt 1 ]] && target="[<'$2'>]"
+  as_demo "DBUS_SESSION_BUS_ADDRESS=$bus gdbus call --session --dest $app_id --object-path /${app_id//.//} \
+    --method org.gtk.Actions.Activate $1 \"$target\" {}" >/dev/null
+  sleep 1.5
+}
+sql() { sqlite3 "$store" "$1"; }
 
 start() { # appearance [helper|no-helper] [run name]
   appearance=$1
@@ -70,8 +85,12 @@ start() { # appearance [helper|no-helper] [run name]
   store="$base/store/mail.sqlite"
   # The app keeps its light/dark choice beside the store.
   [[ "$appearance" == light ]] && { echo light > "$base/store/mail.theme"; chown demo "$base/store/mail.theme"; }
+  # Desktop notifications on, as a user would turn them on.
+  printf on > "$base/store/mail.notifications"; chown demo "$base/store/mail.notifications"
   bus="unix:path=$base/bus"
   as_demo "dbus-daemon --session --address=$bus --fork --nopidfile" >/dev/null
+  # A notification server on that bus, so notifications show on the display.
+  su demo -c "env DISPLAY=$DISPLAY DBUS_SESSION_BUS_ADDRESS=$bus dunst" >"$base/dunst.log" 2>&1 &
   local helper="EMAIL_MCP_HELPER=/out/mail-mcp" binary=/out/email-linux clis="$fake"
   if [[ "${2:-helper}" == no-helper ]]; then
     # No helper anywhere: not configured, and not beside the executable.
@@ -84,27 +103,22 @@ start() { # appearance [helper|no-helper] [run name]
   fi
   su demo -c "env DISPLAY=$DISPLAY DBUS_SESSION_BUS_ADDRESS=$bus GDK_BACKEND=x11 GSK_RENDERER=cairo LIBGL_ALWAYS_SOFTWARE=1 \
     NO_AT_BRIDGE=1 EMAIL_SOFTWARE_RENDERING=1 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 TZ=Europe/Oslo HOME=$base \
-    XDG_DATA_HOME=$base/data EMAIL_STORE_PATH=$store EMAIL_DEMO=1 EMAIL_AGENT_CLI_PATH=$clis $helper \
+    XDG_DATA_HOME=$base/data EMAIL_STORE_PATH=$store EMAIL_DEMO=launch EMAIL_AGENT_CLI_PATH=$clis $helper \
     $binary" >"$base/app.log" 2>&1 &
   app_window=$(newest_window Email)
-  xdotool windowsize "$app_window" 1200 860 windowmove "$app_window" 0 0
-  sleep 3
+  xdotool windowsize "$app_window" 1240 780 windowmove "$app_window" 0 0
+  sleep 4
+  app_id="invalid.email.Unofficial.Isolated.s$(printf '%s' "$store" | sha256sum | cut -c1-12)"
   echo "built executable: $(sha256sum /out/email-linux | cut -d' ' -f1)"
   # The app runs as demo; root in a container may not read its /proc entry.
   for pid in $(pgrep -x email-linux); do echo "running process $pid: $(su demo -c "sha256sum /proc/$pid/exe" | cut -d' ' -f1)"; done
 }
 
-open_panel() {
-  # The notification action, over the app's own session bus.
-  local digest id
-  digest=$(printf '%s' "$store" | sha256sum | cut -c1-12)
-  id="invalid.email.Unofficial.Isolated.s$digest"
-  as_demo "DBUS_SESSION_BUS_ADDRESS=$bus gdbus call --session --dest $id --object-path /${id//.//} \
-    --method org.gtk.Actions.Activate open-agent-access [] {}" >/dev/null
-  panel=$(newest_window "Agent access")
-  xdotool windowsize "$panel" 600 680 windowmove "$panel" 300 40
-  xdotool windowactivate --sync "$panel" 2>/dev/null || true
-  sleep 4   # looking for agent CLIs
+open_settings() {
+  action open-agent-access
+  settings=$(newest_window "Agent access")
+  xdotool windowsize "$settings" 620 560 windowmove "$settings" 300 60
+  sleep 3   # looking for agent CLIs
 }
 
 stop() {
@@ -112,90 +126,115 @@ stop() {
   sleep 1
 }
 
-click() { # client coordinates in window $3 (default: the panel)
-  xdotool mousemove --window "${3:-$panel}" "$1" "$2" click 1; sleep 0.8
-}
-root_shot() { sleep "${2:-1}"; import -window root "/shots/debug-$appearance-$1.png"; }
-
 # ---- dark: the whole flow -------------------------------------------------
 start dark
-echo "probe: $(agent probe)"
-open_panel
-shot 01-blocked-nothing-pending
-click 536 520   # the account switch opens the turn-on window
-sheet=$(newest_window "Agent access" "$panel")
-shot 02-sheet-collapsed 1.5 "$sheet"
-click 114 346 "$sheet"   # What exactly can agents see?
-shot 03-sheet-expanded 1.5 "$sheet"
+agent use demo:personal claude-code >/dev/null
+agent use demo:work codex-mcp-client >/dev/null
+echo "access requests: $(sql "select count(*) from agent_actions where status='blocked'")"
+sleep 6
+import -window root "/shots/linux-$appearance-00-notification.png"; echo "shot 00-notification"
+action open-agent-request ''
+shot 01-access-requests 2
+open_settings
+shot 02-settings-waiting 1 "$settings"
 keys Escape
-shot 03b-cancelled-switch-off
-click 147 165   # Turn on for alex@example.com… in the banner
-sheet=$(newest_window "Agent access" "$panel")
-for y in 131 152 173; do click 32 $y "$sheet"; done   # Drafts, Archive and snooze, Ask to send
-shot 03c-three-grants-checked 0.5 "$sheet"
-click 400 393 "$sheet"   # Turn on
-shot 04-account-on 2
-click 315 408   # Edit: the sheet opens with the current grants checked
-sheet=$(newest_window "Agent access" "$panel")
-shot 04b-edit-sheet 1.5 "$sheet"
+focus_app
+sleep 1
+keys ctrl+Return   # Allow… on the selected refused agent
+sheet=$(newest_window "Agent access" "$settings")
+shot 03-sheet-default 1.5 "$sheet"
+click 54 314 "$sheet"   # Custom…
+shot 04-sheet-custom 1.5 "$sheet"
 keys Escape
-echo "consent: $(sqlite3 "$store" 'select grants_json, disclosure_version from agent_consents')"
-echo "read: $(agent read | cut -c1-80)"
-echo "request: $(agent request | cut -c1-200)"
-shot 05-pending 7
-click 84 264    # Show message
-shot 06-pending-expanded
-xdotool windowsize "$panel" 440 640
-shot 07-pending-narrow 1.5
-xdotool windowsize "$panel" 600 680
+focus_app
+keys ctrl+Return
+sheet=$(newest_window "Agent access" "$settings")
+click 170 314 "$sheet"  # What can agents see?
+shot 05-sheet-details 1.5 "$sheet"
+keys Escape
+focus_app
+keys ctrl+Return
+sheet=$(newest_window "Agent access" "$settings")
+click 43 203 "$sheet"   # Read, organize and write
+click 415 314 "$sheet"  # Allow
 sleep 1
-click 88 410    # Hide message
-click 495 264   # Approve and send
-shot 08-approved-undo 1
-echo "outbox after approval: $(sqlite3 "$store" 'select status from outbox')"
-click 468 650   # Undo send
-shot 09-undo-send 1
-echo "outbox after undo: $(sqlite3 "$store" 'select count(*) from outbox')"
+echo "consent: $(sql "select account_id, grants_json, disclosure_version from agent_consents")"
+threads=$(sql "select id from threads where account_id='demo:personal' and is_inbox=1 order by last_message_at desc limit 2" | paste -sd, -)
+agent showcase demo:personal claude-code "$threads" | cut -c1-160
+sleep 6
+focus_app
+keys k k
+shot 06-requests-send 1.5
+keys j
+shot 07-requests-bulk 1.5
+keys j
+shot 08-requests-access 1.5
+open_settings
+shot 09-settings-waiting 1 "$settings"
+keys Escape
+focus_app
+# Ctrl+Enter sends with the undo window.
+keys k k
 sleep 1
-click 446 301   # Reject the batch
-shot 09b-rejected 1
-click 78 459    # Recent activity
-shot 10-recent-activity
-click 78 459
-click 525 154   # Connect Claude Code
-shot 11-connected 3
+keys ctrl+Return
+shot 10-sent-undo 1
+draft=$(sql "select json_extract(details_json,'$.request.message_id') from agent_actions where kind='send_draft' and status='approved' limit 1")
+echo "outbox after approval: $(sql "select status from outbox where message_id='$draft'")"
+# E opens the agent's draft in the composer without sending.
+agent send demo:personal claude-code >/dev/null
+sleep 6
+action open-agent-request ''
+focus_app
+keys j
+sleep 1
+shot 10b-second-send 0.5
+keys e
+sleep 2
+shot 11-edit-in-composer 1
+echo "edited: $(sql "select count(*) from agent_actions where status='edited'") outbox for it: $(sql "select count(*) from outbox o join agent_actions a on o.message_id=json_extract(a.details_json,'$.request.message_id') where a.status='edited'")"
+keys Escape
+action open-agent-request ''
+focus_app
+# Backspace declines the bulk change, then ignores the refused agent.
+keys k k
+sleep 1
+keys BackSpace
+sleep 2
+echo "bulk: $(sql "select status from agent_actions where kind='batch_triage'")"
+sleep 1
+keys BackSpace
+sleep 2
+echo "waiting after ignore: $(sql "select count(*) from agent_actions where status='pending'") pending"
+shot 12-requests-empty 1
+open_settings
+shot 13-settings-nothing-waiting 1 "$settings"
+click 540 302 "$settings"   # Connect Claude Code (the fake CLI)
+sleep 3
+shot 14-settings-connected 1 "$settings"
 echo "fake claude calls:"; sed 's/^/  /' "$fake/claude.log"
-click 536 399   # switch off
-dialog=$(xdotool getactivewindow)
-shot 12-turn-off-confirm 1 "$dialog"
-keys Escape
-shot 12b-still-on 1
-echo "consent after cancel: $(sqlite3 "$store" 'select count(*) from agent_consents')"
-echo "attach: $(agent attach | cut -c1-120)"
-sleep 7
-click 84 264    # Show message · 1 attachment
-shot 13-attachment
 stop
 
 # ---- light: the main states -----------------------------------------------
 start light
-agent probe >/dev/null
-open_panel
-shot 01-blocked-nothing-pending
-click 147 165   # Turn on for alex@example.com… in the banner
-sheet=$(newest_window "Agent access" "$panel")
-shot 02-sheet-collapsed 1.5 "$sheet"
-for y in 131 152 173; do click 32 $y "$sheet"; done
-click 400 393 "$sheet"
-shot 04-account-on 2
-agent request >/dev/null
-shot 05-pending 7
-click 84 264
-shot 06-pending-expanded
-stop
-
-# ---- no helper: Connect explains instead of offering a broken button ------
-start dark no-helper no-helper
-open_panel
-shot 14-no-helper
+agent use demo:personal claude-code >/dev/null
+agent use demo:work codex-mcp-client >/dev/null
+sleep 6
+action open-agent-request ''
+focus_app
+sleep 1
+keys ctrl+Return
+sheet=$(newest_window "Agent access" "none")
+shot 03-sheet-default 1.5 "$sheet"
+click 43 203 "$sheet"
+click 415 314 "$sheet"
+threads=$(sql "select id from threads where account_id='demo:personal' and is_inbox=1 order by last_message_at desc limit 2" | paste -sd, -)
+agent showcase demo:personal claude-code "$threads" >/dev/null
+sleep 6
+focus_app
+keys k k
+shot 06-requests-send 1.5
+keys j
+shot 07-requests-bulk 1.5
+open_settings
+shot 09-settings-waiting 1 "$settings"
 stop

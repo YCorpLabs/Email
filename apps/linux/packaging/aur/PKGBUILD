@@ -38,6 +38,9 @@ prepare() {
   export RUSTUP_TOOLCHAIN=stable
   cargo fetch --locked --manifest-path apps/linux/Cargo.toml \
     --target "$(rustc -vV | sed -n 's/host: //p')"
+  # mail-mcp, the helper Agent access connects agents to, is in the root workspace.
+  cargo fetch --locked --manifest-path Cargo.toml \
+    --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
@@ -48,6 +51,8 @@ build() {
   source scripts/linux-build-config.sh || return 1
   require_linux_oauth_config || return 1
   cargo build --frozen --release --manifest-path apps/linux/Cargo.toml
+  # A separate target directory: the two workspaces must not share one.
+  CARGO_TARGET_DIR="$(_src)/target-mcp" cargo build --frozen --release --manifest-path Cargo.toml -p mail-mcp
 }
 
 package() {
@@ -55,6 +60,7 @@ package() {
   source scripts/package-notices.sh
   source scripts/linux-desktop-entry.sh
   install -Dm755 target/release/email-linux "$pkgdir/usr/bin/email-linux"
+  install -Dm755 target-mcp/release/mail-mcp "$pkgdir/usr/lib/email-linux/mail-mcp"
   install_package_notices "$PWD" "$pkgdir/usr/share/licenses/$pkgname" || return 1
   # package() runs in a fresh shell; resolve the profile build() compiled in.
   local app_id
