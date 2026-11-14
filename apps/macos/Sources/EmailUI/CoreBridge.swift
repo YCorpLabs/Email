@@ -13,6 +13,14 @@ struct RenderedMessage: Sendable {
     let bodyHTMLSafe: String?
 }
 
+/// The time in a list row, as the inbox shows it: today the time, older the date.
+enum MailListTime {
+    static func string(for date: Date) -> String {
+        let today = Calendar.current.isDateInToday(date)
+        return DateFormatter.localizedString(from: date, dateStyle: today ? .none : .short, timeStyle: today ? .short : .none)
+    }
+}
+
 struct MailDraft: Sendable {
     let id: String
     let accountID: String
@@ -481,7 +489,7 @@ final class CoreBridge: @unchecked Sendable {
                   let preview = item["snippet"] as? String else { return nil }
             let milliseconds = (item["last_message_at"] as? NSNumber)?.doubleValue ?? 0
             let date = Date(timeIntervalSince1970: milliseconds / 1000)
-            let time = DateFormatter.localizedString(from: date, dateStyle: Calendar.current.isDateInToday(date) ? .none : .short, timeStyle: Calendar.current.isDateInToday(date) ? .short : .none)
+            let time = MailListTime.string(for: date)
             return MailThread(id: id, accountID: accountID, account: accounts[accountID] ?? accountID, sender: sender, subject: subject, preview: preview, time: time, unread: ((item["unread_count"] as? NSNumber)?.intValue ?? 0) > 0, html: "", labels: item["labels"] as? [String] ?? [], pinned: item["is_pinned"] as? Bool ?? false, snoozedUntil: (item["snoozed_until_ms"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) })
         }
     }

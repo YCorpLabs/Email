@@ -90,7 +90,7 @@ check = r'''
             return handle(event)
         }
         func selectRequest(_ fragment: String) {
-            let index = filteredAgentRequests.firstIndex { ($0["title"] as? String ?? "").contains(fragment) }!
+            let index = agentRequests.firstIndex { ($0["title"] as? String ?? "").contains(fragment) }!
             table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
             settle(0.2)
         }
@@ -174,6 +174,11 @@ check = r'''
         expect(shows("Design review time", in: reader) && shows("Maya Chen <maya@example.org>", in: reader) && shows("Morning got eaten by the launch prep.", in: reader), "the email as it will go out, in full")
         expect(all(reader).contains { $0.accessibilityLabel() == "Save a copy of review-notes.pdf" }, "attachments as chips")
         expect((agentRequests[0]["preview"] as? String ?? "").hasPrefix("To Maya Chen · Hi Maya, Could we move Friday's"), "list preview: recipient and the start of the body")
+        let sentAt = Date(timeIntervalSince1970: ((agentRequests[0]["created_at_ms"] as? NSNumber)?.doubleValue ?? 0) / 1000)
+        expect(texts(AgentRequestRows.cell(agentRequests[0])).contains(MailListTime.string(for: sentAt)), "request time as the inbox shows times")
+        expect(search.isHidden && searchFiltersButton.isHidden && syncStatus.stringValue == "3 waiting", "no search or filters, just the count")
+        _ = key("/", code: 44)
+        expect((firstResponder as? NSText)?.delegate !== search, "/ doesn't reach the hidden search")
         capture("01-requests-send", self)
         selectRequest("Archive")
         ready()
@@ -184,6 +189,9 @@ check = r'''
         ready()
         expect(shows("wants to use alex@fernhill.example", in: reader) && shows("Agent access is off for this account", in: reader), "refused agent reader")
         capture("03-requests-access", self)
+        showInbox(scope: .all)
+        settle()
+        expect(!search.isHidden && !searchFiltersButton.isHidden && !search.isHiddenOrHasHiddenAncestor, "search and filters come back after leaving")
 
         openAgentAccess()
         wait("settings link to waiting requests") { shows("3 requests waiting", in: settings) && button("Review", in: settings) != nil }

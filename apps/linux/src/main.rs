@@ -897,6 +897,11 @@ struct Ui {
     can_load_older: Cell<bool>,
     older_count_before: Cell<usize>,
     search: gtk::SearchEntry,
+    /// Search field and filter button; hidden in Agent requests.
+    search_row: gtk::Box,
+    /// The line under the list title: "Your mail, up to date", or how many
+    /// agent requests wait.
+    inbox_hint: gtk::Label,
     inbox_filter: Cell<u8>,
     search_generation: Cell<u64>,
     search_preview: RefCell<Option<(String, Result<Vec<ThreadSummary>, String>)>>,
@@ -1163,17 +1168,24 @@ impl Ui {
         if matches!(view, MailView::Followups) {
             self.inbox_filter.set(0);
         }
+        // Agent requests hide the search field, so start them without a query
+        // (before the generation bump below, which cancels that search).
+        if matches!(view, MailView::AgentRequests) && !self.search.text().is_empty() {
+            self.search.set_text("");
+        }
         self.search_generation
             .set(self.search_generation.get().wrapping_add(1));
         self.search_preview.borrow_mut().take();
         self.compact_navigation.set(false);
         self.compact_message.set(false);
-        // Agent requests have no inbox scopes, and search their own rows.
+        // Agent requests have no inbox scopes, search field or filters.
         let requests = matches!(view, MailView::AgentRequests);
         for button in &self.filter_buttons {
             button.set_visible(!requests);
         }
-        self.search.set_placeholder_text(Some(if requests { "Search requests   /" } else { "Search downloaded mail   /" }));
+        self.search_row.set_visible(!requests);
+        self.inbox_hint.set_visible(true);
+        self.inbox_hint.set_text("Your mail, up to date");
         *self.view.borrow_mut() = view;
         self.loaded_limit.set(500);
         self.can_load_older.set(true);
@@ -1450,7 +1462,8 @@ impl Ui {
         };
         let mut fresh = if matches!(view, MailView::AgentRequests) {
             let rows = agent::request_rows(self);
-            self.status.set_text(&if rows.is_empty() { String::new() } else { format!("{} waiting", rows.len()) });
+            self.inbox_hint.set_visible(!rows.is_empty());
+            self.inbox_hint.set_text(&format!("{} waiting", rows.len()));
             rows
         } else if matches!(view, MailView::Drafts) {
             self.request(op)
@@ -3945,9 +3958,7 @@ impl Ui {
             "reply" => self.compose(true),
             "mark read" => self.mark(false),
             "mark unread" => self.mark(true),
-            "search" => {
-                self.search.grab_focus();
-            }
+            "search" => self.focus_search(),
             "sync" => self.sync_all(),
             "add account" => self.add_account(),
             "label" => self.label_thread(false),
@@ -3961,8 +3972,8 @@ impl Ui {
             "drafts" => self.set_view(MailView::Drafts),
             _ => {
                 if let Some(q) = input.strip_prefix("search ") {
+                    self.focus_search();
                     self.search.set_text(q);
-                    self.search.grab_focus();
                 }
             }
         }
@@ -4823,6 +4834,8 @@ fn build(app: &gtk::Application) {
         can_load_older: Cell::new(true),
         older_count_before: Cell::new(0),
         search,
+        search_row: search_row.clone(),
+        inbox_hint: hint.clone(),
         inbox_filter: Cell::new(0),
         search_generation: Cell::new(0),
         search_preview: RefCell::new(None),
@@ -5548,7 +5561,9 @@ fn build(app: &gtk::Application) {
                     }
                 }
                 gdk::Key::slash => {
-                    ui.search.grab_focus();
+                    if !matches!(*ui.view.borrow(), MailView::AgentRequests) {
+                        ui.search.grab_focus();
+                    }
                 }
                 gdk::Key::e | gdk::Key::E => {
                     if matches!(*ui.view.borrow(), MailView::Archive)

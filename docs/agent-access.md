@@ -15,11 +15,14 @@ while agent access is on for any account or something waits, with a count
 pill while requests wait.
 
 **List column.** One row per request, oldest first: the agent's name (Claude
-Code, Codex, otherwise the name the MCP client reported), the time, a title
-("Send: ‹subject›", "Archive 2 conversations", "Wants to use ‹account›") and
-one preview line ("To Maya Chen · Hi Maya, could we…", the senders, or
-"Agent access is off for this account"). The header says how many wait; the
-search field filters the rows.
+Code, Codex, otherwise the name the MCP client reported), the time (as the
+macOS inbox shows times: today the time, older the date), a title ("Send:
+‹subject›", "Archive 2 conversations", "Wants to use ‹account›") and one
+preview line ("To Maya Chen · Hi Maya, could we…", the senders, or "Agent
+access is off for this account"). The header says "3 waiting", or nothing
+when the list is empty. The search field and filter button are hidden in this
+view and come back when you leave it; / does nothing here, and Search mail or
+Refine search from the command palette go back to the inbox first.
 
 **Reader.**
 
@@ -140,22 +143,25 @@ stores only (two accounts). Agents were the real `mail-mcp` driven by
 `claude-code` and `codex-mcp-client`. Connect used fake `claude`/`codex`
 scripts; `EMAIL_AGENT_CLI_PATH` limited the search to their directory.
 
-- macOS: `apps/macos/Tests/run-agent-access-checks.py` passed 82 checks in
+- macOS: `apps/macos/Tests/run-agent-access-checks.py` passed 86 checks in
   dark and in light mode, in the real main window and settings window:
-  refused agents as requests with friendly names, Allow… with Read only
-  preselected, Custom… and the full list, the level recorded, send/bulk/access
-  rows and reader, the email in full with its attachment, the 0.8-second wait
-  (an early click and an early ⌘↩ send nothing), ⌘↩ with the undo bar and
-  Undo, E into the composer with the request closed as edited and nothing
-  queued, ⌫ declining a bulk change (conversations untouched) and ignoring a
-  refused agent, the settings line and Review, allowing less without the
-  sheet, Off with its confirmation, Connect's exact command, Set up…,
-  Activity and the missing-helper note. Window captures were checked by eye.
+  refused agents as requests with friendly names, the row time in the inbox
+  format, no search or filters in the list (and back after leaving), Allow…
+  with Read only preselected, Custom… and the full list, the level recorded,
+  send/bulk/access rows and reader, the email in full with its attachment,
+  the 0.8-second wait (an early click and an early ⌘↩ send nothing), ⌘↩ with
+  the undo bar and Undo, E into the composer with the request closed as
+  edited and nothing queued, ⌫ declining a bulk change (conversations
+  untouched) and ignoring a refused agent, the settings line and Review,
+  allowing less without the sheet, Off with its confirmation, Connect's exact
+  command, Set up…, Activity and the missing-helper note. Window captures
+  were checked by eye.
 - Linux: `apps/linux/qa/agent-access.sh` in the verify container under Xvfb,
   openbox and dunst, the running executable matching the built one: the same
   flow by keyboard and clicks (Ctrl+Enter, E, Backspace, J/K), notifications
   for new requests, the database checked after each decision, and captures
-  in dark and light checked by eye.
+  in dark and light checked by eye (including "3 waiting" with no search row,
+  an empty header with nothing waiting, and the search row back in Drafts).
 - Not verified: a macOS notification (the harness isn't an app bundle, so it
   can't post one), clicking a notification (the Linux action was triggered
-  directly), Wayland or GNOME, and a signed release bundle.
+  directly), Wayland or GNOME, the AUR build, and a signed release bundle.

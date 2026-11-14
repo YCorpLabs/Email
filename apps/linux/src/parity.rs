@@ -246,7 +246,7 @@ impl Ui {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
-            if ui.search_generation.get() != generation {
+            if ui.search_generation.get() != generation || matches!(*ui.view.borrow(), MailView::AgentRequests) {
                 return;
             }
             if matches!(*ui.view.borrow(), MailView::Drafts | MailView::Outbox) {
@@ -295,7 +295,17 @@ impl Ui {
             });
         });
     }
+    /// Agent requests have no search field; searching goes back to the inbox.
+    pub(super) fn focus_search(self: &Rc<Self>) {
+        if matches!(*self.view.borrow(), MailView::AgentRequests) {
+            self.set_view(MailView::Inbox);
+        }
+        self.search.grab_focus();
+    }
     pub(super) fn search_filters(self: &Rc<Self>) {
+        if matches!(*self.view.borrow(), MailView::AgentRequests) {
+            self.set_view(MailView::Inbox);
+        }
         if matches!(*self.view.borrow(), MailView::Drafts | MailView::Outbox) {
             self.status
                 .set_text("Open a mailbox to use structured search filters.");
@@ -1027,9 +1037,7 @@ impl Ui {
             "labels" => self.open_palette("labels"),
             "snooze" => self.open_palette("snooze"),
             "unsubscribe" => self.unsubscribe(),
-            "search" => {
-                self.search.grab_focus();
-            }
+            "search" => self.focus_search(),
             "inbox" | "unread" | "favorites" => {
                 self.search.set_text("");
                 self.inbox_filter.set(match id {

@@ -5,13 +5,10 @@ import AppKit
 /// previews and button verbs, so macOS and Linux show the same words.
 @MainActor
 enum AgentRequestRows {
-    /// "20:24" today, otherwise a short date.
+    /// As the inbox list shows message times: today the time, older the date.
     static func time(_ ms: Double?) -> String {
         guard let ms else { return "" }
-        let date = Date(timeIntervalSince1970: ms / 1000)
-        return Calendar.current.isDateInToday(date)
-            ? date.formatted(date: .omitted, time: .shortened)
-            : date.formatted(.dateTime.day().month(.abbreviated))
+        return MailListTime.string(for: Date(timeIntervalSince1970: ms / 1000))
     }
 
     private static func label(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {

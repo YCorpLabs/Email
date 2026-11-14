@@ -437,6 +437,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private weak var agentRequestsSidebarButton: NSButton?
     private let agentRequestsPill = AgentPill()
     private let agentRequestReader = AgentRequestReader()
+    private var controlsBelowSearch: NSLayoutConstraint?
+    private var controlsBelowStatus: NSLayoutConstraint?
     private var agentAccessOn = false
     private var agentRequestTotal = 0
     private var agentRequestBusy = false
@@ -844,6 +846,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inboxControls.spacing = 6
         inboxControls.translatesAutoresizingMaskIntoConstraints = false
         inbox.addSubview(inboxControls)
+        // Agent requests hide the search field; the list then moves up under the count.
+        let belowSearch = inboxControls.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12)
+        controlsBelowSearch = belowSearch
+        controlsBelowStatus = inboxControls.topAnchor.constraint(equalTo: syncStatus.bottomAnchor, constant: 8)
         inbox.addSubview(inboxScroll)
         inbox.addSubview(inboxEmpty)
         NSLayoutConstraint.activate([
@@ -854,7 +860,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             searchFiltersButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), searchFiltersButton.centerYAnchor.constraint(equalTo: search.centerYAnchor), searchFiltersButton.widthAnchor.constraint(equalToConstant: 24), searchFiltersButton.heightAnchor.constraint(equalToConstant: 24),
             inboxControls.leadingAnchor.constraint(equalTo: search.leadingAnchor),
             inboxControls.trailingAnchor.constraint(lessThanOrEqualTo: search.trailingAnchor),
-            inboxControls.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12),
+            belowSearch,
             inboxScroll.leadingAnchor.constraint(equalTo: inbox.leadingAnchor), inboxScroll.trailingAnchor.constraint(equalTo: inbox.trailingAnchor), inboxScroll.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 8), inboxScroll.bottomAnchor.constraint(equalTo: inbox.bottomAnchor),
             inboxEmpty.centerXAnchor.constraint(equalTo: inbox.centerXAnchor), inboxEmpty.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 82), inboxEmpty.widthAnchor.constraint(lessThanOrEqualToConstant: 290)
         ])
@@ -1791,9 +1797,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .about: showNotice("Email 0.1.0\nBuild: \(EmailBuildIdentity.value)")
         case .saveSnippet: composePane?.saveBodyAsSnippet()
         case .insertSnippet(let text): composePane?.insertSnippet(text)
-        case .search: search.becomeFirstResponder()
+        // Agent requests have no search field; searching goes back to the inbox.
+        case .search: if folder == .agentRequests { showInbox(scope: .all) }; search.becomeFirstResponder()
         case .searchHelp: showNotice(Self.searchSyntaxHelp)
-        case .searchFilters: openSearchFilters()
+        case .searchFilters: if folder == .agentRequests { showInbox(scope: .all) }; openSearchFilters()
         case .invitations: showCalendarWorkspace()
         case .followup: openWorkflow(calendar: false)
         case .followups: showInbox(scope: .followups)
@@ -2484,7 +2491,6 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         selection = -1
         updateTriageBar()
         inboxTitle?.stringValue = "Agent requests"
-        search.placeholderString = "Search requests  /"
         search.stringValue = ""
         syncStatus.stringValue = ""
         updateSidebarSelection()
@@ -2497,13 +2503,6 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         updateAgentRequestsChrome()
         makeFirstResponder(table)
         reloadAgentRequestList(select: target)
-    }
-
-    private var filteredAgentRequests: [[String: Any]] {
-        let query = search.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty ? agentRequests : agentRequests.filter { row in
-            ["agent", "title", "preview"].contains { (row[$0] as? String ?? "").localizedCaseInsensitiveContains(query) }
-        }
     }
 
     /// Re-read the requests, keeping the selected one, or the row in its place
@@ -2522,7 +2521,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             suppressSelectionChanges = true
             table.reloadData()
             updateEmptyInbox()
-            let visible = filteredAgentRequests
+            let visible = agentRequests
             var index = current.flatMap { id in visible.firstIndex { $0["id"] as? String == id } }
             if index == nil, !visible.isEmpty { index = min(previousIndex, visible.count - 1) }
             if let index {
@@ -3698,6 +3697,13 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             button.contentTintColor = color
         }
         agentRequestReader.isHidden = !requestsActive
+        // No search or filters in Agent requests; they come back on leaving.
+        let searchHidden = folder == .agentRequests
+        search.isHidden = searchHidden
+        searchFiltersButton.isHidden = searchHidden
+        controlsBelowStatus?.isActive = false
+        controlsBelowSearch?.isActive = !searchHidden
+        controlsBelowStatus?.isActive = searchHidden
         refreshSidebar()
     }
 
@@ -3739,7 +3745,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let empty = switch folder {
         case .drafts: filteredDrafts.isEmpty
         case .outbox: filteredOutbox.isEmpty
-        case .agentRequests: filteredAgentRequests.isEmpty
+        case .agentRequests: agentRequests.isEmpty
         case .inbox: threads.isEmpty
         }
         inboxScroll.isHidden = empty
@@ -3747,7 +3753,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inboxEmpty.stringValue = switch folder {
         case .drafts: search.stringValue.isEmpty ? "No drafts yet." : "No drafts match your search."
         case .outbox: search.stringValue.isEmpty ? "Nothing scheduled to send." : "No outgoing messages match."
-        case .agentRequests: search.stringValue.isEmpty ? "Nothing waiting." : "No requests match."
+        case .agentRequests: "Nothing waiting."
         case .inbox: search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : "No messages in this view.") : "No messages match your search."
         }
     }
@@ -3773,7 +3779,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         switch folder {
         case .drafts: filteredDrafts.count
         case .outbox: filteredOutbox.count
-        case .agentRequests: filteredAgentRequests.count
+        case .agentRequests: agentRequests.count
         case .inbox: threads.count
         }
     }
@@ -3799,7 +3805,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if folder == .agentRequests {
-            return AgentRequestRows.cell(filteredAgentRequests[row])
+            return AgentRequestRows.cell(agentRequests[row])
         }
         if folder == .outbox {
             let item = filteredOutbox[row]
@@ -3892,7 +3898,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         guard !suppressSelectionChanges else { return }
         if readerMode { setReaderMode(false) }
         if folder == .agentRequests {
-            let visible = filteredAgentRequests
+            let visible = agentRequests
             selection = table.selectedRow
             agentRequestReader.show(visible.indices.contains(table.selectedRow) ? visible[table.selectedRow] : nil)
             return
@@ -5107,7 +5113,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case "k":
             if event.modifierFlags.contains(.shift) { extendMarkedSelection(-1) } else { select(selection - 1) }
             return true
-        case "/": search.becomeFirstResponder(); return true
+        case "/" where folder != .agentRequests: search.becomeFirstResponder(); return true
         case "e" where folder == .inbox: archiveSelection(allowRestore: event.modifierFlags.contains(.shift)); return true
         case "m" where folder == .inbox: setRead(true); return true
         case "u" where folder == .inbox: setRead(false); return true
@@ -5231,7 +5237,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let count = switch folder {
         case .drafts: filteredDrafts.count
         case .outbox: filteredOutbox.count
-        case .agentRequests: filteredAgentRequests.count
+        case .agentRequests: agentRequests.count
         case .inbox: threads.count
         }
         guard count > 0 else { return }

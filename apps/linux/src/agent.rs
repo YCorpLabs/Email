@@ -247,12 +247,17 @@ fn date_time(ms: Option<i64>) -> String {
         .unwrap_or_default()
 }
 
-/// "20:24" today, otherwise a short date (macOS `AgentRequestRows.time`).
+/// As the macOS inbox list shows times (`AgentRequestRows.time`): today the
+/// time, older the date as the Linux inbox shows it.
 pub(super) fn short_time(ms: Option<i64>) -> String {
-    let Some(date) = ms.and_then(|ms| glib::DateTime::from_unix_local(ms / 1000).ok()) else { return String::new() };
+    let Some(ms) = ms else { return String::new() };
+    let Some(date) = glib::DateTime::from_unix_local(ms / 1000).ok() else { return String::new() };
     let today = glib::DateTime::now_local().ok().and_then(|now| now.format("%Y%m%d").ok());
-    let format = if date.format("%Y%m%d").ok() == today { "%H:%M" } else { "%e %b" };
-    date.format(format).map(|t| t.trim().to_string()).unwrap_or_default()
+    if date.format("%Y%m%d").ok() == today {
+        date.format("%H:%M").map(|t| t.to_string()).unwrap_or_default()
+    } else {
+        super::message_time(ms)
+    }
 }
 
 fn size(bytes: u64) -> String {
@@ -302,20 +307,12 @@ fn strings(value: &Value) -> Vec<String> {
 
 /// The rows for Agent requests, kept for the reader. Called by `Ui::refresh`.
 pub(super) fn request_rows(ui: &Ui) -> Vec<Mail> {
-    let all: Vec<Value> = ui
+    let rows: Vec<Value> = ui
         .request(json!({"op":"agent_requests"}))
         .ok()
         .and_then(|v| v.as_array().cloned())
         .unwrap_or_default();
-    TOTAL.with(|t| t.set(all.len()));
-    let query = ui.search.text().trim().to_lowercase();
-    let rows: Vec<Value> = all
-        .into_iter()
-        .filter(|row| {
-            query.is_empty()
-                || ["agent", "title", "preview"].iter().any(|key| row[*key].as_str().unwrap_or_default().to_lowercase().contains(&query))
-        })
-        .collect();
+    TOTAL.with(|t| t.set(rows.len()));
     let mails = rows
         .iter()
         .map(|row| Mail {
