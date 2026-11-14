@@ -143,11 +143,11 @@ can work with your mail. In the app, **Agent access** connects them
 
 - It is a **local stdio process** started by your client, not a network
   service.
-- **Every account is off** until you switch it on in Agent access. Then
-  agents can read it; writing drafts, archiving, asking to send, fetching
-  mail and calendar changes are separate checkboxes, all off by default.
-- **Sends and bulk changes wait for you**: they appear in Agent access and
-  happen only when you approve them, with the usual undo window.
+- **Every account is off** until you turn it on in Agent access: Read only
+  by default, or Read and organize, or Read, organize and write.
+- **Sends and bulk changes wait for you**: they appear under Agent requests
+  in the main window, showing the email as it will go out, and happen only
+  when you approve them, with the usual undo window.
 - Mail content reaches agents labelled as untrusted.
 
 From a source checkout, `./scripts/connect-mcp.sh` registers the server

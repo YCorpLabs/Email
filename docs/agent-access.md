@@ -2,187 +2,160 @@
 
 Agents connected through Email's local MCP server (`mail-mcp`) can use an
 account only after the user turns on **Agent access** for it, and every send or
-bulk change they ask for waits for the user's approval. This page describes the
-shared desktop behavior. The threat model is in [mcp-security.md](mcp-security.md); tool details are in
-[mcp.md](mcp.md).
+bulk change they ask for waits in **Agent requests** until the user approves
+it. This page describes the shared desktop behavior. The threat model is in
+[mcp-security.md](mcp-security.md); tool details are in [mcp.md](mcp.md).
 
-## Where it is
+macOS is the design reference; the GTK shell has the same layout and behavior.
 
-Both shells have the same entry points and the same window layout. macOS is the
-design reference.
+## Agent requests (main window)
 
-| Entry point | macOS | Linux |
-| --- | --- | --- |
-| Sidebar | **Agent access** below Manage accounts, with a badge: the number of waiting requests, or `!` after an agent was refused | Same, below Manage accounts |
-| Command palette | **Agent access** (Settings) | **Agent access…** |
-| Manage accounts | **Agent Access…** button in the accounts alert | **Agent access…** button in the Accounts dialog |
-| Notification | Clicking an agent notification opens the window | Same, through `app.open-agent-access` |
+A sidebar item **Agent requests**, under Workspace after Outbox. It shows
+while agent access is on for any account or something waits, with a count
+pill while requests wait.
 
-## The window
+**List column.** One row per request, oldest first: the agent's name (Claude
+Code, Codex, otherwise the name the MCP client reported), the time, a title
+("Send: ‹subject›", "Archive 2 conversations", "Wants to use ‹account›") and
+one preview line ("To Maya Chen · Hi Maya, could we…", the senders, or
+"Agent access is off for this account"). The header says how many wait; the
+search field filters the rows.
 
-From top to bottom:
+**Reader.**
 
-1. **"Agent access"** and one line: "Let AI tools like Claude Code and Codex
-   work with your mail. You approve every send."
-2. **"Agent access needed" banner**, shown while a recent refusal still
-   applies: an account is off, or a grant was missing after the latest consent
-   change. It says which account was blocked (and, for a missing grant, which
-   grant) and offers **Turn on for …** (or **Change access for …**) when one
-   account is affected. It disappears once the user acts.
-3. **Waiting for you**, with a count, shown only while requests wait. One card
-   per request, oldest first:
-   - Send, queue or schedule: a small kind label (SEND EMAIL, SCHEDULE EMAIL),
-     the subject, then To, Cc, Bcc, Reply-To and From as bare addresses (a
-     display name is marked "shown as"). A scheduled send also shows When. The
-     card notes how many allowed invisible characters (emoji, keycaps, flags,
-     Indic and Arabic joiners) the message contains. **Show message** (with
-     "· N attachments" when there are any) expands the whole plain-text body,
-     each attachment's name, size and type with **Save…** to inspect a copy,
-     and When (after approval with the 10-second undo, or a longer
-     agent-chosen window). Nothing of the body is cut when expanded. Drafts
-     with an HTML body, or with invisible, control or text-direction
-     characters outside the contexts real text needs, are refused before they
-     reach the window.
-   - Bulk change, or undoing one: the action and count, the accounts, up to
-     eight conversations (sender and subject), and whether it can be undone.
-   - Sender cleanup: sender, unread count, sample subjects and the no-undo note.
-   - "Requested by …" (the client name the agent reported) and the time.
-     Buttons: **Reject** and **Approve** (**Approve and send**, **Approve and
-     schedule**). Neither is the default button, so Return alone never
-     approves; a button needs keyboard focus first (Tab), and each platform
-     then activates it in its usual way (Space on macOS, Space or Return on
-     Linux). A new request never takes an existing card's place, and a
-     decision click within 0.8 seconds of the list changing is ignored with an
-     explanation.
-4. **Connect an agent**: rows for Claude Code, Codex and "Other MCP client".
-   - Each CLI row says "Found on this Mac" (Linux: "this computer") or "Not
-     installed". The app looks on its PATH and in the usual install
-     locations (`~/.local/bin`, `~/.claude/local`, `~/bin`, npm, bun, volta,
-     pnpm and nvm directories, `/opt/homebrew/bin`, `/usr/local/bin`,
-     `/usr/bin`), since apps started from the Dock or a launcher don't get the
-     shell's PATH.
-   - "✓ Connected" when `claude mcp get <name>` or `codex mcp get <name>`
-     finds the registration; the subtitle says so when it points at another
-     copy of `mail-mcp`. Otherwise **Connect** registers the helper with the
-     same commands `scripts/connect-mcp.sh` runs (see [mcp.md](mcp.md)) and
-     never replaces an existing registration.
-   - **Copy** on "Other MCP client" copies the `mail-mcp` command and an
-     `mcpServers` JSON snippet with the same arguments.
-   - Below the list: "Connected agents can use only the accounts you turn on
-     below." Without a helper, the note says why instead and Connect and Copy
-     are off: on macOS a build without `Contents/Helpers/mail-mcp` (release
-     builds include it; development builds use `EMAIL_MCP_HELPER`, which
-     `scripts/dev.sh` sets), on Linux no `mail-mcp` next to `email-linux`, on
-     PATH or in the usual locations.
-   - The CLIs run only when the window opens and after Connect, on a separate
-     engine handle, never on the five-second poll.
-5. **Accounts**: one row per account with an on/off switch. On: the grants,
-   such as "Read · Drafts · Ask to send", and an **Edit** link that opens the
-   turn-on sheet with the current grants. Off: "Off". Switching on opens the
-   turn-on sheet; cancelling it puts the switch back. Switching off asks first
-   ("Turn off agent access for …?": agents lose access on their next request,
-   waiting requests are rejected, mail already approved stays in the Outbox);
-   cancelling puts the switch back.
-6. **Recent activity**, collapsed: decisions, changes agents made without
-   approval, consent changes and refused attempts, newest first, with time,
-   status and client.
-7. **Footer.** A status line, a temporary **Undo send** (or **Undo**,
-   **Cancel send**) button after an approval, and **Done** (Escape). When the
-   list re-renders while focus is inside it, focus moves to **Done** on both
-   shells. Done and Escape hide the window; reopening it shows the same
-   window, with expanded messages still expanded.
+- A strip at the top: "‹Agent› wants to send this email" (or "…schedule this
+  email", "…archive 2 conversations", "…use ‹account›") with the buttons.
+- Send: **Don't send**, **Edit**, **Send ⌘↩** (Ctrl ↵ on Linux). Below the
+  strip, the email exactly as it will go out, laid out like the reader:
+  subject, From, To/Cc/Bcc/Reply-To ("Name <address>" when the agent gave a
+  name, so the address is always visible), When for a scheduled send, the
+  whole plain-text body, and attachments as chips; clicking a chip saves a
+  copy (quarantined on macOS, never executable on Linux). A note counts
+  allowed invisible characters when there are any.
+- Bulk change: the conversations as inbox-style rows (sender, date, subject,
+  snippet) and buttons with the action's verb: **Don't archive** / **Archive
+  2**, **Don't move** / **Move 2**, **Move 2 to Spam**, **Don't mark read** /
+  **Mark 2 read**, **Mark 2 unread**; undoing a change: **Don't undo** /
+  **Undo**; sender cleanup: **Don't mark read** / **Mark 214 read**.
+  "You can undo this afterwards." under archive, move and spam; "This can't be
+  undone." under sender cleanup.
+- Refused agent: **Ignore** / **Allow…**. Allow… opens the turn-on sheet with
+  the level the agent needed preselected (Custom… expanded when it needed
+  calendar changes).
+- Keys at the bottom: ⌘↩ (Ctrl ↵) approves, E edits a send, ⌫ declines or
+  ignores, J/K move to the next request. Other mail shortcuts do nothing in
+  this view.
 
-### The turn-on sheet
+**Approving.** Approval keeps today's semantics: a send is queued with the
+10-second undo window (an agent may ask for longer, never shorter), shown in
+the reader as "Sending in 10 seconds · Undo" and in the main window's usual
+undo control; a scheduled send shows "Scheduled for … · Cancel"; an undoable
+bulk change shows "Done · Undo" for 30 seconds and becomes the triage undo.
+The next request is selected after a decision. The approve button and its
+shortcut wait 0.8 seconds after a request appears (the button is dimmed
+meanwhile), so a double press can't approve the next request.
 
-A sheet on the Agent access window (a modal window on Linux), shown when an
-account is switched on, from the banner, and from Edit:
+**Edit** closes the request as "Opened to edit" without sending, switches to
+Drafts and opens the draft in the composer. Only the user's own Send sends it.
+The agent's `get_agent_action` reports the request as edited.
 
-- "Let agents use {email}?" and "Agents can read this account's mail, drafts
-  and calendar on this Mac."
-- Checkboxes: **Read mail and calendar · required** (checked and locked),
-  **Write drafts**, **Archive, mark read and snooze · you approve bulk
-  changes**, **Ask to send mail · you approve each one**, **Fetch new mail**,
-  **Change calendar events · no approval; guests get notified** (the note in
-  the warning color). Every optional box starts unchecked: reading is the
-  only default. Each box's tooltip and accessibility description give the
-  full explanation.
-- A callout: "What an agent reads goes to its AI provider, such as Anthropic
-  or OpenAI, under their terms."
-- "You can turn this off anytime in Agent access."
-- **What exactly can agents see?** expands the full list: messages and
-  attachments (downloaded on demand), drafts and labels, snoozed, scheduled
-  and queued mail, calendar invitations and events, recipient suggestions,
-  follow-ups, signatures, open-tracking, snippets, splits and bookings, the
-  untrusted-content note, that Email's developer never receives the data, and
-  that an MCP registration's own permissions still apply.
-- **Cancel** and **Turn on** (**Save** when editing). Neither is the default;
-  Escape cancels. On macOS Cancel has Escape and the sheet starts with focus
-  on Cancel; on Linux Cancel has focus.
+**Refused agents.** A call refused because an account is off, or lacks a
+permission the call needed, becomes one request per account while it still
+applies: until the account's access changes after the attempt, or the user
+chooses Ignore. Ignore keeps that account's refusals quiet while the agent
+keeps retrying (within ten minutes of its last attempt). This replaces the
+old "Agent access needed" banner.
 
-All text comes from `agent_access_disclosure` in mail-service, so both shells
-use the same words. The account summary uses the short grant names from
-`agent_grant_label` (Drafts, Archive and snooze, Ask to send, Fetch mail,
-Calendar changes), which MCP refusals use too.
+**Notifications.** A new request posts a desktop notification through the
+existing notification setting: the agent's name as the title and "wants to
+send “Design review time” to Maya Chen" (or the request's own line) as the
+body; with previews off, "Email" / "An agent is waiting for you". Clicking
+it opens the main window on that request (`app.open-agent-request` on
+Linux).
 
-The sheet's text is disclosure version 2. Consents recorded under version 1
-(the previous dialog) keep working: `AGENT_DISCLOSURE_MIN_VERSION` stays 1
-because the new text names the same data, grants and safeguards. See
-[mcp-security.md](mcp-security.md#t1-an-agent-reads-mail-the-user-never-meant-to-share).
+## Agent access (settings)
 
-After an approval the main window also shows the usual undo control: the
-reader's **Undo send** button and status for sends, and the triage bar's
-**Undo** for bulk changes.
+The settings window (sidebar **Agent access**, the command palette, and
+Manage accounts):
 
-The window polls `agent_pending_summary` every five seconds and re-reads its
-contents (`agent_access_overview`) only when the summary's revision changes.
-Notifications follow the existing notification setting and the previews
-setting: with previews off, an alert says only that an agent is waiting.
+- "Agent access" and "Let AI tools like Claude Code and Codex use your mail.
+  Nothing is sent without your OK."
+- When requests wait, one line at the top: "2 requests waiting · Review",
+  which opens the main window on Agent requests.
+- **What agents can do:** one row per account with a popup: Off, Read only,
+  Read and organize, Read, organize and write, and Custom… (shown as the value
+  when the grants match no level). Turning an account on, or allowing more,
+  opens the turn-on sheet with that choice; allowing less applies at once;
+  Off asks first ("Turn off agent access for …?") and drops waiting requests.
+- **Agents:** Claude Code and Codex with **Connect**, or "✓ Connected" ("Start
+  a new session to use it" right after connecting), "Not installed" when the
+  CLI isn't found; "Another app · Any app that supports MCP" with **Set up…**,
+  which copies the `mail-mcp` command and an `mcpServers` JSON snippet. When
+  no helper is found, one line under the group says why and the buttons are
+  off.
+- Footer: **Activity** (decisions, changes agents made, consent changes and
+  refusals) and **Done**.
 
-## Platform differences
+Connect finds the CLIs on the app's PATH and in the usual install locations
+(`~/.local/bin`, `~/.claude/local`, `~/bin`, npm, bun, volta, pnpm and nvm
+directories, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`), runs the
+same `mcp add` command as `scripts/connect-mcp.sh`, and never replaces an
+existing registration. See [mcp.md](mcp.md#connect-codex-and-claude-code).
+The helper is `Contents/Helpers/mail-mcp` in the macOS app and
+`/usr/lib/email-linux/mail-mcp` in the Linux packages.
 
-Window chrome is native: a titled AppKit window on macOS, a decorated GTK
-window on Linux. The turn-on sheet is an AppKit sheet on macOS and a modal
-window on Linux. Primary buttons use each shell's existing primary style
-(accent on macOS, ink on Linux, as in the composer); other buttons in the
-window are bordered on macOS and on a soft fill on Linux, where buttons are
-otherwise flat. Switches are `NSSwitch` and `gtk::Switch`. The turn-off
-confirmation uses `NSAlert` on macOS and `gtk::AlertDialog` on Linux.
-Notification-seen state is stored in user defaults on macOS and in
-`mail.agent-notifications` next to the database on Linux.
+## The turn-on sheet
 
-## Verified (13 Nov 2026)
+"Let agents use ‹account›?" with three choices, Read only preselected:
 
-Builds: the neutral `unofficial` profile, debug; disposable demo stores only.
-The window checks used fake `claude`/`codex` scripts: `EMAIL_AGENT_CLI_PATH`
-limits the search to their directory, so no real CLI or configuration was
-found, run or changed.
+| Choice | Grants |
+| --- | --- |
+| Read only — Read mail and calendar. | read, Fetch mail |
+| Read and organize — Also archive, mark read and snooze. You OK bulk changes. | + Archive and snooze |
+| Read, organize and write — Also write drafts and ask to send. You OK every email. | + Drafts, Ask to send |
 
-- Real CLIs, macOS: `agent_clients` and `connect_agent_client` through the
-  engine library with the installed Claude Code and Codex, a clean
-  environment and a throwaway `HOME`. Both showed "Found on this Mac", Connect
-  registered `email-unofficial` with the expected command in each (checked
-  with `claude mcp get` and `codex mcp get` against that `HOME`), both then
-  showed connected to this helper, and a second Connect changed nothing. The
-  real configuration files have no trace of it.
+One note: "What an agent reads goes to its AI provider, like Anthropic or
+OpenAI. You can turn this off anytime." Two links: **Custom…** shows the
+individual switches (Fetch new mail; Archive, mark read and snooze; Write
+drafts; Ask to send mail; Change calendar events · guests get notified, in
+the warning color). Calendar changes are only reachable there. **What can
+agents see?** shows the full list: messages and attachments (downloaded on
+demand), drafts and labels, snoozed/scheduled/queued mail, calendar
+invitations and events, recipient suggestions, follow-ups and signatures,
+open-tracking, snippets, splits and bookings, the untrusted-content note,
+that Email's developer never receives the data, and that a registration's own
+permissions still apply. Buttons: **Cancel** and **Allow** (**Save** when the
+account is already on). Neither is the default; Escape cancels.
 
-- macOS: `apps/macos/Tests/run-agent-access-checks.py` (the real window,
-  real mail-service and real `mail-mcp`) passed in dark and in light mode:
-  the blocked prompt, the sheet's text, locked Read and unchecked defaults,
-  Escape/Return, the full list, Cancel putting the switch back, turning on
-  with three grants, Edit, pending send and batch cards, the body behind
-  Show message, the click guard, the narrow window, approve with Undo send,
-  reject, Recent activity, a long body, an attachment and its bytes,
-  Connect's exact registration command, Copy, the turn-off confirmation and
-  its cancel, turning off, and the missing-helper note. Real window captures
-  (`screencapture -l`) of each state were checked by eye.
-- Linux: `apps/linux/qa/agent-access.sh` in the verify container under Xvfb
-  and openbox, with the running executable's SHA-256 matching the built one:
-  the same states in dark (blocked, sheet collapsed and expanded, cancel,
-  three grants, account on, pending, expanded, narrow, approve and Undo send,
-  reject, Recent activity, Connect, the turn-off confirmation, an attachment,
-  no helper) and the main ones in light. The captures were checked by eye.
-- Not verified: Connect from the window against real CLIs (the window used
-  the fakes; the real CLIs were exercised through the same engine operations),
-  real CLIs on Linux, a signed release bundle's `Contents/Helpers/mail-mcp`
-  (the checks used `EMAIL_MCP_HELPER`), Wayland or GNOME, and keyboard-only use
-  of the Linux sheet.
+The text comes from `agent_access_disclosure` in mail-service, so both shells
+use the same words, and it is disclosure version 2 (it has not shipped;
+version 1 consents keep working, see
+[mcp-security.md](mcp-security.md#t1-an-agent-reads-mail-the-user-never-meant-to-share)).
+
+## Verified (14 Nov 2026)
+
+Builds: the neutral `unofficial` profile, debug; disposable launch-demo
+stores only (two accounts). Agents were the real `mail-mcp` driven by
+`crates/mail-mcp/tests/agent_flow.py`, reporting the client names
+`claude-code` and `codex-mcp-client`. Connect used fake `claude`/`codex`
+scripts; `EMAIL_AGENT_CLI_PATH` limited the search to their directory.
+
+- macOS: `apps/macos/Tests/run-agent-access-checks.py` passed 82 checks in
+  dark and in light mode, in the real main window and settings window:
+  refused agents as requests with friendly names, Allow… with Read only
+  preselected, Custom… and the full list, the level recorded, send/bulk/access
+  rows and reader, the email in full with its attachment, the 0.8-second wait
+  (an early click and an early ⌘↩ send nothing), ⌘↩ with the undo bar and
+  Undo, E into the composer with the request closed as edited and nothing
+  queued, ⌫ declining a bulk change (conversations untouched) and ignoring a
+  refused agent, the settings line and Review, allowing less without the
+  sheet, Off with its confirmation, Connect's exact command, Set up…,
+  Activity and the missing-helper note. Window captures were checked by eye.
+- Linux: `apps/linux/qa/agent-access.sh` in the verify container under Xvfb,
+  openbox and dunst, the running executable matching the built one: the same
+  flow by keyboard and clicks (Ctrl+Enter, E, Backspace, J/K), notifications
+  for new requests, the database checked after each decision, and captures
+  in dark and light checked by eye.
+- Not verified: a macOS notification (the harness isn't an app bundle, so it
+  can't post one), clicking a notification (the Linux action was triggered
+  directly), Wayland or GNOME, and a signed release bundle.

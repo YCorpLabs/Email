@@ -6,11 +6,13 @@
 
 Every account is off for agents until you turn it on in the desktop app.
 Open **Agent access** in the sidebar (also in the command palette and in
-Manage accounts) and switch an account on. The turn-on sheet says what an
-agent can read (with the full list one click away), that the agent's AI
-provider's terms then apply, and how to turn access off; reading is the only
-permission checked by default. Turning access off applies to the agent's next
-request. [agent-access.md](agent-access.md) describes the window.
+Manage accounts) and pick what agents can do with an account, or choose
+**Allow…** on an agent's request. The turn-on sheet offers Read only (the
+default), Read and organize, and Read, organize and write, with Custom… for
+the individual permissions; it says what an agent can read (with the full
+list one click away), that the agent's AI provider's terms then apply, and how
+to turn access off. Turning access off applies to the agent's next request.
+[agent-access.md](agent-access.md) describes the windows.
 
 - **Reading** an account needs agent access for it. List and search tools
   return only accounts with agent access.
@@ -21,24 +23,29 @@ request. [agent-access.md](agent-access.md) describes the window.
   permissions decide.
 - **Sending and bulk changes wait for you.** `send_draft`, `queue_send_draft`,
   `schedule_draft`, `batch_triage`, `undo_triage` and `confirm_sender_cleanup` return
-  `{approval_id, status: "pending_approval"}`. Nothing happens until you choose
-  Approve in Agent access. Approved sends keep the 10-second undo window.
-  Agents check the outcome with `get_agent_action` or `list_agent_actions`.
+  `{approval_id, status: "pending_approval"}`. Nothing happens until you
+  approve it under **Agent requests** in the main window. Approved sends keep
+  the 10-second undo window. **Edit** closes a send request without sending
+  (status `edited`) and opens the draft in your composer. Agents check the
+  outcome with `get_agent_action` or `list_agent_actions`.
 - **Email content is labelled untrusted.** Tools that return messages,
   subjects, attachments, calendar text or other third-party content wrap it in
   an envelope (`content_notice`, `content_trust`, `data`,
   `end_of_untrusted_data`).
-- **History.** Agent access shows waiting requests, your decisions, changes
-  agents made without approval, and refused attempts.
+- **Refused calls become requests.** A call refused because an account is off
+  or lacks a permission shows under Agent requests as "‹Agent› wants to use
+  ‹account›", with **Allow…** (the sheet, preset to what the call needed) or
+  **Ignore**. The agent's error is unchanged.
+- **Activity.** Agent access → Activity lists your decisions, changes agents
+  made without approval, consent changes and refused attempts.
 
 **After upgrading:** restart agent sessions so they start the new
 `mail-mcp`; a process started earlier keeps the old behavior until it exits.
 Existing registrations, including `email-write`, are then refused until you
 turn on agent access for each account they should use. The
-first refused call shows a badge and an "Agent access needed" banner with a
-one-click **Turn on** button. Choose the permissions that match the
-registration, for example Write drafts, Archive, mark read and snooze, Ask to
-send mail and Fetch new mail for `--allow-write`.
+first refused call shows up under Agent requests as "wants to use"; Allow…
+opens the sheet at the level the call needed. For `--allow-write` choose Read,
+organize and write.
 Review the Outbox once: mail scheduled through MCP before the approval gate
 existed is not retroactively gated.
 
@@ -82,16 +89,17 @@ afterwards so it picks up the server.
 
 Why every mail flag: the registration is an upper bound and the in-app
 permissions narrow it per account, so passing every mail flag makes Agent
-access the one place you decide. Nothing works until you switch an account
-on, and then only reading until you check more. Sends and bulk changes still
+access the one place you decide. Nothing works until you turn an account
+on, and then only Read only until you choose more. Sends and bulk changes still
 wait for your approval. `--allow-booking-settings` is left out: Scheduling
 settings aren't tied to an account, have no permission in the app, and have
 their own browser approval. To give an agent less than the app allows, use the
 script below with fewer flags.
 
-On Linux the packages don't include `mail-mcp` yet; it is a separate download
-with each release. Put it in `~/.local/bin` or next to `email-linux` and
-Connect finds it. Without a helper, Agent access says so and Connect stays off.
+On Linux the packages install the helper at `/usr/lib/email-linux/mail-mcp`
+(the .deb and the AUR packages from the release after v0.1.0-beta.1); a
+separately downloaded `mail-mcp` in `~/.local/bin` or on PATH works too.
+Without a helper, Agent access says so and Connect stays off.
 
 ### From a source checkout
 
