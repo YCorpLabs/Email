@@ -318,6 +318,39 @@ fn mutation_attempt_and_single_event_cache_invalidate_coverage_but_keep_events()
 }
 
 #[test]
+fn deleted_event_leaves_only_its_own_copy() {
+    let s = store();
+    s.replace_agenda_window(
+        "a",
+        "primary",
+        0,
+        1000,
+        &[event("a", "gone", 100, 200), event("a", "kept", 300, 400)],
+    )
+    .unwrap();
+    s.replace_agenda_window("b", "primary", 0, 1000, &[event("b", "gone", 100, 200)])
+        .unwrap();
+    s.forget_agenda_event("a", "primary", "gone").unwrap();
+    let left: Vec<_> = s
+        .list_agenda_events(Some("a"), 0, 1000, 100)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    assert_eq!(left, vec!["kept"]);
+    assert!(!s.agenda_window_coverage("a", "primary", 0, 1000).unwrap());
+    // The same remote ID in another account is a different event.
+    assert_eq!(
+        s.list_agenda_events(Some("b"), 0, 1000, 100).unwrap().len(),
+        1
+    );
+    assert!(s.agenda_window_coverage("b", "primary", 0, 1000).unwrap());
+    // Already gone is fine; an unknown calendar is not.
+    s.forget_agenda_event("a", "primary", "gone").unwrap();
+    assert!(s.forget_agenda_event("a", "foreign", "kept").is_err());
+}
+
+#[test]
 fn availability_ignores_only_own_declined_invitation() {
     let s = store();
     let mut declined = event("a", "declined", 0, 30 * MIN);

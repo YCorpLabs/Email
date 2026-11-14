@@ -150,6 +150,10 @@ pub(crate) const TITLE: &str = "Add an account";
 const CHOOSE_PROVIDER: &str = "Choose provider";
 const GUIDE_LINK: &str = "Need help? Step-by-step guide ↗";
 const ENTER_EMAIL: &str = "Enter your email address.";
+/// The first screen's Google sign-in button and the divider under it (macOS
+/// `GoogleSignInButton`, `AccountSetupCopy.or`).
+pub(crate) const CONTINUE_WITH_GOOGLE: &str = "Continue with Google";
+const OR: &str = "or";
 
 /// macOS `AccountSetupCopy.gmail`; the credential store is the only difference.
 pub(crate) const GMAIL: Guide = Guide {
@@ -435,6 +439,8 @@ struct Setup {
     selected: Cell<Option<Choice>>,
     picked_by_hand: Cell<bool>,
     email: gtk::Entry,
+    /// The Email row and provider menu, hidden while a browser sign-in waits.
+    email_group: gtk::Box,
     provider_menu: gtk::MenuButton,
     provider_items: Vec<(Choice, gtk::Button)>,
     intro: gtk::Label,
@@ -475,6 +481,8 @@ struct Setup {
     /// that choice is selected again.
     outcomes: RefCell<HashMap<Choice, (String, Option<Problem>)>>,
     sign_in_failed: Cell<bool>,
+    /// "Continue with Google" and the "or" divider, on the first screen only.
+    google_rows: Vec<gtk::Widget>,
 }
 
 const LABEL_WIDTH: i32 = 104;
@@ -525,6 +533,175 @@ fn wrapped(text: &str, class: &str, width: i32) -> gtk::Label {
     label
 }
 
+/// Google's standard "G" mark from the sign-in branding kit (48×48 artboard),
+/// the same paths macOS draws (`GoogleLogo`).
+const GOOGLE_LOGO: [(&str, (f64, f64, f64)); 4] = [
+    ("M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z", (234., 67., 53.)),
+    ("M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z", (66., 133., 244.)),
+    ("M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z", (251., 188., 5.)),
+    ("M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z", (52., 168., 83.)),
+];
+
+/// One drawing step of an SVG path.
+#[derive(Debug, PartialEq)]
+enum PathStep {
+    Move(f64, f64),
+    Line(f64, f64),
+    Curve(f64, f64, f64, f64, f64, f64),
+    Close,
+}
+
+/// The SVG path commands the mark uses (M L H V C S Z, absolute and
+/// relative), as absolute steps. Stops at anything else.
+fn svg_path(data: &str) -> Vec<PathStep> {
+    let bytes = data.as_bytes();
+    let mut at = 0;
+    let skip = |at: &mut usize| {
+        while *at < bytes.len() && matches!(bytes[*at], b' ' | b',') {
+            *at += 1;
+        }
+    };
+    let number = |at: &mut usize| -> Option<f64> {
+        skip(at);
+        let start = *at;
+        if *at < bytes.len() && matches!(bytes[*at], b'-' | b'+') {
+            *at += 1;
+        }
+        let mut dot = false;
+        while *at < bytes.len() && (bytes[*at].is_ascii_digit() || (bytes[*at] == b'.' && !dot)) {
+            dot |= bytes[*at] == b'.';
+            *at += 1;
+        }
+        data[start..*at].parse().ok()
+    };
+    let (mut steps, mut command) = (Vec::new(), b'M');
+    let (mut x, mut y, mut start, mut control) = (0., 0., (0., 0.), None::<(f64, f64)>);
+    loop {
+        skip(&mut at);
+        if at >= bytes.len() {
+            return steps;
+        }
+        let before = at;
+        if bytes[at].is_ascii_alphabetic() {
+            command = bytes[at];
+            at += 1;
+        }
+        let (ox, oy) = if command.is_ascii_lowercase() { (x, y) } else { (0., 0.) };
+        let step = match command.to_ascii_uppercase() {
+            b'M' => number(&mut at).zip(number(&mut at)).map(|(a, b)| {
+                (x, y) = (ox + a, oy + b);
+                start = (x, y);
+                command = if command == b'm' { b'l' } else { b'L' };
+                control = None;
+                PathStep::Move(x, y)
+            }),
+            b'L' => number(&mut at).zip(number(&mut at)).map(|(a, b)| {
+                (x, y) = (ox + a, oy + b);
+                control = None;
+                PathStep::Line(x, y)
+            }),
+            b'H' => number(&mut at).map(|a| {
+                x = ox + a;
+                control = None;
+                PathStep::Line(x, y)
+            }),
+            b'V' => number(&mut at).map(|b| {
+                y = oy + b;
+                control = None;
+                PathStep::Line(x, y)
+            }),
+            b'C' => (0..6).map(|_| number(&mut at)).collect::<Option<Vec<_>>>().map(|n| {
+                let step = PathStep::Curve(ox + n[0], oy + n[1], ox + n[2], oy + n[3], ox + n[4], oy + n[5]);
+                control = Some((ox + n[2], oy + n[3]));
+                (x, y) = (ox + n[4], oy + n[5]);
+                step
+            }),
+            b'S' => (0..4).map(|_| number(&mut at)).collect::<Option<Vec<_>>>().map(|n| {
+                let (cx, cy) = control.map_or((x, y), |(cx, cy)| (2. * x - cx, 2. * y - cy));
+                let step = PathStep::Curve(cx, cy, ox + n[0], oy + n[1], ox + n[2], oy + n[3]);
+                control = Some((ox + n[0], oy + n[1]));
+                (x, y) = (ox + n[2], oy + n[3]);
+                step
+            }),
+            b'Z' => {
+                (x, y) = start;
+                control = None;
+                Some(PathStep::Close)
+            }
+            _ => None,
+        };
+        match step {
+            Some(step) if at > before => steps.push(step),
+            _ => return steps,
+        }
+    }
+}
+
+fn draw_google_logo(cr: &gtk::cairo::Context, size: f64) {
+    let scale = size / 48.;
+    for (data, (r, g, b)) in GOOGLE_LOGO {
+        cr.new_path();
+        for step in svg_path(data) {
+            match step {
+                PathStep::Move(x, y) => cr.move_to(x * scale, y * scale),
+                PathStep::Line(x, y) => cr.line_to(x * scale, y * scale),
+                PathStep::Curve(a, b, c, d, x, y) => {
+                    cr.curve_to(a * scale, b * scale, c * scale, d * scale, x * scale, y * scale)
+                }
+                PathStep::Close => cr.close_path(),
+            }
+        }
+        cr.set_source_rgb(r / 255., g / 255., b / 255.);
+        let _ = cr.fill();
+    }
+}
+
+/// "Continue with Google" per Google's sign-in button branding guidelines:
+/// the standard "G" at 18 px, 12 px before it, the text centred, 40 px tall,
+/// a 4 px radius, and Google's light or dark colours from the app theme
+/// (`@google_fill`, `@google_stroke`, `@google_ink` in `appearance_css`).
+fn google_button() -> gtk::Button {
+    let logo = gtk::DrawingArea::new();
+    logo.set_content_width(18);
+    logo.set_content_height(18);
+    logo.set_valign(gtk::Align::Center);
+    logo.set_draw_func(|_, cr, width, _| draw_google_logo(cr, f64::from(width)));
+    let label = gtk::Label::new(Some(CONTINUE_WITH_GOOGLE));
+    // The text is centred in the button, as on macOS, never under the logo.
+    let balance = gtk::Box::new(Orientation::Horizontal, 0);
+    balance.set_size_request(18, -1);
+    let content = gtk::CenterBox::new();
+    content.set_start_widget(Some(&logo));
+    content.set_center_widget(Some(&label));
+    content.set_end_widget(Some(&balance));
+    let button = gtk::Button::new();
+    button.set_child(Some(&content));
+    button.add_css_class("setup-google");
+    button.set_size_request(FIELD_WIDTH, -1);
+    button.set_tooltip_text(Some(CONTINUE_WITH_GOOGLE));
+    button
+}
+
+/// A hairline, "or", a hairline, as wide as the fields.
+fn or_divider() -> gtk::Box {
+    let divider = gtk::Box::new(Orientation::Horizontal, 10);
+    divider.set_size_request(FIELD_WIDTH, -1);
+    for index in 0..3 {
+        if index == 1 {
+            let or = gtk::Label::new(Some(OR));
+            or.add_css_class("setup-or");
+            divider.append(&or);
+        } else {
+            let line = gtk::Separator::new(Orientation::Horizontal);
+            line.add_css_class("setup-or-line");
+            line.set_hexpand(true);
+            line.set_valign(gtk::Align::Center);
+            divider.append(&line);
+        }
+    }
+    divider
+}
+
 /// Open the account window, transient for the mail window.
 pub(crate) fn present(ui: &Rc<Ui>) {
     let features = build_features(&ui.service);
@@ -552,6 +729,21 @@ pub(crate) fn present(ui: &Rc<Ui>) {
     headline.add_css_class("setup-headline");
     headline.set_margin_bottom(6);
     content.append(&headline);
+
+    // Google sign-in first where the build offers it, then email for the rest.
+    let google_offered = choices.contains(&Choice::Gmail) && oauth_client_id(Choice::Gmail).is_some();
+    let google = google_button();
+    let mut google_rows: Vec<gtk::Widget> = Vec::new();
+    if google_offered {
+        let button_row = indented(&google);
+        button_row.set_margin_top(4);
+        let divider_row = indented(&or_divider());
+        divider_row.set_margin_top(2);
+        divider_row.set_margin_bottom(2);
+        content.append(&button_row);
+        content.append(&divider_row);
+        google_rows = vec![button_row.upcast(), divider_row.upcast()];
+    }
 
     let entry = |placeholder: &str| {
         let entry = gtk::Entry::new();
@@ -704,6 +896,7 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         selected: Cell::new(None),
         picked_by_hand: Cell::new(false),
         email,
+        email_group,
         provider_menu,
         provider_items,
         intro,
@@ -738,7 +931,16 @@ pub(crate) fn present(ui: &Rc<Ui>) {
         in_flight: RefCell::new(HashSet::new()),
         outcomes: RefCell::new(HashMap::new()),
         sign_in_failed: Cell::new(false),
+        google_rows,
     });
+    {
+        // Straight to the browser: no address needed, Google supplies it.
+        let setup = setup.clone();
+        google.connect_clicked(move |_| {
+            setup.choose(Choice::Gmail, true);
+            setup.connect_clicked();
+        });
+    }
     for (choice, button) in &setup.provider_items {
         let setup = setup.clone();
         let choice = *choice;
@@ -906,6 +1108,9 @@ impl Setup {
     fn show_choice(&self) {
         let choice = self.selected.get();
         let guide = guide(choice);
+        for row in &self.google_rows {
+            row.set_visible(choice.is_none());
+        }
         for (option, button) in &self.provider_items {
             if Some(*option) == choice {
                 button.add_css_class("active");
@@ -994,6 +1199,25 @@ impl Setup {
             }
         }
         self.update_switch(false);
+        self.update_waiting();
+    }
+
+    /// While the browser sign-in waits, only the wait message, the app-password
+    /// link and Cancel apply (macOS `updateWaiting`). The address, provider
+    /// menu, intro and the sign-in button come back when it fails or is
+    /// cancelled in the browser.
+    fn update_waiting(&self) {
+        let selected = self.selected.get();
+        let waiting = selected
+            .is_some_and(|choice| !choice.uses_password() && self.in_flight.borrow().contains(&choice));
+        self.email_group.set_visible(!waiting);
+        self.intro.set_visible(selected.is_some() && !waiting);
+        self.connect.set_visible(!waiting);
+        // With no fields left, the wait message lines up with the title and link.
+        self.problem_row
+            .set_margin_start(if waiting { 0 } else { LABEL_WIDTH + 12 });
+        self.status
+            .set_size_request(if waiting { 460 } else { FIELD_WIDTH }, -1);
     }
 
     fn clear_problem(&self) {
@@ -1097,6 +1321,22 @@ impl Setup {
         }
     }
 
+    /// A typed gmail.com or googlemail.com address, so Google skips its
+    /// account chooser (macOS `googleLoginHint`). Anything else could be
+    /// someone else's account.
+    fn google_login_hint(&self) -> Option<String> {
+        let address = self.email.text().trim().to_string();
+        if !address.contains('@') {
+            return None;
+        }
+        let answer = self.ui.upgrade().and_then(|ui| {
+            ui.service
+                .request_json(&json!({"op": "setup_provider", "email": address}).to_string())
+                .ok()
+        })?;
+        (answer["provider"].as_str() == Some("gmail")).then_some(address)
+    }
+
     fn refresh_connect(&self) {
         let Some(choice) = self.selected.get() else { return };
         let ready = choice.uses_password() || oauth_client_id(choice).is_some();
@@ -1136,7 +1376,10 @@ impl Setup {
             } else {
                 None
             };
-            json!({"op": "start_oauth", "provider": provider, "client_id": client_id, "client_secret": secret})
+            let login_hint = (choice == Choice::Gmail)
+                .then(|| self.google_login_hint())
+                .flatten();
+            json!({"op": "start_oauth", "provider": provider, "client_id": client_id, "client_secret": secret, "login_hint": login_hint})
         };
         let Some(ui) = self.ui.upgrade() else { return };
         self.in_flight.borrow_mut().insert(choice);
@@ -1149,6 +1392,7 @@ impl Setup {
             Choice::Outlook => "Waiting for browser sign-in…",
         });
         self.update_switch(choice == Choice::Gmail);
+        self.update_waiting();
         let (sender, receiver) = mpsc::channel();
         let path = ui.database_path.clone();
         thread::spawn(move || {
@@ -1212,8 +1456,12 @@ impl Setup {
                 }
                 Err(problem) => {
                     setup.sign_in_failed.set(choice == Choice::Gmail);
+                    setup.update_waiting();
                     setup.show_problem(&problem);
                     setup.connect.set_sensitive(true);
+                    if !choice.uses_password() {
+                        setup.connect.grab_focus();
+                    }
                 }
             }
             glib::ControlFlow::Break
@@ -1257,11 +1505,49 @@ window.account-setup.csd:not(.solid-csd) { outline: none; box-shadow: 0 3px 12px
 .setup-primary { background: @ink; color: @canvas; border-color: @ink; font-weight: 600; }
 .setup-primary label { color: @canvas; }
 .setup-button:disabled { opacity: 0.45; }
+button.setup-google { background: @google_fill; color: @google_ink; border: 1px solid @google_stroke; border-radius: 4px; min-height: 38px; padding: 0 12px; box-shadow: none; font-family: Roboto, Inter, sans-serif; font-size: 14px; font-weight: 500; }
+button.setup-google label { color: @google_ink; }
+button.setup-google:hover { background-image: linear-gradient(alpha(@google_ink, 0.08), alpha(@google_ink, 0.08)); }
+button.setup-google:active { background-image: linear-gradient(alpha(@google_ink, 0.12), alpha(@google_ink, 0.12)); }
+.setup-or { color: @muted; font-size: 12px; }
+separator.setup-or-line { background: @line; min-height: 1px; }
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_mark_paths_parse_completely() {
+        // Implicit repeats, relative commands, H/v/h and numbers like "3.14.76".
+        assert_eq!(
+            svg_path("M1 2h3v4H0l1-1c0 1 1 1 1 0s1-1 1 0z"),
+            vec![
+                PathStep::Move(1., 2.),
+                PathStep::Line(4., 2.),
+                PathStep::Line(4., 6.),
+                PathStep::Line(0., 6.),
+                PathStep::Line(1., 5.),
+                PathStep::Curve(1., 6., 2., 6., 2., 5.),
+                PathStep::Curve(2., 4., 3., 4., 3., 5.),
+                PathStep::Close,
+            ]
+        );
+        assert_eq!(svg_path("M0 0C.27-3.14.76-4.59 1 1").last(), Some(&PathStep::Curve(0.27, -3.14, 0.76, -4.59, 1., 1.)));
+        for (data, _) in GOOGLE_LOGO {
+            let steps = svg_path(data);
+            assert!(matches!(steps.first(), Some(PathStep::Move(..))), "{data}");
+            assert_eq!(steps.last(), Some(&PathStep::Close), "{data}");
+            // Every point stays on the 48×48 artboard.
+            for step in &steps {
+                if let PathStep::Move(x, y) | PathStep::Line(x, y) | PathStep::Curve(_, _, _, _, x, y) = step {
+                    assert!((-0.01..=48.01).contains(x) && (-0.01..=48.01).contains(y), "{data}: {step:?}");
+                }
+            }
+        }
+        // Bad data stops instead of looping.
+        assert_eq!(svg_path("M1 2 ?"), vec![PathStep::Move(1., 2.)]);
+    }
 
     fn development() -> BuildFeatures {
         BuildFeatures {

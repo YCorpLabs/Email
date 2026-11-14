@@ -915,6 +915,9 @@ pub(crate) fn map_message(account: &Account, value: &Value) -> Result<Message> {
     let thread_id = string(value, "threadId")?;
     let labels = value["labelIds"].as_array();
     let read = !labels.is_some_and(|list| list.iter().any(|item| item == "UNREAD"));
+    // Mail sent from Gmail or another device arrives as a full message; keep
+    // it in Sent and in `in:sent` searches like mail sent from this app.
+    let sent = labels.is_some_and(|list| list.iter().any(|item| item == "SENT"));
     let payload = &value["payload"];
     let headers = &payload["headers"];
     let (plain, html) = bodies(payload);
@@ -951,7 +954,7 @@ pub(crate) fn map_message(account: &Account, value: &Value) -> Result<Message> {
             .unwrap_or(0),
         is_read: read,
         is_draft: false,
-        is_sent: false,
+        is_sent: sent,
     })
 }
 fn header_addresses(headers: &Value, name: &str) -> Vec<String> {
@@ -1576,6 +1579,13 @@ mod tests {
         );
         assert_eq!(mapped.has_attachments, Some(false));
         assert!(!mapped.is_read);
+        assert!(!mapped.is_sent);
+    }
+    #[test]
+    fn sent_label_marks_a_fully_fetched_message_as_sent() {
+        let input = json!({"id":"m2","threadId":"t2","labelIds":["SENT","IMPORTANT"],"payload":{"headers":[{"name":"From","value":"Alex <alex@example.com>"},{"name":"To","value":"pat@example.com"},{"name":"Subject","value":"Proposal"}]}});
+        let mapped = map_message(&account(), &input).unwrap();
+        assert!(mapped.is_sent && mapped.is_read && !mapped.is_draft);
     }
     #[test]
     fn body_walker_skips_binary_and_named_text_attachments() {

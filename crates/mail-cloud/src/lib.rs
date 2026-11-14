@@ -16,7 +16,7 @@
 //! worker thread. Provider HTML is returned as received; sanitize it before
 //! display. See the crate README for app-registration requirements.
 mod calendar;
-pub use calendar::CalendarEventChanges;
+pub use calendar::{CalendarEventChanges, validate_event_version};
 mod cleanup;
 mod gmail;
 pub use cleanup::GmailCleanupPage;

@@ -231,6 +231,11 @@ fn appearance_css(dark: bool) -> String {
     css.push_str(&format!("@define-color warning {};\n", if dark { "#f2a541" } else { "#a4500c" }));
     // Links in account setup (macOS linkColor).
     css.push_str(&format!("@define-color link {};\n", if dark { "#419cff" } else { "#0068da" }));
+    // Google's sign-in button themes (branding guidelines), as on macOS.
+    let google = if dark { ["#131314", "#8e918f", "#e3e3e3"] } else { ["#ffffff", "#747775", "#1f1f1f"] };
+    for (name, value) in ["google_fill", "google_stroke", "google_ink"].iter().zip(google) {
+        css.push_str(&format!("@define-color {name} {value};\n"));
+    }
     css.push_str(CSS);
     css.push_str(account_setup::CSS);
     css.push_str(r#"
@@ -1201,6 +1206,24 @@ impl Ui {
             self.background(
                 json!({"op":"sync_archives","restart": !self.archive_browse_started.replace(true)}),
             );
+        }
+    }
+    /// Calendar keeps its own account list and saved events: update it as soon
+    /// as an account is added or removed (macOS `accountsChanged`).
+    fn refresh_calendar_accounts(&self) {
+        let calendar = self.calendar.borrow().clone();
+        if let Some(calendar) = calendar {
+            calendar.accounts_changed();
+        }
+    }
+    /// After removing an account: back to the unified inbox, but stay in
+    /// Calendar, now without that account, while one can still be shown.
+    fn account_removed(self: &Rc<Self>) {
+        let in_calendar = self.workspace.visible_child_name().as_deref() == Some("calendar");
+        self.refresh_calendar_accounts();
+        self.set_view(MailView::Inbox);
+        if in_calendar && self.calendar_available(&self.accounts()) {
+            agenda::open(self);
         }
     }
     /// A calendar connects only to an account that signed in with Google
@@ -4135,6 +4158,7 @@ fn process_completed(ui: &Rc<Ui>, receiver: &Receiver<Result<Value, String>>) {
                     .filter(|_| value["provider"].is_string())
                 {
                     ui.status.set_text("Account connected. Loading inbox…");
+                    ui.refresh_calendar_accounts();
                     ui.background(json!({"op":"sync_account","account_id":account_id}));
                 } else if let Some(results) = value.as_array() {
                     let failures = results

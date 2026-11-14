@@ -25,19 +25,24 @@ pub struct CalendarEventChanges {
     pub description: Option<String>,
     pub location: Option<String>,
 }
+/// The version and scope every edit or delete names before any network call.
+pub fn validate_event_version(expected_etag: &str, edit_scope: &str) -> Result<()> {
+    if expected_etag.trim().is_empty()
+        || expected_etag.len() > 2048
+        || expected_etag.chars().any(char::is_control)
+    {
+        return Err(invalid(
+            "refresh the event before editing: version missing or invalid",
+        ));
+    }
+    if !matches!(edit_scope, "single" | "instance") {
+        return Err(invalid("choose single or instance edit scope"));
+    }
+    Ok(())
+}
 impl CalendarEventChanges {
     pub fn validate(&self, expected_etag: &str, edit_scope: &str) -> Result<Value> {
-        if expected_etag.trim().is_empty()
-            || expected_etag.len() > 2048
-            || expected_etag.chars().any(char::is_control)
-        {
-            return Err(invalid(
-                "refresh the event before editing: version missing or invalid",
-            ));
-        }
-        if !matches!(edit_scope, "single" | "instance") {
-            return Err(invalid("choose single or instance edit scope"));
-        }
+        validate_event_version(expected_etag, edit_scope)?;
         let mut patch = json!({});
         if let Some(title) = &self.title {
             if title.trim().is_empty()
@@ -120,6 +125,17 @@ fn conditional_event_patch(
     http.patch(url.as_str())
         .header(reqwest::header::IF_MATCH, etag)
         .json(patch)
+}
+
+/// Guests get Google's cancellation; with no guests nobody is notified.
+fn conditional_event_delete(
+    http: &reqwest::blocking::Client,
+    mut url: Url,
+    etag: &str,
+) -> reqwest::blocking::RequestBuilder {
+    url.query_pairs_mut().append_pair("sendUpdates", "all");
+    http.delete(url.as_str())
+        .header(reqwest::header::IF_MATCH, etag)
 }
 
 fn invalid(message: &'static str) -> CloudError {
@@ -518,6 +534,36 @@ impl CloudClient {
         parse_event(&result, account_id, calendar_id, "UTC")?
             .ok_or_else(|| invalid("updated event missing from response"))
     }
+    /// Delete one organizer-owned timed event, or one occurrence of a series
+    /// (`instance`); never a whole series. The same events as editing qualify.
+    /// An event that is already gone counts as deleted. Never retry automatically.
+    pub fn google_calendar_delete(
+        &self,
+        account_id: &str,
+        calendar_id: &str,
+        event_id: &str,
+        expected_etag: &str,
+        edit_scope: &str,
+    ) -> Result<()> {
+        self.require_google_calendar()?;
+        identifier(account_id)?;
+        validate_event_version(expected_etag, edit_scope)?;
+        let url = event_url(calendar_id, Some(event_id))?;
+        let current = match self.get(url.as_str()) {
+            Ok(current) => current,
+            Err(CloudError::ApiStatus(404 | 410)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if current["status"] == "cancelled" {
+            return Ok(());
+        }
+        validate_edit_target(&current, expected_etag, edit_scope)?;
+        match self.request(conditional_event_delete(&self.http, url, expected_etag)) {
+            Ok(_) | Err(CloudError::ApiStatus(404 | 410)) => Ok(()),
+            Err(CloudError::ApiStatus(412)) => Err(CloudError::CalendarConflict),
+            Err(error) => Err(error),
+        }
+    }
     /// Create a single timed event and send invitations to explicit recipients.
     pub fn google_calendar_create(
         &self,
@@ -622,6 +668,32 @@ mod tests {
         let body: Value =
             serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
         assert_eq!(body, patch);
+    }
+    #[test]
+    fn delete_transport_uses_exact_version_and_guest_notifications() {
+        let request = conditional_event_delete(
+            &reqwest::blocking::Client::new(),
+            event_url("shared/calendar@example.com", Some("instance/id")).unwrap(),
+            "\"version-2\"",
+        )
+        .build()
+        .unwrap();
+        assert_eq!(request.method(), reqwest::Method::DELETE);
+        assert_eq!(
+            request.headers()[reqwest::header::IF_MATCH],
+            "\"version-2\""
+        );
+        assert_eq!(request.url().query(), Some("sendUpdates=all"));
+        assert!(request.url().path().ends_with("/events/instance%2Fid"));
+        assert!(request.body().is_none());
+    }
+    #[test]
+    fn delete_checks_version_and_scope_before_any_request() {
+        for (version, scope) in [("", "single"), ("v1\r\nIf-Match: *", "single"), ("\"v1\"", "series"), ("\"v1\"", "")] {
+            assert!(validate_event_version(version, scope).is_err(), "{version:?} {scope:?}");
+        }
+        validate_event_version("\"v1\"", "single").unwrap();
+        validate_event_version("\"v1\"", "instance").unwrap();
     }
     #[test]
     fn editing_patches_only_explicit_fields_and_preserves_guests() {

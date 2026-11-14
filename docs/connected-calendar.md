@@ -18,13 +18,13 @@ Snapshot limits: 93-day query, 32 calendars per service refresh, bounded provide
 
 ## API and MCP
 
-Service operations: calendar_status, connect_calendar, list_calendars, list_agenda, sync_calendar, respond_calendar_invitation, create_calendar_event, availability. Time ranges use Unix milliseconds; duration_minutes is 5–1440. List/cache operations work without credentials.
+Service operations: calendar_status, connect_calendar, list_calendars, list_agenda, sync_calendar, respond_calendar_invitation, create_calendar_event, update_calendar_event, delete_calendar_event, availability. Time ranges use Unix milliseconds; duration_minutes is 5–1440. List/cache operations work without credentials.
 
-MCP exposes list_calendars, list_agenda, sync_calendar, availability, respond_calendar_invitation and create_calendar_event. All require a specific account argument. Sync requires --allow-sync. RSVP and event creation require **--allow-calendar-write**, independently of --allow-write and --allow-send, and the account's in-app Agent access must include **Calendar changes** (off by default). These calendar writes are not approved per request; see [mcp-security.md](mcp-security.md). OAuth connection is deliberately unavailable as an MCP tool. Existing --account restrictions apply to every calendar operation.
+MCP exposes list_calendars, list_agenda, sync_calendar, availability, respond_calendar_invitation and create_calendar_event. All require a specific account argument. Sync requires --allow-sync. RSVP and event creation require **--allow-calendar-write**, independently of --allow-write and --allow-send, and the account's in-app Agent access must include **Calendar changes** (off by default). These calendar writes are not approved per request; see [mcp-security.md](mcp-security.md). OAuth connection and event deletion are deliberately unavailable as MCP tools. Existing --account restrictions apply to every calendar operation.
 
 ## Remaining scope
 
-Microsoft/CalDAV connections, editable work-hour preferences, provider free/busy, conflict-safe hosted booking links, event cancellation, and calendar-specific notifications. Public booking links require a deployed scheduling service with authorization, expiry and conflict rechecks; a desktop-only link would not work while the computer is offline.
+Microsoft/CalDAV connections, editable work-hour preferences, provider free/busy, conflict-safe hosted booking links, deleting a whole recurring series, and calendar-specific notifications. Public booking links require a deployed scheduling service with authorization, expiry and conflict rechecks; a desktop-only link would not work while the computer is offline.
 
 
 ## Day and Week grids
@@ -217,3 +217,48 @@ consumes the remaining rail height. Its scroll view fills available space;
 overflow remains scrollable. Read-only/subscribed collections are fetched with
 reader access and included in both shells. Linux uses a vertically expanding
 scroller.
+
+### Deleting events
+
+Events that show Edit event also show **Delete event** next to it (red, both
+shells). It asks first: **Delete “<title>”?** with Cancel as the default and a
+destructive **Delete**. The detail line says only what applies: “Only this
+occurrence will be deleted.” for an occurrence of a recurring event, and
+“Guests will be notified.” when the event has attendees other than the
+organizer and the account itself. With neither, there is no detail line.
+
+`delete_calendar_event` re-reads the event, requires the cached ETag (If-Match)
+and the same editability rules as editing, deletes one event or one occurrence
+(`instance`), never a series, and uses `sendUpdates=all`, so guests get Google's
+cancellation. Success removes the event from the cache and shows “Event
+deleted.”; a conflict or an unconfirmed delete is shown and never retried. It
+is not an MCP tool.
+
+### Removing an account while Calendar is open
+
+Calendar keeps its own account list and saved events. Adding or removing an
+account now updates it at once: the removed account's calendars, legend entry
+and events disappear without leaving Calendar. If no account can show a
+calendar any more, Calendar closes. macOS posts `AgendaPanel.accountsChanged`;
+Linux calls `Agenda::accounts_changed` from `Ui::account_removed` and after a
+new account connects.
+
+Verified (13 Nov 2026), disposable launch-demo store with two seeded Google
+calendars, QA engines with file credentials:
+
+- macOS (development build, dark and light) and Linux (GTK in the verify
+  container under Xvfb, dark and light; running executable matched the built
+  artifact): Edit and Delete event in the popover; the confirmation for an
+  event with guests and for a recurring occurrence; Cancel leaves the event.
+- Both: confirming Delete reaches the engine, which refuses before any network
+  request for a demo account without a saved Google connection (“account config
+  missing”). A real Google delete was not run; the request shape (DELETE,
+  If-Match, `sendUpdates=all`) is covered by `mail-cloud` tests.
+- Both: removing alex@example.com from Manage accounts while Calendar was open
+  removed its events and legend entry immediately, and Calendar stayed open.
+- With Agent requests (14 Nov 2026), both shells: the sidebar shows Agent
+  requests and Calendar; going Agent requests → Calendar and removing the
+  account that had a waiting request also cleared that request and updated
+  the sidebar's accounts and All Inboxes count. macOS needed a fix for this:
+  its inbox refresh only runs in the Inbox folder, so account changes now
+  refresh the sidebar, counts, Drafts or Outbox and Agent requests directly.

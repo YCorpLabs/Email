@@ -33,6 +33,7 @@ is:starred
 | `is:unread`, `is:read` | Conversation has unread messages, or has none. |
 | `is:starred` | Conversation is locally favorited or has the provider's cached STARRED label. |
 | `in:inbox`, `in:archive`, `in:spam`, `in:trash` | Cached conversation location; archive excludes spam/trash/sent/drafts. `in:junk` aliases spam. |
+| `in:sent`, `is:sent`, `label:sent` | Conversation has a delivered message you sent: sent from Email, or synced with Gmail's SENT label. Gmail's SENT label is not kept as a thread label, so `label:sent` (Gmail's spelling) means the same; it also matches a real label named Sent. |
 | `has:attachment` | Cached attachment flag is true, or a local draft has an attached file. Unknown flags do not match and never trigger a fetch. |
 | `after:YYYY-MM-DD` | Cached message timestamp on or after UTC midnight of that date. |
 | `before:YYYY-MM-DD` | Cached message timestamp strictly before UTC midnight of that date. |

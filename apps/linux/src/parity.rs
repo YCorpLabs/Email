@@ -1412,7 +1412,7 @@ impl Ui {
                 // Removal can wait a few seconds on Google's token revoke; run it off the main loop.
                 button.set_sensitive(false);
                 workflows::request_async(ui.database_path.clone(),json!({"op":"remove_account","account_id":id}),move |result| match result {
-                    Ok(_)=>{parent.close();ui.set_view(MailView::Inbox);},
+                    Ok(_)=>{parent.close();ui.account_removed();},
                     Err(e)=>{button.set_sensitive(true);ui.status.set_text(&e);}
                 });
             });});

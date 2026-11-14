@@ -189,6 +189,11 @@ changes. `latest_triage_undo` returns null if its candidate includes a forbidden
 account. Scoped search uses the same [structured local search](search.md) semantics as
 unscoped search, filtering accounts in SQL before applying the result limit;
 other accounts cannot crowd allowed matches out of a global candidate window.
+The `search_mail` tool description lists the operators, because agents can't
+read this page. Sent mail is `in:sent`; Gmail's spellings `label:sent` and
+`is:sent` mean the same. `list_labels` never shows SENT (Gmail's SENT label is
+not kept as a thread label), which is why an agent's `label:SENT` used to find
+nothing.
 
 One-shot `--dispatch-due` now requires `--allow-send` (or `--allow-write`) and
 rejects `--account`, because the dispatcher does not offer account-scoped claims.
@@ -350,7 +355,8 @@ must not be automatically retried after an uncertain response. See
 
 
 Calendar event editing uses `update_calendar_event` with an exact `expected_etag`
-from the current saved agenda. It requires `--allow-calendar-write` independently
+from the current saved agenda. Deleting events is available only in the desktop
+apps; MCP has no tool for it. It requires `--allow-calendar-write` independently
 of mail permissions and retains account restrictions. Only apply the user's
 specific requested edit; do not retry conflicts automatically. Optional create
 `location` is also supported. Calendar guests receive provider updates.

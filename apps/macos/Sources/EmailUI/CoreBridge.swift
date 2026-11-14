@@ -334,7 +334,7 @@ final class CoreBridge: @unchecked Sendable {
         // seconds; give it its own handle so cached reads never wait behind it.
         let isAgentClient = operation == "agent_clients" || operation == "connect_agent_client"
         let isPhotoOAuth = operation == "enable_google_photos"
-        let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event"
+        let isCalendarNetwork = operation == "connect_calendar" || operation == "sync_calendar" || operation == "respond_calendar_invitation" || operation == "create_calendar_event" || operation == "delete_calendar_event"
         let dedicatedCalendar = isCalendarNetwork ? calendarBridge : nil
         let dedicatedSync = operation == "refresh_recipient_headers" ? headersBridge : operation == "sync_archives" ? archiveBridge : nil
         let dedicatedAttachment = (operation == "list_attachments" || operation == "fetch_attachment" || operation == "refresh_calendar_invitation") ? attachmentBridge : nil

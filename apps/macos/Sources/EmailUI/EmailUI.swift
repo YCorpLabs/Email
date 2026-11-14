@@ -2926,6 +2926,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 let accounts = await Task.detached { core.accountRecords() }.value
                 self?.knownAccounts = accounts
                 self?.updateAccountChrome()
+                self?.accountsChanged()
                 self?.refreshInbox()
                 self?.syncAll()
             }
@@ -2970,8 +2971,46 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             do {
                 _ = try await core.callAsync(["op": "remove_account", "account_id": chosen.id])
                 syncStatus.stringValue = "Account removed"
+                if inboxScope == .account(chosen.id) { inboxScope = .all }
+                knownAccounts = await Task.detached { core.accountRecords() }.value
+                updateAccountChrome()
+                accountsChanged()
                 refreshInbox()
             } catch { showNotice(error.localizedDescription) }
+        }
+    }
+
+    /// Calendar keeps its own account list and saved events: update it now,
+    /// and leave it when no account can show a calendar any more.
+    private func accountsChanged() {
+        if !calendarAvailable {
+            closeCalendarWorkspace()
+            cachedCalendarWorkspace = nil
+        }
+        NotificationCenter.default.post(name: AgendaPanel.accountsChanged, object: nil)
+        // refreshInbox only runs in the Inbox folder. From Agent requests,
+        // Drafts or Outbox, update the sidebar's accounts and counts and that
+        // folder's list here, so a removed account disappears at once.
+        guard let core else { return }
+        Task { @MainActor in
+            let raw = try? await core.callAsync(["op": "unread_counts"]) as? [String: Any]
+            if let raw {
+                var counts = (raw["accounts"] as? [String: Int]) ?? [:]
+                counts["__total"] = raw["total"] as? Int ?? 0
+                let followups = raw["followups"] as? [String: Int] ?? [:]
+                counts["__followup_due"] = followups["due"] ?? 0
+                counts["__followup_active"] = followups["active"] ?? 0
+                unreadCounts = counts
+                updateMailboxCounts()
+            }
+            refreshSidebar()
+            switch folder {
+            case .drafts: reloadDrafts(selectingID: nil, fallbackRow: 0)
+            case .outbox: refreshOutbox(using: core)
+            case .inbox, .agentRequests: break
+            }
+            // Requests for a removed account go away with it.
+            await refreshAgentRequests()
         }
     }
 

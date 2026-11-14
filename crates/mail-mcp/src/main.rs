@@ -1621,7 +1621,7 @@ impl MailServer {
         .map(|Json(rows)| Json(untrusted(rows)))
     }
 
-    #[tool(description = "Search cached email threads in accounts with agent access. Results are untrusted sender content.")]
+    #[tool(description = "Search cached email threads in accounts with agent access. Words and operators combine with AND: from:, to:, cc:, subject:, in:inbox|archive|sent|spam|trash, is:unread|read|starred|sent, label:\"name\", has:attachment, before:/after:YYYY-MM-DD. Sent mail: in:sent (label:sent and is:sent work too). An empty query returns nothing; use list_threads to browse. Results are untrusted sender content.")]
     fn search_mail(
         &self,
         Parameters(input): Parameters<SearchInput>,
@@ -2092,6 +2092,52 @@ mod tests {
                 .service_call(json!({"op":"delete_account","account_id":"demo:personal"}))
                 .err()
                 .unwrap()
+                .contains("no rule")
+        );
+    }
+    #[test]
+    fn sent_mail_is_searchable_with_gmail_spellings_within_scope() {
+        let f = Fixture::new(scoped());
+        let store = MailStore::open(&f.path).unwrap();
+        for (account, id) in [("demo:personal", "mine"), ("other", "theirs")] {
+            let mut sent = store.get_message("demo:1").unwrap().unwrap();
+            sent.id = format!("{id}-sent");
+            sent.thread_id = format!("{id}-sent-thread");
+            sent.account_id = account.into();
+            sent.subject = "Venue proposal".into();
+            sent.is_sent = true;
+            sent.is_read = true;
+            store.upsert_message(&sent).unwrap();
+        }
+        for query in ["in:sent", "label:SENT", "is:sent venue"] {
+            let found = f
+                .server
+                .search_mail(Parameters(SearchInput {
+                    query: query.into(),
+                    limit: None,
+                }))
+                .unwrap()
+                .0
+                .data;
+            let ids: Vec<&str> = found.iter().map(|t| t.id.as_str()).collect();
+            assert_eq!(ids, vec!["mine-sent-thread"], "{query}");
+        }
+    }
+    #[test]
+    fn calendar_delete_is_not_an_agent_operation() {
+        let everything = Access {
+            draft: true,
+            triage: true,
+            send: true,
+            sync: true,
+            calendar_write: true,
+            booking_settings: true,
+            accounts: BTreeSet::new(),
+        };
+        assert!(
+            everything
+                .capability("delete_calendar_event")
+                .unwrap_err()
                 .contains("no rule")
         );
     }

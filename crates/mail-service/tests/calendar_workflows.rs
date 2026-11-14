@@ -219,6 +219,19 @@ fn edit_requests_validate_before_credentials_and_do_not_change_cached_events() {
     let create = json!({"op":"create_calendar_event","account_id":"demo:personal","calendar_id":"read-only","title":"Meeting","start_ms":1_794_218_400_000i64,"end_ms":1_794_222_000_000i64,"attendee_emails":[]});
     let err = service.request_json(&create.to_string()).unwrap_err();
     assert!(err.contains("writable"), "{err}");
+    // Delete names the same version and scope, and only on a writable calendar.
+    let delete = json!({"op":"delete_calendar_event","account_id":"demo:personal","calendar_id":"read-only","event_id":"event","expected_etag":"\"v1\""});
+    let err = service.request_json(&delete.to_string()).unwrap_err();
+    assert!(err.contains("writable"), "{err}");
+    for (field, value) in [("expected_etag", json!("")), ("edit_scope", json!("series"))] {
+        let mut invalid = delete.clone();
+        invalid[field] = value;
+        let err = service.request_json(&invalid.to_string()).unwrap_err();
+        assert!(err.contains("version") || err.contains("scope"), "{field}: {err}");
+    }
+    invalid = delete.clone();
+    invalid.as_object_mut().unwrap().remove("expected_etag");
+    assert!(service.request_json(&invalid.to_string()).is_err());
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }

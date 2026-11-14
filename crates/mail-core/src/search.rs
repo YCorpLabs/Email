@@ -100,13 +100,17 @@ fn label(value: &str, values: &mut Vec<Value>) -> String {
         "EXISTS(SELECT 1 FROM thread_labels l WHERE l.thread_id=t.id AND lower(l.label)=lower({p}))"
     )
 }
+/// Sent is per message: a conversation with any delivered message of yours.
+/// Gmail's SENT label is never stored as a thread label, so `label:sent` and
+/// `is:sent` (Gmail's spellings) mean the same as `in:sent`.
+const SENT: &str = "EXISTS(SELECT 1 FROM messages sm WHERE sm.thread_id=t.id AND sm.is_sent=1 AND sm.is_draft=0)";
 fn folder(value: &str) -> Result<String> {
     Ok(match value.to_ascii_lowercase().as_str() {
         "inbox" => "t.is_inbox=1".into(),
         "archive" => "(t.is_inbox=0 AND lower(t.folder)='archive')".into(),
         "spam" | "junk" => "lower(t.folder) IN ('spam','junk')".into(),
         "trash" => "lower(t.folder)='trash'".into(),
-        "sent" => "EXISTS(SELECT 1 FROM messages sm WHERE sm.thread_id=t.id AND sm.is_sent=1 AND sm.is_draft=0)".into(),
+        "sent" => SENT.into(),
         _ => return Err(invalid("Use in:inbox, in:archive, in:sent, in:spam, or in:trash")),
     })
 }
@@ -240,13 +244,18 @@ impl MailStore {
                         "EXISTS(SELECT 1 FROM json_each(coalesce(json_extract(m.recipient_headers_json,'$.cc'),'[]')) j WHERE {p})"
                     )
                 }
+                // A real label named "Sent" (IMAP folders, user labels) still matches.
+                "label" if value.eq_ignore_ascii_case("sent") => {
+                    format!("({SENT} OR {})", label(value, &mut values))
+                }
                 "label" => label(value, &mut values),
                 "in" => folder(value)?,
                 "is" => match value.to_ascii_lowercase().as_str() {
                     "unread" => "t.unread_count>0".into(),
                     "read" => "t.unread_count=0".into(),
                     "starred" => starred().into(),
-                    _ => return Err(invalid("Use is:unread, is:read, or is:starred")),
+                    "sent" => SENT.into(),
+                    _ => return Err(invalid("Use is:unread, is:read, is:starred, or is:sent")),
                 },
                 "has" => {
                     if value.eq_ignore_ascii_case("attachment") {

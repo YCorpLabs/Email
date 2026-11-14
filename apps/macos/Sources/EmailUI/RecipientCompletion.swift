@@ -58,7 +58,10 @@ final class RecipientAutocomplete {
         case "moveDown:": selection = (selection+1) % items.count; highlight(); return true
         case "moveUp:": selection = (selection+items.count-1) % items.count; highlight(); return true
         case "insertNewline:": accept(); return true
-        case "insertTab:": accept(); field.window?.selectNextKeyView(field); return true
+        // Like Mail: add the address and go on to the next field (Subject, or Cc
+        // when shown). selectNextKeyView starts from the field editor, not the
+        // field, and left focus in To.
+        case "insertTab:": accept(); field.window?.selectKeyView(following: field); return true
         case "cancelOperation:": return dismiss()
         default: return false
         }
