@@ -17,6 +17,9 @@ pub const LINUX_DATA_DIRECTORY: &str = env!("EMAIL_PROFILE_LINUX_DATA_DIRECTORY"
 /// The dedicated Secret Service collection used for Scheduling credentials.
 pub const LINUX_SECRET_COLLECTION: &str = env!("EMAIL_PROFILE_LINUX_SECRET_COLLECTION");
 pub const LINUX_APP_ID: &str = env!("EMAIL_PROFILE_LINUX_APP_ID");
+/// The name Agent access registers the MCP helper under in Claude Code and
+/// Codex, the same default `scripts/connect-mcp.sh` uses.
+pub const MCP_SERVER_NAME: &str = env!("EMAIL_PROFILE_MCP_SERVER_NAME");
 pub const SUPPORT_ADDRESS: Option<&str> = optional(env!("EMAIL_PROFILE_SUPPORT_ADDRESS"));
 pub const FEEDBACK_ADDRESS: Option<&str> = optional(env!("EMAIL_PROFILE_FEEDBACK_ADDRESS"));
 /// The Scheduling service; also the only accepted tracking-pixel origin.

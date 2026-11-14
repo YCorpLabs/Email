@@ -29,7 +29,7 @@ Setup and tool reference: [mcp.md](mcp.md). In-app behavior:
 | The user, in the desktop app | Consent and approvals | — |
 | The agent and its AI provider | Following the user's requests, within the grants the user chose | Deciding on its own to send mail or make bulk changes; data it reads leaves Email's control |
 | Email content (senders, subjects, bodies, attachments, calendar text, booking answers) | Nothing. It is third-party data | Instructions of any kind |
-| The MCP registration's command-line flags | An upper bound set by whoever registered the server | Consent: flags alone no longer grant access to any account |
+| The MCP registration's command-line flags | An upper bound set by whoever registered the server; Connect in Agent access sets every mail flag | Consent: flags alone no longer grant access to any account |
 
 ## Threats and mitigations
 
@@ -39,13 +39,17 @@ An existing registration, a newly installed agent or a copied configuration
 could read every account in the cache.
 
 - **Per-account consent in the app.** `mail-mcp` refuses every account until
-  the user turns on **Agent access** for it in the desktop app. The user first
-  sees a disclosure that names the data categories, says that the agent's AI
-  provider's terms apply to anything it reads, and says how to turn access off.
-  Consent is stored locally with the account, time, chosen grants and the
-  disclosure version (`crates/mail-core/src/agent.rs`, `agent_consents`). The
-  disclosure text has one source, `crates/mail-service/src/agent_access.rs`,
-  rendered by both desktop shells.
+  the user turns **Agent access** on for it in the desktop app. The user
+  first sees the turn-on sheet: three levels with Read only (read and fetch)
+  preselected, Custom… for the individual permissions (calendar changes only
+  there), the provider-terms and turn-off note, and the full list of data
+  categories one click away. A refused call becomes a "wants to use" request;
+  its Allow… preselects the level the call needed, which the user still
+  confirms in the sheet. Consent is stored locally with the
+  account, time, chosen grants and the disclosure version
+  (`crates/mail-core/src/agent.rs`, `agent_consents`). The text has one
+  source, `crates/mail-service/src/agent_access.rs`, rendered by both desktop
+  shells.
 - **Fresh check on every request.** The MCP server reads consent for each tool
   call, so turning access off applies to the agent's next call without a
   restart (`MailServer::policy` in `crates/mail-mcp/src/main.rs`).
@@ -58,9 +62,15 @@ could read every account in the cache.
   `dispatch_due`, activity across accounts) are refused unless agent access is
   on for every account. List and search tools return only accounts with
   consent.
-- **Changing the disclosure re-asks.** Raising `AGENT_DISCLOSURE_VERSION`
-  makes older consents stop authorizing access until the user reviews the new
-  text.
+- **Each consent records the text the user saw.** `AGENT_DISCLOSURE_VERSION`
+  is the version a new consent records, and the app must send it; it goes up
+  whenever the text changes. `AGENT_DISCLOSURE_MIN_VERSION` is the oldest
+  version whose consents still authorize access. Raising it to the current
+  version re-asks: older consents stop working until the user reviews the new
+  text. It is raised only when a change widens what agents can read or do, or
+  weakens a safeguard. Version 2 (the redesigned sheet) rewords version 1
+  without such a change, so the minimum stays 1 and existing consents keep
+  working (`consent_for_an_older_reworded_disclosure_keeps_working`).
 
 ### T2. Prompt injection: an email tells the agent what to do
 
@@ -101,9 +111,13 @@ grant, or tell the user something false. The disclosure says so.
   pending request
   (`MailStore::request_agent_approval`). Nothing is sent, scheduled or changed.
   The desktop app shows the request with its recipients, subject, body,
-  attachments, timing, or the conversations and sender affected, and the user
-  chooses **Approve** or **Reject**. A desktop notification appears when
-  notifications are on.
+  attachments, timing, or the conversations and sender affected, under
+  **Agent requests** in the main window, and the user chooses the approve
+  button (**Send**, **Archive 2**, …) or the decline button. **Edit** closes
+  a send request as `edited` without sending and opens the draft in the
+  composer, where only the user's own Send sends it (`edit_agent_action`,
+  which refuses any other kind of request). A desktop notification appears
+  when notifications are on.
 - **No approval path in the MCP server.** The approve, reject, grant and revoke
   operations exist only in the desktop service. The MCP access policy has no
   rule for them, so it fails closed (unit test
@@ -111,8 +125,9 @@ grant, or tell the user something false. The disclosure says so.
 - **What the user saw is what is sent.** A request stores a snapshot of the
   draft: sender, recipients, subject, plain-text body, HTML body and
   attachment list. Approval compares the current draft with it and refuses if
-  anything changed. Cards show recipients as bare addresses, with any display
-  name marked "shown as", because a display name can imitate another address.
+  anything changed. The reader shows the email as it will go out: the
+  subject, recipients as "Name <address>" (so a display name can't hide the
+  real address), the whole plain-text body and the attachments.
   A send request is refused if its subject, body, attachment names or types,
   or recipient display names contain a character the card cannot show: any
   Unicode default-ignorable or format character (zero-width characters, the
@@ -122,26 +137,24 @@ grant, or tell the user something false. The disclosure says so.
   allowed only in context: variation selectors after characters with an emoji
   form and in keycaps, joiners inside emoji sequences and next to an Indic
   virama, non-joiners between Arabic-script letters, and tags inside a
-  subdivision flag. The card states how many such characters the message
-  contains, so a polite sentence carrying dozens of them stands out. Attachments are listed with name, size and type, and
-  **Save…** writes the exact bytes so the user can view a copy before
-  approving. On macOS the copy carries the quarantine flag, so Gatekeeper
-  checks it before it can run; on Linux it is saved without execute
-  permission. The card tells the user never to run a file they did not
-  expect. A draft with an HTML body (for example one synced from
-  Gmail) is refused for approval, because the card shows plain text only. A
-  long body shows its opening with a note; **Show full message** shows all of
-  it. Drafts in the outbox cannot be edited (`update_draft` and attachment
+  subdivision flag. The reader states how many such characters the message
+  contains, so a polite sentence carrying dozens of them stands out.
+  Attachments are chips with name and size; clicking one saves the exact
+  bytes so the user can view a copy before approving. On macOS the copy
+  carries the quarantine flag, so Gatekeeper checks it before it can run; on
+  Linux it is saved without execute permission. A draft with an HTML body (for example one synced from
+  Gmail) is refused for approval, because the card shows plain text only.
+  Drafts in the outbox cannot be edited (`update_draft` and attachment
   changes refuse queued drafts), so content stays fixed until it is sent or
   cancelled.
-- **Cards do not move under the pointer.** Waiting requests are listed oldest
-  first, so a new request never takes an existing card's place, and an
-  Approve or Reject click within 0.8 seconds of the list changing is ignored
-  with an explanation. No button is the default, so pressing Return never
-  approves on its own; the user has to move focus to a button first (Tab,
-  then Space, or Return on Linux, as each platform activates a focused
-  button). The consent and turn-off dialogs start on Cancel, and Escape
-  cancels them.
+- **No accidental approvals.** Waiting requests are listed oldest first, so a
+  new request never takes an existing row's place. Approving takes the
+  approve button or ⌘↩ (Ctrl+Enter on Linux); plain Return does nothing in
+  Agent requests. The approve button and its shortcut wait 0.8 seconds after
+  a request appears (the button is dimmed meanwhile), so a double press
+  can't approve the next request. The turn-on sheet and the turn-off
+  confirmation have no default button, and Escape cancels them; cancelling
+  puts the account's popup back.
 - **One transaction.** Approval rechecks consent, applies the request and
   records the decision in one SQLite transaction (`approve_agent_action`). A
   crash leaves either a pending request or an applied one.
@@ -184,10 +197,12 @@ ones, is refused until the user turns on agent access in the app. A
 `mail-mcp` process started before the upgrade keeps the old behavior until it
 exits, so restart agent sessions (or the MCP connection) after upgrading. Each refusal
 is recorded (coalesced to one entry per ten minutes after the last attempt).
-While any refusal from the last 24 hours still applies, the app shows a badge
-on **Agent access**, an "Agent access needed" banner with a one-click **Turn
-On** button, and a desktop notification. The agent receives an error that tells the
-user where to enable access.
+While any refusal from the last 24 hours still applies, it is a "wants to
+use" request under Agent requests, with a desktop notification; **Allow…**
+opens the turn-on sheet preset to what the refused call needed (mail-mcp
+records the call's permissions with the refusal), and **Ignore** keeps that
+account's refusals quiet while the agent keeps retrying. The agent receives
+an error that tells the user where to enable access.
 
 ### T6. Data minimization in the local history
 
@@ -200,6 +215,37 @@ list are ordered by the time of the decision or latest attempt. Sync and sender-
 one history entry per ten minutes, with a count. After a decision, a send request keeps only a 600-character
 preview of the body and drops HTML, and a batch drops its full selection. Removing an
 account deletes its consent and history. The history stays on the device.
+
+### T7. Connecting an agent from the app
+
+**Connect** in Agent access registers the bundled helper in Claude Code or
+Codex (`crates/mail-service/src/agent_clients.rs`).
+
+- **Desktop only.** `agent_clients` and `connect_agent_client` are service
+  operations without a rule in the MCP access policy, so an agent cannot call
+  them (unit test
+  `agent_sends_wait_for_approval_and_never_reach_the_dispatcher_unapproved`).
+- **Every mail flag, nothing else.** The registration passes `--allow-draft
+  --allow-triage --allow-send --allow-sync --allow-calendar-write`, so the
+  per-account grants are the one place the user decides. This widens the
+  registration compared with the script's read-only default, not what an
+  agent can do: every account is still off until the user turns it on,
+  Read only is the default level, and every grant is still enforced per
+  account and per request (T1, T3). `--allow-booking-settings` is left out
+  because Scheduling settings have no per-account grant. Users who want a
+  tighter upper bound can still register with the script and fewer flags.
+- **No silent replacement.** Connect never replaces a registration with the
+  same name; the row shows "✓ Connected" and says when it points at another
+  copy of `mail-mcp`.
+- **Which CLI runs.** The app runs `claude mcp get` and `codex mcp get` when
+  the window opens, and `mcp add` on Connect, using the first `claude` or
+  `codex` on its PATH or in the user's usual install directories. Those are
+  the user's own programs with the user's own rights; a program planted
+  there could already run as the user. The CLIs get a time limit, and their
+  output is only checked for success and for the helper's path.
+- **The helper is this build's.** The helper must contain this build's
+  Keychain namespace, so a `mail-mcp` built for another distribution profile is
+  refused.
 
 ## What is not approval-gated
 
@@ -220,8 +266,10 @@ recorded in the history, but they take effect without a per-action approval:
   pausing, resuming or cancelling a cleanup.
 - Calendar changes (`--allow-calendar-write` plus the in-app **Calendar
   changes** grant): creating or editing events and replying to invitations.
-  Google notifies guests. Both grants are off by default, and the disclosure
-  says these changes do not wait for approval.
+  Google notifies guests. The in-app grant is off by default and its checkbox
+  says, in the warning color, that these changes do not wait for approval.
+  `--allow-calendar-write` is off by default in `mail-mcp` and in the script;
+  Connect in the app sets it, so the in-app grant decides.
 - Hosted scheduling settings (`--allow-booking-settings`) have their own
   browser approval and preview-then-confirm flow, outside mail consent.
 
@@ -249,8 +297,11 @@ needs the Triage grant, on such an account. They are refused entirely under an
   mail-service agent_access`, `cargo test -p mail-mcp`.
 - JSON-RPC against the real binary:
   `python3 crates/mail-mcp/tests/permissions.py target/debug/mail-mcp`.
-- macOS window, real service and real `mail-mcp`:
-  `python3 apps/macos/Tests/run-agent-access-checks.py --library
-  target/debug/libmail_service.dylib --mcp target/debug/mail-mcp`.
+- macOS window, real service and real `mail-mcp`, with fake `claude` and
+  `codex` CLIs: `python3 apps/macos/Tests/run-agent-access-checks.py
+  --library target/debug/libmail_service.dylib --mcp target/debug/mail-mcp`
+  (add `--snapshots DIR --appearance dark|light` for window captures).
+- Linux window under Xvfb, the same way: `apps/linux/qa/agent-access.sh`.
+- Connect against fake CLIs: `cargo test -p mail-service agent_clients`.
 
 Per-shell behavior is described in [agent-access.md](agent-access.md).

@@ -12,6 +12,12 @@ Steps (each prints one JSON object):
   long     compose a long draft whose end is far below the preview, and ask to send it.
   undo     ask to undo the latest undoable batch.
   attach   compose a draft with a small text attachment and ask to send it.
+  use      list ACCOUNT_ID's conversations; recorded as a refusal while it's off.
+  showcase compose the screenshot draft (to Maya Chen, with a small PDF) and ask
+           to send it, and ask to archive the conversations in AGENT_FLOW_THREADS.
+
+AGENT_FLOW_CLIENT sets the client name the agent reports (default
+agent-flow-check), for example claude-code or codex-mcp-client.
 
 Never point this at a real mailbox. It uses only local tools; the demo accounts
 have no provider configuration, so nothing can be sent.
@@ -29,7 +35,8 @@ class Client:
         self.buffer = b''
         self.sel = selectors.DefaultSelector()
         self.sel.register(self.proc.stdout, selectors.EVENT_READ)
-        self.call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'agent-flow-check', 'version': '1'}})
+        name = os.environ.get('AGENT_FLOW_CLIENT', 'agent-flow-check')
+        self.call('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': name, 'version': '1'}})
         self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
 
     def send(self, obj):
@@ -118,6 +125,24 @@ elif STEP == 'undo':
     out['latest'] = latest
     if isinstance(latest, dict) and latest.get('operation_id'):
         out['undo'] = client.tool('undo_triage', {'operation_id': latest['operation_id']})
+    client.close()
+elif STEP == 'use':
+    client = Client()
+    out['list_threads'] = client.tool('list_threads', {'account_id': ACCOUNT, 'limit': 5})
+    client.close()
+elif STEP == 'showcase':
+    client = Client(('--allow-draft', '--allow-send', '--allow-triage'))
+    made = client.tool('compose_draft', {'account_id': ACCOUNT, 'to': 'Maya Chen <maya@example.org>', 'subject': 'Design review time',
+                                         'body_plain': "Hi Maya,\n\nCould we move Friday's design review to 15:00? Morning got eaten by the launch prep.\n\nThanks,\nAlex"})
+    message = made.get('id') if isinstance(made, dict) else made
+    out['draft'] = message
+    pdf = b'%PDF-1.4\n% review notes\n' + b'0' * 84000 + b'\n%%EOF\n'
+    import base64
+    out['attachment'] = client.tool('add_draft_attachment', {'message_id': message, 'filename': 'review-notes.pdf', 'mime_type': 'application/pdf', 'content_base64': base64.b64encode(pdf).decode()})
+    out['send'] = client.tool('send_draft', {'message_id': message})
+    threads = [t for t in os.environ.get('AGENT_FLOW_THREADS', '').split(',') if t]
+    if threads:
+        out['batch'] = client.tool('batch_triage', {'operation_id': f'agent-flow-{time.time_ns()}', 'kind': 'archive', 'thread_ids': threads})
     client.close()
 elif STEP == 'read':
     client = Client()

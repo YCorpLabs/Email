@@ -8,7 +8,8 @@
 #                                       Arch compatibility package (local-alpha
 #                                       only; distribution Arch packages are
 #                                       built from source, see packaging/aur)
-#   mail-mcp-<arch>                     stdio MCP server (not in the packages)
+#   mail-mcp-<arch>                     stdio MCP server (also in the .deb, at
+#                                       /usr/lib/email-linux/mail-mcp)
 #   libmail_service-<arch>.so           engine C ABI library (not in the packages)
 #   BUILD-INFO-<arch>.txt               commit, build ID, profile and toolchain
 #
@@ -107,7 +108,7 @@ source scripts/linux-build-config.sh
 require_linux_oauth_config
 # The embedded build ID must be the one the host computed for this commit.
 [[ "$EMAIL_BUILD_ID" == "$EMAIL_HOST_BUILD_ID" ]] || { echo "Build ID mismatch: container $EMAIL_BUILD_ID, host $EMAIL_HOST_BUILD_ID" >&2; exit 1; }
-CARGO_TARGET_DIR=/target/linux scripts/package-linux-deb.sh
+CARGO_TARGET_DIR=/target/linux EMAIL_MCP_TARGET_DIR=/target/workspace scripts/package-linux-deb.sh
 CARGO_TARGET_DIR=/target/workspace cargo build --release --locked -p mail-mcp -p mail-service
 install -m755 /target/linux/release/email-linux "/out/email-linux-$EMAIL_PACKAGE_ARCH"
 install -m755 /target/workspace/release/mail-mcp "/out/mail-mcp-$EMAIL_PACKAGE_ARCH"

@@ -17,6 +17,7 @@
 //! Network operations block and belong on a worker thread. Account passwords
 //! and OAuth tokens go only to the OS credential store, never to SQLite or logs.
 mod agent_access;
+mod agent_clients;
 mod agenda;
 #[cfg(any(target_os = "macos", test))]
 mod credential_access;
@@ -173,6 +174,28 @@ enum Request {
         limit: Option<u32>,
     },
     AgentPendingSummary,
+    /// Everything waiting for the user, for Agent requests in the main window.
+    AgentRequests,
+    /// Edit a requested send: closes the request without sending; the draft
+    /// stays in Drafts and the shell opens it in the composer.
+    EditAgentAction {
+        id: String,
+    },
+    /// Ignore a refused agent's request for an account.
+    DismissAgentAccessRequest {
+        account_id: String,
+    },
+    /// Connect an agent: the Claude Code and Codex CLIs, whether Email is
+    /// registered in each, and a configuration for other MCP clients.
+    /// `helper_path` is the app bundle's helper on macOS.
+    AgentClients {
+        helper_path: Option<String>,
+    },
+    /// Register Email's MCP helper in `client` ("claude" or "codex").
+    ConnectAgentClient {
+        client: String,
+        helper_path: Option<String>,
+    },
     ApproveAgentAction {
         id: String,
         undo_seconds: Option<u32>,
@@ -1007,7 +1030,22 @@ impl MailService {
                 self.store
                     .list_agent_actions(status.as_deref(), limit.unwrap_or(200)),
             ),
-            Request::AgentPendingSummary => self.value(self.store.agent_pending_summary()),
+            Request::AgentPendingSummary => agent_access::summary(&self.store),
+            Request::AgentRequests => agent_access::requests(&self.store).map(|rows| json!(rows)),
+            Request::EditAgentAction { id } => self.value(self.store.edit_agent_action(&id)),
+            Request::DismissAgentAccessRequest { account_id } => self
+                .store
+                .dismiss_agent_access_request(&account_id)
+                .map(|dismissed| json!({"account_id":account_id,"dismissed":dismissed}))
+                .map_err(|e| e.to_string()),
+            Request::AgentClients { helper_path } => Ok(agent_clients::overview(
+                &self.database_path,
+                helper_path.as_deref(),
+            )),
+            Request::ConnectAgentClient {
+                client,
+                helper_path,
+            } => agent_clients::connect(&self.database_path, helper_path.as_deref(), &client),
             Request::ApproveAgentAction { id, undo_seconds } => {
                 self.value(self.store.approve_agent_action(
                     &id,
@@ -2752,20 +2790,35 @@ mod tests {
             .request_json(r#"{"op":"agent_access_disclosure","account_id":"demo:personal"}"#)
             .unwrap();
         assert_eq!(disclosure["version"], mail_core::AGENT_DISCLOSURE_VERSION);
-        assert!(disclosure["title"].as_str().unwrap().contains("alex@example.com"));
-        assert_eq!(disclosure["grants"].as_array().unwrap().len(), 5);
-        assert!(disclosure["provider_terms"].as_str().unwrap().contains("provider's terms"));
+        assert_eq!(disclosure["title"], "Let agents use alex@example.com?");
+        assert_eq!(disclosure["default_level"], "read");
+        assert_eq!(disclosure["levels"][0]["grants"], json!(["sync"]));
+        assert_eq!(disclosure["levels"][2]["grants"], json!(["sync", "triage", "draft", "send"]));
+        // Calendar changes are only reachable under Custom….
+        assert!(disclosure["levels"].as_array().unwrap().iter().all(|l| !l["grants"].as_array().unwrap().contains(&json!("calendar_write"))));
+        assert_eq!(disclosure["custom"].as_array().unwrap().len(), 5);
+        assert_eq!(disclosure["custom"][4]["id"], "calendar_write");
+        assert_eq!(disclosure["custom"][4]["warning"], true);
+        // The sheet names what agents read, the provider's terms and how to
+        // turn access off, with the full list one click away.
+        let note = disclosure["note"].as_str().unwrap();
+        assert!(note.contains("AI provider") && note.contains("turn this off"), "{note}");
+        let details = disclosure["details"].as_array().unwrap();
+        for fragment in ["attachments", "Drafts and labels", "queued mail", "Calendar invitations", "Recipient suggestions", "Open-tracking", "bookings", "untrusted", "MCP registration"] {
+            assert!(details.iter().any(|d| d.as_str().unwrap().contains(fragment)), "{fragment}");
+        }
         assert!(service
             .request_json(r#"{"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":0}"#)
             .is_err());
         service
-            .request_json(r#"{"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":1}"#)
+            .request_json(&json!({"op":"grant_agent_access","account_id":"demo:personal","grants":["send"],"disclosure_version":mail_core::AGENT_DISCLOSURE_VERSION}).to_string())
             .unwrap();
         let status = service.request_json(r#"{"op":"agent_access_status"}"#).unwrap();
-        assert_eq!(status["accounts"][0]["grant_labels"], json!(["Read", "Send requests"]));
+        assert_eq!(status["accounts"][0]["level"], "custom");
+        assert_eq!(status["pending"]["access_on"], true);
         let overview = service.request_json(r#"{"op":"agent_access_overview"}"#).unwrap();
-        assert_eq!(overview["requests"], json!([]));
         assert_eq!(overview["history"][0]["kind"], "consent_granted");
+        assert_eq!(service.request_json(r#"{"op":"agent_requests"}"#).unwrap(), json!([]));
         let request = |message_id: &str| {
             service
                 .store
@@ -2792,6 +2845,16 @@ mod tests {
         let reject_id = request(&rejected_draft);
         let summary = service.request_json(r#"{"op":"agent_pending_summary"}"#).unwrap();
         assert_eq!(summary["count"], 2);
+        assert_eq!(summary["total"], 2);
+        assert!(summary["notices"].as_array().unwrap().iter().any(|n| n["text"] == "test-agent wants to send “Approved” to maya@example.org"));
+        let rows = service.request_json(r#"{"op":"agent_requests"}"#).unwrap();
+        let row = rows.as_array().unwrap().iter().find(|r| r["id"] == approve_id).unwrap();
+        assert_eq!(row["type"], "send");
+        assert_eq!(row["title"], "Send: Approved");
+        assert_eq!(row["preview"], "To maya@example.org · Body");
+        assert_eq!(row["ask"], "wants to send this email");
+        assert_eq!((row["approve_label"].as_str(), row["reject_label"].as_str()), (Some("Send"), Some("Don't send")));
+        assert_eq!(row["can_edit"], true);
         // The scheduler path finds nothing while requests wait for a decision.
         assert_eq!(service.request_json(r#"{"op":"dispatch_due"}"#).unwrap(), json!([]));
         let rejected = service
@@ -2823,6 +2886,65 @@ mod tests {
             .unwrap();
         let status = service.request_json(r#"{"op":"agent_access_status"}"#).unwrap();
         assert_eq!(status["accounts"][0]["consent"], Value::Null);
+        let _ = fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn agent_requests_cover_sends_bulk_changes_edits_and_refused_agents() {
+        let (service, dir, _) = fairness_fixture();
+        // A refused agent becomes "wants to use", preselecting the level it needs.
+        service
+            .store
+            .record_agent_block_needing(&["demo:personal".into()], "archive_thread", "off", Some("codex-mcp-client"), &["triage"])
+            .unwrap();
+        let rows = service.request_json(r#"{"op":"agent_requests"}"#).unwrap();
+        assert_eq!(rows[0]["type"], "access");
+        assert_eq!(rows[0]["agent"], "Codex");
+        assert_eq!(rows[0]["title"], "Wants to use alex@example.com");
+        assert_eq!(rows[0]["preview"], "Agent access is off for this account");
+        assert_eq!((rows[0]["approve_label"].as_str(), rows[0]["reject_label"].as_str()), (Some("Allow…"), Some("Ignore")));
+        assert_eq!(rows[0]["level"], "organize");
+        let summary = service.request_json(r#"{"op":"agent_pending_summary"}"#).unwrap();
+        assert_eq!((summary["count"].as_i64(), summary["total"].as_i64()), (Some(0), Some(1)));
+        assert_eq!(summary["notices"][0]["text"], "Codex wants to use alex@example.com");
+        assert_eq!(summary["access_on"], false);
+        service.request_json(r#"{"op":"dismiss_agent_access_request","account_id":"demo:personal"}"#).unwrap();
+        assert_eq!(service.request_json(r#"{"op":"agent_requests"}"#).unwrap(), json!([]));
+
+        service
+            .request_json(&json!({"op":"grant_agent_access","account_id":"demo:personal","grants":["sync","triage","draft","send"],"disclosure_version":mail_core::AGENT_DISCLOSURE_VERSION}).to_string())
+            .unwrap();
+        let status = service.request_json(r#"{"op":"agent_access_status"}"#).unwrap();
+        assert_eq!(status["accounts"][0]["level"], "write");
+        let threads = service.store.list_threads(Some("demo:personal"), 2, 0).unwrap().into_iter().map(|t| t.id).collect::<Vec<_>>();
+        service
+            .store
+            .request_agent_approval(
+                &mail_core::AgentApprovalRequest::BatchTriage { operation_id: "op-1".into(), kind: "archive".into(), thread_ids: threads.clone() },
+                Some("claude-code"),
+            )
+            .unwrap();
+        let draft = service.store.compose_draft("demo:personal", "Maya Chen <maya@example.org>", "Design review time", "Hi Maya,\n\nCould we move Friday?").unwrap().id;
+        let send = service
+            .store
+            .request_agent_approval(&mail_core::AgentApprovalRequest::SendDraft { message_id: draft.clone() }, Some("claude-code"))
+            .unwrap()
+            .id;
+        let rows = service.request_json(r#"{"op":"agent_requests"}"#).unwrap();
+        let bulk = rows.as_array().unwrap().iter().find(|r| r["kind"] == "batch_triage").unwrap();
+        assert_eq!(bulk["agent"], "Claude Code");
+        assert_eq!(bulk["title"], "Archive 2 conversations");
+        assert_eq!(bulk["ask"], "wants to archive 2 conversations");
+        assert_eq!((bulk["approve_label"].as_str(), bulk["reject_label"].as_str()), (Some("Archive 2"), Some("Don't archive")));
+        assert_eq!(bulk["note"], "You can undo this afterwards.");
+        assert_eq!(bulk["threads"].as_array().unwrap().len(), 2);
+        assert!(bulk["threads"][0]["snippet"].is_string() && bulk["threads"][0]["last_message_at"].is_i64());
+        let row = rows.as_array().unwrap().iter().find(|r| r["id"] == send).unwrap();
+        assert_eq!(row["preview"], "To Maya Chen · Hi Maya, Could we move Friday?");
+        // Edit closes the request and leaves the draft for the composer.
+        let edited = service.request_json(&json!({"op":"edit_agent_action","id":send}).to_string()).unwrap();
+        assert_eq!(edited["status"], "edited");
+        assert_eq!(edited["details"]["request"]["message_id"], draft);
+        assert!(service.store.outbox_status(&draft).unwrap().is_none());
         let _ = fs::remove_dir_all(dir);
     }
     fn fairness_fixture() -> (MailService, PathBuf, Account) {

@@ -18,7 +18,8 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
     var onOpenTracked: ((String, String) -> Void)?
     var onOpenActivity: (() -> Void)?
     var onOpenFollowup: ((String, String) -> Void)?
-    var onOpenAgent: (() -> Void)?
+    /// Opens the main window on an agent request (nil: the requests list).
+    var onOpenAgent: ((String?) -> Void)?
     var onTriage: ((String, String, String) -> Void)?
     var isReadingThread: ((String, String) -> Bool)?
     var onSettingsChanged: (() -> Void)?
@@ -235,26 +236,28 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
 
     /// One alert per new agent request or new blocked-access entry, remembered
     /// across launches. Previews off keeps subjects and recipients out of it.
+    /// One notification per new agent request ("Claude Code" / "wants to send
+    /// “Design review time” to Maya Chen"), remembered across launches.
+    /// Previews off keeps subjects and recipients out of it. Clicking opens the
+    /// main window on that request.
     func recordAgentRequests(_ summary: [String: Any]) async {
         // Oldest first, so trimming keeps the most recent entries.
         var seen = UserDefaults.standard.stringArray(forKey: Self.agentSeenKey) ?? []
         var fresh: [(id: String, title: String, body: String)] = []
-        for item in summary["items"] as? [[String: Any]] ?? [] {
-            guard let id = item["id"] as? String, !seen.contains(id) else { continue }
+        for notice in summary["notices"] as? [[String: Any]] ?? [] {
+            guard let id = notice["id"] as? String, !seen.contains(id) else { continue }
             seen.append(id)
-            let text = item["summary"] as? String ?? ""
-            fresh.append(("agent-\(id)", previews ? "Agent request: \(String(text.prefix(120)))" : "An agent is waiting for your approval", "Review it in Agent access."))
-        }
-        if let blocked = summary["blocked"] as? [String: Any], let id = blocked["id"] as? String, !seen.contains(id) {
-            seen.append(id)
-            let text = blocked["summary"] as? String ?? ""
-            fresh.append(("agent-blocked-\(id)", "Agent access needed", previews ? "\(String(text.prefix(140))). Open Agent access to turn it on." : "An agent tried to use your mail. Open Agent access to review."))
+            fresh.append(previews
+                ? (id, notice["title"] as? String ?? "An agent", String((notice["body"] as? String ?? "").prefix(160)))
+                : (id, "Email", "An agent is waiting for you"))
         }
         guard !fresh.isEmpty else { return }
         UserDefaults.standard.set(Array(seen.suffix(400)), forKey: Self.agentSeenKey)
-        for item in fresh.prefix(3) { _ = await deliver(id: item.id, title: item.title, body: item.body, arrival: nil, kind: "agent") }
+        for item in fresh.prefix(3) {
+            _ = await deliver(id: "agent-\(item.id)", title: item.title, body: item.body, arrival: nil, kind: "agent", extra: ["request_id": item.id])
+        }
         if fresh.count > 3 {
-            _ = await deliver(id: "agent-batch-\(fresh.count)-\(Int(Date().timeIntervalSince1970))", title: "\(fresh.count - 3) more agent requests", body: "Review them in Agent access.", arrival: nil, kind: "agent")
+            _ = await deliver(id: "agent-batch-\(fresh.count)-\(Int(Date().timeIntervalSince1970))", title: "Email", body: "\(fresh.count - 3) more agent requests", arrival: nil, kind: "agent")
         }
     }
 
@@ -267,7 +270,7 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func deliver(id: String, title: String, subtitle: String = "", body: String, arrival: MailArrival?,
-                         kind: String = "mail", category: String? = nil) async -> Bool {
+                         kind: String = "mail", category: String? = nil, extra: [String: String] = [:]) async -> Bool {
         guard enabled, let center = Self.center else { return false }
         let generation = settingsGeneration
         let settings = await center.notificationSettings()
@@ -281,6 +284,7 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
         if let category { content.categoryIdentifier = category }
         content.sound = .default
         content.userInfo = ["kind":kind]
+        for (key, value) in extra { content.userInfo[key] = value }
         if let arrival {
             content.threadIdentifier = arrival.accountID
             content.userInfo["account_id"] = arrival.accountID
@@ -330,6 +334,7 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
         let followup = data["kind"] as? String == "followup"
         let tracked = data["kind"] as? String == "open"
         let agent = data["kind"] as? String == "agent"
+        let requestID = data["request_id"] as? String
         let action = response.actionIdentifier
         if action == Self.markReadAction || action == Self.archiveAction {
             let id = response.notification.request.identifier
@@ -337,7 +342,7 @@ final class MailNotifications: NSObject, UNUserNotificationCenterDelegate {
             Task { @MainActor [weak self] in self?.onTriage?(action == Self.archiveAction ? "archive" : "read", account, thread) }
         } else if action == UNNotificationDefaultActionIdentifier {
             Task { @MainActor [weak self] in
-                if agent { self?.onOpenAgent?() }
+                if agent { self?.onOpenAgent?(requestID) }
                 else if tracked { self?.onOpenTracked?(account, thread) }
                 else if followup { self?.onOpenFollowup?(account, thread) }
                 else { self?.onOpen?(account, thread) }

@@ -18,9 +18,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-/// Bump when the in-app disclosure changes materially. Consents recorded for an
-/// older disclosure stop authorizing MCP access until the user reviews it again.
-pub const AGENT_DISCLOSURE_VERSION: i64 = 1;
+/// The disclosure the app shows now. A new consent records this version, so
+/// each grant says which text the user saw. Bump it whenever that text changes.
+///
+/// 2: the Agent access redesign. Shorter sheet, the full list one click away,
+/// same data, grants and safeguards as version 1.
+pub const AGENT_DISCLOSURE_VERSION: i64 = 2;
+/// The oldest disclosure whose consents still authorize MCP access. Raise it
+/// (to the current version) only when a change widens what agents can read or
+/// do, or weakens a safeguard: older consents then stop working until the user
+/// reviews the new text. Rewording alone keeps it, so version 1 consents stay
+/// valid under version 2.
+pub const AGENT_DISCLOSURE_MIN_VERSION: i64 = 1;
 /// Optional grants. Consent itself authorizes reading the account's cached data.
 pub const AGENT_GRANTS: [&str; 5] = ["draft", "triage", "send", "sync", "calendar_write"];
 /// Agent requests that never take effect until the user approves them in the app.
@@ -50,9 +59,9 @@ pub struct AgentConsent {
     pub disclosure_version: i64,
 }
 impl AgentConsent {
-    /// Consent recorded for the current disclosure.
+    /// Consent recorded for a disclosure that still authorizes access.
     pub fn is_current(&self) -> bool {
-        self.disclosure_version >= AGENT_DISCLOSURE_VERSION
+        self.disclosure_version >= AGENT_DISCLOSURE_MIN_VERSION
     }
     pub fn allows(&self, grant: &str) -> bool {
         self.is_current() && self.grants.iter().any(|g| g == grant)
@@ -453,13 +462,16 @@ fn recipient_label(addresses: &[String]) -> String {
     }
 }
 
-/// The label both shells, the disclosure and MCP refusals use for a grant.
+/// The short name both shells, the account summary ("Read · Drafts · Ask to
+/// send"), the history and MCP refusals use for a grant. Each is the start of
+/// the matching checkbox in the turn-on sheet, so an agent's "ask the user to
+/// allow Ask to send" points at a box the user can find.
 pub fn agent_grant_label(grant: &str) -> &'static str {
     match grant {
         "draft" => "Drafts",
-        "triage" => "Triage",
-        "send" => "Send requests",
-        "sync" => "Sync",
+        "triage" => "Archive and snooze",
+        "send" => "Ask to send",
+        "sync" => "Fetch mail",
         "calendar_write" => "Calendar changes",
         _ => "this permission",
     }
@@ -670,7 +682,7 @@ fn trim_history(db: &Connection) -> Result<()> {
     // Protected: the user's own decisions and consent changes. Requests the
     // app closed by itself (marked closed_by "system") are routine, so an
     // agent cannot push decisions out by making its requests go stale.
-    const DECISION: &str = "(status IN ('approved','rejected') OR (status='failed' AND coalesce(json_extract(details_json,'$.closed_by'),'')!='system') OR kind LIKE 'consent_%')";
+    const DECISION: &str = "(status IN ('approved','rejected','edited') OR (status='failed' AND coalesce(json_extract(details_json,'$.closed_by'),'')!='system') OR kind LIKE 'consent_%')";
     // Scan only once the history clearly exceeds both limits; each group
     // still keeps at least its newest HISTORY_LIMIT entries.
     let decided: i64 = db.query_row("SELECT count(*) FROM agent_actions WHERE status!='pending'", [], |r| r.get(0))?;
@@ -812,7 +824,7 @@ fn stale_requests(db: &Connection) -> Result<Vec<(String, &'static str)>> {
 /// that keeps retrying keeps the prompt visible.
 fn blocked_summary(db: &Connection) -> Result<Option<Value>> {
     let mut query = db.prepare(
-        "SELECT id,summary,created_at_ms,account_ids_json,error,coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms) AS last_at FROM agent_actions WHERE status='blocked' AND coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms)>=?1 ORDER BY last_at DESC,rowid DESC LIMIT 50",
+        "SELECT id,summary,created_at_ms,account_ids_json,error,coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms) AS last_at FROM agent_actions WHERE status='blocked' AND coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms)>=?1 AND coalesce(json_extract(details_json,'$.dismissed'),0)=0 ORDER BY last_at DESC,rowid DESC LIMIT 50",
     )?;
     let rows = query
         .query_map([now_ms() - 86_400_000], |r| {
@@ -836,7 +848,7 @@ fn blocked_summary(db: &Connection) -> Result<Option<Value>> {
             "SELECT account_id,granted_at_ms FROM agent_consents WHERE disclosure_version>=?1",
         )?;
         query
-            .query_map([AGENT_DISCLOSURE_VERSION], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([AGENT_DISCLOSURE_MIN_VERSION], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<std::result::Result<_, _>>()?
     };
     // Accounts still off take priority over missing grants, so the banner's
@@ -883,6 +895,110 @@ fn blocked_summary(db: &Connection) -> Result<Option<Value>> {
     entry["affected_account_ids"] = json!(affected.into_iter().collect::<Vec<_>>());
     entry["needs_access"] = json!(needs_access);
     Ok(Some(entry))
+}
+
+/// Refusals turned into requests the user can answer: one per account the
+/// agent wanted, while it still applies. A refusal applies while the account
+/// is off or lacks a permission the agent needed, nobody changed that
+/// account's access since the agent last tried, and the user didn't ignore it.
+fn access_requests(db: &Connection) -> Result<Vec<Value>> {
+    let mut query = db.prepare(
+        "SELECT id,created_at_ms,account_ids_json,client,details_json,coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms) AS last_at FROM agent_actions WHERE status='blocked' AND coalesce(json_extract(details_json,'$.last_at_ms'),created_at_ms)>=?1 AND coalesce(json_extract(details_json,'$.dismissed'),0)=0 ORDER BY last_at DESC,rowid DESC LIMIT 100",
+    )?;
+    let rows = query
+        .query_map([now_ms() - 86_400_000], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    drop(query);
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let consents: std::collections::HashMap<String, AgentConsent> = {
+        let mut query = db.prepare(
+            "SELECT account_id,granted_at_ms,grants_json,disclosure_version FROM agent_consents WHERE disclosure_version>=?1",
+        )?;
+        let rows = query
+            .query_map([AGENT_DISCLOSURE_MIN_VERSION], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(|(account_id, granted_at_ms, grants, disclosure_version)| {
+                Ok((account_id.clone(), AgentConsent { account_id, granted_at_ms, grants: serde_json::from_str(&grants)?, disclosure_version }))
+            })
+            .collect::<Result<_>>()?
+    };
+    // When each account's access last changed (turned on, changed or off).
+    let changed: std::collections::HashMap<String, i64> = {
+        let mut query = db.prepare(
+            "SELECT j.value,max(coalesce(a.decided_at_ms,a.created_at_ms)) FROM agent_actions a,json_each(a.account_ids_json) j WHERE a.kind LIKE 'consent_%' GROUP BY j.value",
+        )?;
+        query
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<std::result::Result<_, _>>()?
+    };
+    let mut requests: Vec<Value> = Vec::new();
+    for (id, created_at_ms, accounts, client, details, last_at_ms) in rows {
+        let details: Value = serde_json::from_str(&details)?;
+        let needed = list_strings(&details["needed_grants"]);
+        let ids: Vec<String> = serde_json::from_str(&accounts)?;
+        for account in ids {
+            if changed.get(&account).is_some_and(|at| *at >= last_at_ms) {
+                continue;
+            }
+            let consent = consents.get(&account);
+            let missing: Vec<String> = needed
+                .iter()
+                .filter(|grant| !consent.is_some_and(|c| c.allows(grant)))
+                .cloned()
+                .collect();
+            let applies = match consent {
+                None => true,
+                // Older refusals don't say which permission was missing.
+                Some(_) if needed.is_empty() => true,
+                Some(_) => !missing.is_empty(),
+            };
+            if !applies {
+                continue;
+            }
+            if let Some(existing) = requests.iter_mut().find(|r| r["account_id"] == account) {
+                let mut all = list_strings(&existing["missing_grants"]);
+                for grant in missing {
+                    if !all.contains(&grant) {
+                        all.push(grant);
+                    }
+                }
+                existing["missing_grants"] = json!(all);
+                existing["attempts"] = json!(existing["attempts"].as_u64().unwrap_or(1) + details["attempts"].as_u64().unwrap_or(1));
+                continue;
+            }
+            let email = account_email(db, &account).unwrap_or_else(|_| account.clone());
+            requests.push(json!({
+                // The newest refusal's id, so a later refusal is a new request.
+                "id": format!("access:{id}:{account}"),
+                "account_id": account,
+                "account_email": email,
+                "client": client,
+                "created_at_ms": created_at_ms,
+                "last_at_ms": last_at_ms,
+                "needs_access": consent.is_none(),
+                "missing_grants": missing,
+                "current_grants": consent.map(|c| c.grants.clone()).unwrap_or_default(),
+                "attempts": details["attempts"].as_u64().unwrap_or(1),
+            }));
+        }
+    }
+    // Oldest first, like waiting requests, so a new one never moves the list.
+    requests.sort_by_key(|r| r["created_at_ms"].as_i64().unwrap_or(0));
+    Ok(requests)
 }
 
 fn pending_ids_for_account(db: &Connection, account_id: &str) -> Result<Vec<(String, String)>> {
@@ -1300,7 +1416,7 @@ impl MailStore {
             None => "",
             Some("pending") => "WHERE status='pending'",
             Some("history") => "WHERE status!='pending'",
-            Some(other) if ["approved", "rejected", "failed", "done", "blocked", "replaced"].contains(&other) => {
+            Some(other) if ["approved", "rejected", "edited", "failed", "done", "blocked", "replaced"].contains(&other) => {
                 "WHERE status=?2"
             }
             Some(other) => return Err(invalid(format!("Unknown agent action status: {other}"))),
@@ -1332,6 +1448,19 @@ impl MailStore {
         reason: &str,
         client: Option<&str>,
     ) -> Result<()> {
+        self.record_agent_block_needing(account_ids, operation, reason, client, &[])
+    }
+
+    /// As `record_agent_block`, also noting the permissions the refused call
+    /// needed, so the app can offer to allow exactly those.
+    pub fn record_agent_block_needing(
+        &self,
+        account_ids: &[String],
+        operation: &str,
+        reason: &str,
+        client: Option<&str>,
+        needed_grants: &[&str],
+    ) -> Result<()> {
         let mut db = self.lock()?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let key = serde_json::to_string(account_ids)?;
@@ -1349,6 +1478,13 @@ impl MailStore {
             details["attempts"] = json!(attempts);
             details["last_at_ms"] = json!(now);
             details["last_operation"] = json!(operation);
+            let mut needed = list_strings(&details["needed_grants"]);
+            for grant in needed_grants {
+                if !needed.iter().any(|g| g == grant) {
+                    needed.push(grant.to_string());
+                }
+            }
+            details["needed_grants"] = json!(needed);
             tx.execute(
                 "UPDATE agent_actions SET details_json=?2,error=?3,decided_at_ms=?4 WHERE id=?1",
                 params![id, serde_json::to_string(&details)?, truncate_chars(reason, 300), now],
@@ -1370,7 +1506,7 @@ impl MailStore {
                 account_ids,
                 "blocked",
                 &summary,
-                &json!({"attempts":1,"last_at_ms":now,"last_operation":operation,"account_emails":emails}),
+                &json!({"attempts":1,"last_at_ms":now,"last_operation":operation,"account_emails":emails,"needed_grants":needed_grants}),
                 client,
             )?;
             tx.execute(
@@ -1394,7 +1530,7 @@ impl MailStore {
             None => "1",
             Some("pending") => "status='pending'",
             Some("history") => "status!='pending'",
-            Some(other) if ["approved", "rejected", "failed", "done", "blocked", "replaced"].contains(&other) => {
+            Some(other) if ["approved", "rejected", "edited", "failed", "done", "blocked", "replaced"].contains(&other) => {
                 "status=?2"
             }
             Some(other) => return Err(invalid(format!("Unknown agent action status: {other}"))),
@@ -1623,6 +1759,76 @@ impl MailStore {
         Ok(())
     }
 
+    /// Agents that were refused and still want an account, as requests.
+    pub fn agent_access_requests(&self) -> Result<Vec<Value>> {
+        let db = self.lock()?;
+        access_requests(&db)
+    }
+
+    /// Ignore the refusals for an account. Attempts within the next ten
+    /// minutes stay ignored; a later one is a new request.
+    pub fn dismiss_agent_access_request(&self, account_id: &str) -> Result<usize> {
+        let mut db = self.lock()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE agent_actions SET details_json=json_set(details_json,'$.dismissed',1) WHERE status='blocked' AND coalesce(json_extract(details_json,'$.dismissed'),0)=0 AND EXISTS(SELECT 1 FROM json_each(agent_actions.account_ids_json) WHERE value=?1)",
+            [account_id],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// The user chose to edit a requested send themselves: close the request
+    /// as handled without sending, and return it (its draft stays in Drafts).
+    pub fn edit_agent_action(&self, id: &str) -> Result<AgentAction> {
+        let mut db = self.lock()?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let action = read_action(&tx, id)?.ok_or_else(|| MailError::NotFound(id.into()))?;
+        if action.status != "pending" {
+            return Err(invalid("This request was already decided"));
+        }
+        if !matches!(action.kind.as_str(), "send_draft" | "queue_send_draft" | "schedule_draft") {
+            return Err(invalid("Only a send request can be edited"));
+        }
+        if let Some((_, reason)) = stale_requests(&tx)?.into_iter().find(|(stale, _)| stale == id) {
+            close_pending_by(&tx, id, "failed", Some(reason), true)?;
+            tx.commit()?;
+            return Err(invalid(reason));
+        }
+        close_pending(&tx, id, "edited", None)?;
+        let action = read_action(&tx, id)?.ok_or_else(|| MailError::NotFound(id.into()))?;
+        tx.commit()?;
+        Ok(action)
+    }
+
+    /// Inbox-style rows for conversations a request names, in that order.
+    pub fn agent_thread_rows(&self, ids: &[String]) -> Result<Vec<Value>> {
+        let db = self.lock()?;
+        let mut statement = db.prepare(
+            "SELECT id,account_id,sender,subject,snippet,last_message_at,unread_count FROM threads WHERE id=?1",
+        )?;
+        let mut rows = Vec::new();
+        for id in ids {
+            if let Some(row) = statement
+                .query_row([id], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, String>(0)?,
+                        "account_id": r.get::<_, String>(1)?,
+                        "sender": r.get::<_, String>(2)?,
+                        "subject": r.get::<_, String>(3)?,
+                        "snippet": r.get::<_, String>(4)?,
+                        "last_message_at": r.get::<_, i64>(5)?,
+                        "unread": r.get::<_, i64>(6)? > 0,
+                    }))
+                })
+                .optional()?
+            {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
     /// Reject a pending request. Nothing it asked for is applied.
     pub fn reject_agent_action(&self, id: &str) -> Result<AgentAction> {
         let mut db = self.lock()?;
@@ -1790,7 +1996,83 @@ mod tests {
             vec!["consent_revoked", "consent_granted"]
         );
         assert!(history[1].summary.contains("alex@example.com"));
-        assert!(history[1].summary.ends_with("Read, Drafts, Send requests"), "{}", history[1].summary);
+        assert!(history[1].summary.ends_with("Read, Drafts, Ask to send"), "{}", history[1].summary);
+    }
+
+    #[test]
+    fn consent_for_an_older_reworded_disclosure_keeps_working() {
+        let store = store();
+        // A consent recorded before the redesign, under disclosure version 1.
+        store
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO agent_consents(account_id,granted_at_ms,grants_json,disclosure_version) VALUES('demo:personal',1,'[\"draft\"]',?1)",
+                [AGENT_DISCLOSURE_MIN_VERSION],
+            )
+            .unwrap();
+        let consent = store.agent_consents().unwrap().remove(0);
+        assert!(AGENT_DISCLOSURE_MIN_VERSION < AGENT_DISCLOSURE_VERSION);
+        assert!(consent.is_current() && consent.allows("draft") && !consent.allows("send"));
+        // New consents must still come from the text the app shows now.
+        assert!(store
+            .grant_agent_access("demo:personal", &[], AGENT_DISCLOSURE_MIN_VERSION)
+            .is_err());
+        // Below the minimum, a consent stops authorizing until reviewed again.
+        let stale = AgentConsent { disclosure_version: AGENT_DISCLOSURE_MIN_VERSION - 1, ..consent };
+        assert!(!stale.is_current() && !stale.allows("draft"));
+    }
+
+    #[test]
+    fn refused_agents_become_access_requests_until_answered() {
+        let store = store();
+        store
+            .record_agent_block_needing(&["demo:personal".into()], "list_threads", "Agent access is off", Some("claude-code"), &[])
+            .unwrap();
+        let requests = store.agent_access_requests().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["account_email"], "alex@example.com");
+        assert_eq!(requests[0]["needs_access"], true);
+        assert_eq!(requests[0]["client"], "claude-code");
+        // Turning access on answers it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.grant_agent_access("demo:personal", &["sync".into()], AGENT_DISCLOSURE_VERSION).unwrap();
+        assert!(store.agent_access_requests().unwrap().is_empty());
+        // A later refusal for a missing permission names it.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store
+            .record_agent_block_needing(&["demo:personal".into()], "send_draft", "does not include “Ask to send”", Some("codex"), &["send"])
+            .unwrap();
+        let requests = store.agent_access_requests().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0]["needs_access"], false);
+        assert_eq!(requests[0]["missing_grants"], json!(["send"]));
+        assert_eq!(requests[0]["current_grants"], json!(["sync"]));
+        // Ignore removes it, and retries right after stay ignored.
+        assert_eq!(store.dismiss_agent_access_request("demo:personal").unwrap(), 2);
+        assert!(store.agent_access_requests().unwrap().is_empty());
+        store
+            .record_agent_block_needing(&["demo:personal".into()], "send_draft", "does not include “Ask to send”", Some("codex"), &["send"])
+            .unwrap();
+        assert!(store.agent_access_requests().unwrap().is_empty());
+        assert!(store.agent_pending_summary().unwrap()["blocked"].is_null());
+    }
+
+    #[test]
+    fn editing_a_send_request_closes_it_without_sending() {
+        let store = store();
+        store.grant_agent_access("demo:personal", &all_grants(), AGENT_DISCLOSURE_VERSION).unwrap();
+        let id = draft(&store);
+        let request = store.request_agent_approval(&send(&id), Some("claude-code")).unwrap();
+        let edited = store.edit_agent_action(&request.id).unwrap();
+        assert_eq!(edited.status, "edited");
+        assert_eq!(edited.details["request"]["message_id"], id);
+        assert!(store.list_outbox().unwrap().is_empty(), "editing never queues mail");
+        assert!(store.list_drafts(None).unwrap().iter().any(|d| d.id == id), "the draft stays in Drafts");
+        assert!(store.approve_agent_action(&request.id, 10).is_err());
+        assert!(store.edit_agent_action(&request.id).is_err());
+        assert_eq!(store.list_agent_actions(Some("edited"), 5).unwrap().len(), 1);
+        assert_eq!(store.agent_pending_summary().unwrap()["count"], 0);
     }
 
     #[test]
@@ -1996,7 +2278,7 @@ mod tests {
             .execute("UPDATE agent_consents SET grants_json='[]'", [])
             .unwrap();
         let error = store.approve_agent_action(&request.id, 10).unwrap_err().to_string();
-        assert!(error.contains("no longer includes Send requests"), "{error}");
+        assert!(error.contains("no longer includes Ask to send"), "{error}");
         assert!(store.list_outbox().unwrap().is_empty());
     }
 
@@ -2110,7 +2392,7 @@ mod tests {
         // A later refusal for a missing grant is shown, but access is on.
         std::thread::sleep(std::time::Duration::from_millis(2));
         store
-            .record_agent_block(&["demo:personal".into()], "send_draft", "Agent access for this account does not include Send requests", None)
+            .record_agent_block(&["demo:personal".into()], "send_draft", "Agent access for this account does not include “Ask to send”", None)
             .unwrap();
         let summary = store.agent_pending_summary().unwrap();
         assert_eq!(summary["blocked"]["needs_access"], false);
@@ -2388,7 +2670,7 @@ mod tests {
         assert_eq!(store.agent_action(&undo.id).unwrap().unwrap().details["closed_by"], "system");
         store.record_agent_block(&["demo:personal".into()], "get_message", "Agent access is off", None).unwrap();
         store
-            .record_agent_block(&["demo:personal".into()], "send_draft", "does not include Send requests", None)
+            .record_agent_block(&["demo:personal".into()], "send_draft", "does not include “Ask to send”", None)
             .unwrap();
         assert_eq!(store.list_agent_actions(Some("blocked"), 10).unwrap().len(), 2);
         assert_eq!(sanitize_client(Some("\u{202e}liamE")), Some("liamE".into()));
