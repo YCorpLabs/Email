@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "apps/macos/Sources/EmailUI"
 TESTS = ROOT / "apps/macos/Tests"
 CASES = (
+    ("AppVersionChecks", ("AppVersion.swift",), "AppVersionChecks.swift"),
     ("ComposerAddressChecks", ("ComposerAddressRules.swift",), "ComposerAddressChecks.swift"),
     ("DistributionProfileChecks", ("ComposerAddressRules.swift", "DistributionProfile.swift"),
      "DistributionProfileChecks.swift"),

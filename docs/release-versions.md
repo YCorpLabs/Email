@@ -9,8 +9,11 @@ Each release has one version, written in the forms each platform needs:
 | `.deb` `Version` | `1:0.1.0~beta.2` | `1:0.1.0` | `scripts/release-version.sh`, from the release version |
 | `.deb` file name | `email-linux_0.1.0-beta.2_amd64.deb` | `email-linux_0.1.0_amd64.deb` | the release version, which has no `:` or `~` |
 | Arch `pkgver`, `pkgrel` | `0.1.0beta2`, `1` | `0.1.0`, `1` | both PKGBUILDs; `aur-bin` also sets `_debver` to the release version |
-| macOS `CFBundleShortVersionString` | `0.1.0-beta.2` | `0.1.0` | `EMAIL_VERSION` |
+| macOS `CFBundleShortVersionString` | `0.1.0-beta.2` | `0.1.0` | `EMAIL_VERSION`, which defaults to and must equal the release version |
 | macOS `CFBundleVersion` | `2` | the next integer | `EMAIL_BUILD_NUMBER`: one more for every release |
+| About (macOS release build) | `Email 0.1.0-beta.2 (2)` | `Email 0.1.0 (3)` | both values above |
+| About (Linux) | `Email 0.1.0-beta.2` | `Email 0.1.0` | the release version |
+| APT suite in the `.deb` | `beta` | `stable` | `-` in the release version ([Linux updates](linux-updates.md)) |
 
 v0.1.0-beta.1 shipped its `.deb` as plain `0.1.0`, and dpkg sorts
 `0.1.0~beta.2` below that, so apt would not upgrade to it. The epoch `1:` puts

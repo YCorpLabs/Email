@@ -5,8 +5,13 @@ Email for macOS updates itself with [Sparkle](https://sparkle-project.org)
 Release tooling downloads the matching Sparkle command line tools and checks
 their SHA-256 (`scripts/macos-updates-env.sh`).
 
-Publishing a production update needs the items listed under
-[Production requirements](#production-requirements).
+The official profile records the production feed,
+`https://updates.ycorplabs.com/email/macos/appcast.xml`, and its EdDSA public
+key (`UPDATE_FEED_URL`, `UPDATE_PUBLIC_ED_KEY`). Publishing a production
+update still needs a Developer ID; see
+[Production requirements](#production-requirements). Linux updates through
+APT: [Linux updates](linux-updates.md). The steps for one release on both
+platforms are in the [release checklist](release-checklist.md).
 
 ## How it fits the app
 
@@ -51,12 +56,18 @@ Updates run only when the signed Info.plist has all of:
   sandbox XPC services, release-notes JavaScript or system profiling.
 
 No `SUFeedURL` means updates are off: no menu items, no Sparkle start, no
-network request. That is the state of every build made without
-`EMAIL_UPDATE_FEED_URL`, including local alphas.
+network request. That is the state of every build whose profile records no
+feed (local alphas, `development`, `unofficial`) and of every unnotarized
+`--beta` build, even though the official profile records one.
 
-The packager validates the generated Info.plist with the same Swift rules
-(`email-update-policy-checks --validate-info`). `--distribute` refuses to
-build without a valid production feed.
+The packager resolves the feed in `email_resolve_update_feed`
+(`scripts/macos-updates-env.sh`, tested by `scripts/macos-updates-env.test.py`):
+the profile's feed and key, which the environment cannot replace; none for
+`--beta`, which refuses `EMAIL_UPDATE_FEED_URL` or `EMAIL_UPDATE_PUBLIC_ED_KEY`;
+and none for a profile without update hosts. It validates the generated
+Info.plist with the same Swift rules (`email-update-policy-checks
+--validate-info`). `--distribute` refuses to build without a valid production
+feed.
 
 ### Every offered item is gated again
 
@@ -75,6 +86,22 @@ always taken from the signed Info.plist; values in user defaults are cleared.
 Builds packaged with `EMAIL_UPDATE_CHANNEL=testing` start on testing. Users
 switch with **Email › Updates › Testing Builds**. Sparkle never installs an
 older build, so leaving testing waits for a newer stable build.
+
+### Betas
+
+Once the project has a Developer ID, a beta (`0.2.0-beta.1`) is a
+`--distribute` build packaged with `EMAIL_UPDATE_CHANNEL=testing` and published
+with `--channel testing`. Beta testers then get later betas, and the final
+release, automatically: testing includes stable items. A final release is
+packaged with `EMAIL_UPDATE_CHANNEL=stable` and published with
+`--channel stable`. Every build, beta or final, takes the next
+`EMAIL_BUILD_NUMBER`.
+
+Until then, betas are built with `--beta` ([unnotarized
+beta](macos-release.md#unnotarized-beta)): self-signed, not notarized, with no
+feed, and testers download each one by hand. `--beta` stays the fallback for a
+build without a Developer ID. The first `--distribute` build needs a manual
+install too; from then on, updates arrive through Sparkle.
 
 ### User controls and consent
 
@@ -105,16 +132,18 @@ background install when the user quits, which is the user's own action.
 # Unconfigured (updates off), as before:
 ./scripts/package-macos-release.sh --local-alpha
 
-# Configured. The public key is not secret; the private key never enters Git.
+# Configured: the official profile supplies the feed and public key. The
+# private key never enters Git.
 export EMAIL_DISTRIBUTION_PROFILE=official
-# Until the official profile records UPDATE_FEED_URL and UPDATE_PUBLIC_ED_KEY:
-export EMAIL_UPDATE_FEED_URL=https://updates.ycorplabs.com/email/macos/appcast.xml
-export EMAIL_UPDATE_PUBLIC_ED_KEY='<SUPublicEDKey>'
-export EMAIL_UPDATE_CHANNEL=stable          # or testing
-export EMAIL_VERSION=0.2.0 EMAIL_BUILD_NUMBER=102
+export EMAIL_UPDATE_CHANNEL=stable          # testing for a beta
+export EMAIL_BUILD_NUMBER=3                 # one more for every release
 ./scripts/package-macos-release.sh --distribute
 EMAIL_VERIFY_REQUIRE_UPDATES=1 ./scripts/verify-macos-release.sh dist-release/distribution/Email.app
 ```
+
+`EMAIL_VERSION` defaults to the release version in `apps/linux/Cargo.toml`;
+`--distribute` and `--beta` refuse any other value
+([release versions](release-versions.md)).
 
 Each build also writes `Email-<version>-<build>-<arch>.zip`, the Sparkle
 update archive (for distribution, of the stapled app).
@@ -136,6 +165,9 @@ a keychain on the search list; `--keychain` only narrows that search, and
 macOS 26 reports "no identity found" without the private list. The private list
 gives codesign the keychain without changing the user's search list or login
 keychain. `email_codesign_home` in `scripts/macos-updates-env.sh` writes it.
+That is enough for the self-signed fixture and beta identities, not for a
+Developer ID certificate on macOS 27 ([public
+distribution](macos-release.md#public-distribution)).
 
 ## Publishing
 
@@ -161,7 +193,17 @@ The script refuses to stage a build unless it:
 It runs Sparkle's `generate_appcast` with an explicit key (never the login
 Keychain), which signs both the archive and the feed, then verifies the
 result with `scripts/verify-macos-appcast.py` using only the public key. It
-does not upload. Copy the verified directory to the host as a reviewed step.
+does not upload. Upload the verified directory as a separate step:
+
+```sh
+./scripts/upload-updates.sh --dry-run --source ../email-update-feed --prefix email/macos
+./scripts/upload-updates.sh --source ../email-update-feed --prefix email/macos
+```
+
+The upload script verifies the feed again with the profile's public key,
+refuses a feed that lacks a published build, and uploads archives before
+`appcast.xml` ([uploading](linux-updates.md#uploading)). Keep the feed
+directory between releases: the appcast is rebuilt from it.
 
 `verify-macos-appcast.py` can be rerun in CI or before upload: feed signature,
 integer and unique builds, channels, HTTPS approved hosts, archive lengths and
@@ -224,10 +266,12 @@ neither is the distribution packaging path, which needs Apple credentials.
 
 ## Linux and platform gap
 
-This is macOS-only. Linux packages (`.deb`, Arch) update through the system
-package manager and have no in-app updater, update menu, channel switch or
-draft-aware restart. There is no shared UI change and no parity claim. A
-Linux updater would need its own design (repository signing, channels).
+This is macOS-only. The Linux `.deb` updates through APT
+([Linux updates](linux-updates.md)), with `stable` and `beta` suites in place
+of channels, and Arch packages through the AUR. Linux has no in-app updater,
+update menu, channel switch or draft-aware restart: the package manager
+replaces the files and the running app keeps going until it is restarted.
+There is no shared UI change and no parity claim.
 
 ## Production requirements
 
@@ -240,16 +284,21 @@ This stages files only; uploading the verified result remains a separate step.
 A production update needs:
 
 1. Apple Developer ID Application certificate and notarytool profile for
-   Y Corp AS. The publisher refuses non-Developer ID archives.
-2. Production EdDSA key pair, generated and stored with maintainer approval in
-   the release secret store. Only the public key goes into the build.
+   Y Corp AS. The publisher refuses non-Developer ID archives. Available:
+   "Developer ID Application: Y CORP AS (5S8WC7RN88)" with the notarytool
+   profile `email-release`. On macOS 27 its keychain must be on the user search
+   list while signing ([public distribution](macos-release.md#public-distribution)).
+2. Production EdDSA key pair, stored in the release secret store. Done: its
+   public key is the official profile's `UPDATE_PUBLIC_ED_KEY`, and only the
+   public key goes into the build.
    If a protected local working copy is needed, use the ignored
    `config/macos-update-signing.local/` directory, mode 0700 with mode 0600
    files. Source preflight rejects even force-added files from this directory.
    A local copy is not an off-device recovery backup. The fixture tests never
    create a production key.
 3. HTTPS hosting at `updates.ycorplabs.com` (or `ycorplabs.com`) for the
-   appcast and archives.
+   appcast and archives. Provisioned: the `ycorp-updates` R2 bucket, with the
+   feed and archives under `email/macos/`.
 4. A real Developer ID A-to-B update with Gatekeeper and quarantine, and the
    interactive Sparkle UI (permission prompt, update window, draft notice),
    checked by hand on a clean Mac. The tests here use the fixture driver.

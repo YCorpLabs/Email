@@ -1794,7 +1794,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .calendarRefresh: calendarWorkspace?.refreshEvents()
         case .support: showSupport()
         case .feedback: showSupport(feedback: true)
-        case .about: showNotice("Email 0.1.0\nBuild: \(EmailBuildIdentity.value)")
+        case .about: showNotice("Email \(AppVersion.current)\nBuild: \(EmailBuildIdentity.value)")
         case .saveSnippet: composePane?.saveBodyAsSnippet()
         case .insertSnippet(let text): composePane?.insertSnippet(text)
         // Agent requests have no search field; searching goes back to the inbox.
@@ -3170,7 +3170,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         alert.addButton(withTitle: feedback ? "Give feedback" : "Ask for support")
         alert.addButton(withTitle: feedback ? "Ask for support" : "Give feedback")
         alert.addButton(withTitle: "Cancel")
-        let info = "Email 0.1.0\nBuild: \(EmailBuildIdentity.value)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
+        let info = "Email \(AppVersion.current)\nBuild: \(EmailBuildIdentity.value)\nmacOS \(ProcessInfo.processInfo.operatingSystemVersionString)"
         let options = NSStackView()
         options.orientation = .vertical; options.alignment = .leading; options.spacing = 8
         let include = NSButton(checkboxWithTitle: "Include basic app information", target: nil, action: nil)
@@ -5575,6 +5575,14 @@ public struct EmailDesktop {
         app.finishLaunching()
         appDelegate.showMainWindow()
         app.run()
+    }
+}
+
+extension AppVersion {
+    /// This app's version: the signed Info.plist's for a release bundle,
+    /// otherwise the release version generated into BuildIdentity.generated.swift.
+    static var current: String {
+        display(info: Bundle.main.infoDictionary, developmentVersion: EmailBuildIdentity.releaseVersion)
     }
 }
 

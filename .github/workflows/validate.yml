@@ -44,6 +44,9 @@ jobs:
       - run: python3 scripts/check-release-readiness.test.py
       - run: python3 scripts/linux-build-config.test.py
       - run: python3 scripts/distribution-profile.test.py
+      - run: python3 scripts/macos-updates-env.test.py
+      - run: python3 scripts/apt-repository.test.py
+      - run: python3 scripts/upload-updates.test.py
       - run: python3 scripts/generate-third-party-notices.py --check
       - name: Scan complete reachable source history for secrets
         env:
@@ -140,13 +143,7 @@ jobs:
       - run: cargo build --release --locked -p mail-service -p mail-mcp
       - name: Build macOS shell and exercise isolated service bridge
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-          value = subprocess.check_output(["python3", "scripts/build-identity.py"], text=True).strip()
-          Path("apps/macos/Sources/EmailUI/BuildIdentity.generated.swift").write_text(
-              'import Foundation\nenum EmailBuildIdentity { static let value = "' + value + '" }\n')
-          PY
+          python3 scripts/build-identity.py --swift > apps/macos/Sources/EmailUI/BuildIdentity.generated.swift
           swift build --package-path apps/macos --disable-sandbox -c release --only-use-versions-from-resolved-file
           bin_dir="$(swift build --package-path apps/macos --disable-sandbox -c release --show-bin-path)"
           "$bin_dir/email-update-policy-checks"

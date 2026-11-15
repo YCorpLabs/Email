@@ -39,7 +39,8 @@ def manifest(profile, work, scanner, image, engine=None, target_volume='email-li
     source = ['check-release-readiness.py', 'check-toolchain.py', 'check-toolchain.test.py',
               'build-identity.test.py',
               'check-release-readiness.test.py', 'linux-build-config.test.py',
-              'distribution-profile.test.py', 'validate-local.test.py']
+              'distribution-profile.test.py', 'validate-local.test.py', 'macos-updates-env.test.py',
+              'apt-repository.test.py', 'upload-updates.test.py']
     # Private-only checks run where they exist; the public repository has none.
     source += [p for p in ('check-google-release-docs.py', 'check-google-release-docs.test.py',
                            'export-public-source.test.py') if (Path(work) / 'scripts' / p).is_file()]
@@ -52,7 +53,7 @@ def manifest(profile, work, scanner, image, engine=None, target_volume='email-li
         ('rust-workspace', ['cargo', 'test', '--workspace', '--locked'], '.'),
         ('rust-release', ['cargo', 'build', '--release', '--locked', '-p', 'mail-service', '-p', 'mail-mcp'], '.'),
         ('mcp-permissions', [sys.executable, 'crates/mail-mcp/tests/permissions.py', str(work / 'target/release/mail-mcp')], '.')]
-    identity = "import pathlib,subprocess; value=subprocess.check_output(['python3','scripts/build-identity.py'],text=True).strip(); pathlib.Path('apps/macos/Sources/EmailUI/BuildIdentity.generated.swift').write_text('import Foundation\\nenum EmailBuildIdentity { static let value = '+repr(value).replace(chr(39),chr(34))+' }\\n')"
+    identity = "import pathlib,subprocess; pathlib.Path('apps/macos/Sources/EmailUI/BuildIdentity.generated.swift').write_text(subprocess.check_output(['python3','scripts/build-identity.py','--swift'],text=True))"
     smoke = "import pathlib,subprocess,tempfile,os; b=pathlib.Path(subprocess.check_output(['swift','build','--package-path','apps/macos','--disable-sandbox','-c','release','--show-bin-path'],text=True).strip()); subprocess.run([str(b/'email-update-policy-checks')],check=True); t=tempfile.TemporaryDirectory(); e=dict(os.environ,EMAIL_STORE_PATH=str(pathlib.Path(t.name)/'smoke.sqlite'),MAIL_SERVICE_LIBRARY=str(pathlib.Path('target/release/libmail_service.dylib').resolve())); subprocess.run([str(b/'email-desktop'),'--smoke-service'],env=e,check=True)"
     demo = "import subprocess,sys; r=subprocess.run(['bash','scripts/dev.sh','--smoke','--release'],capture_output=True,text=True); print(r.stdout+r.stderr); sys.exit(r.returncode or int('1 accounts, 3 inbox threads' not in r.stdout))"
     groups['macos'] = [

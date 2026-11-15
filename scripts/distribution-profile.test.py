@@ -42,9 +42,18 @@ class DistributionProfileTests(unittest.TestCase):
         self.assertEqual(official["MACOS_BUNDLE_ID"], "com.ycorplabs.mail")
         self.assertEqual(official["LINUX_APP_ID"], "com.ycorplabs.Mail")
         self.assertEqual(official["DISTRIBUTION"], "true")
+        # Recorded production update values (docs/macos-updates.md, docs/linux-updates.md).
+        self.assertEqual(official["UPDATE_FEED_URL"], "https://updates.ycorplabs.com/email/macos/appcast.xml")
+        self.assertEqual(official["UPDATE_PUBLIC_ED_KEY"], "iz87QU2vCaLE3Qq138gmnoHPIcgSt97BXuwpaK/TeKk=")
+        self.assertEqual(official["LINUX_APT_REPOSITORY"], "https://updates.ycorplabs.com/email/apt")
+        self.assertEqual(official["LINUX_APT_KEY_FINGERPRINT"], "20B087BF1D1B2A04102882F213081979B6CEABDA")
         neutral = profile.named("unofficial", HERE.parent)
-        for key in ("SUPPORT_ADDRESS", "FEEDBACK_ADDRESS", "SCHEDULING_ORIGIN", "UPDATE_ALLOWED_HOSTS"):
+        for key in ("SUPPORT_ADDRESS", "FEEDBACK_ADDRESS", "SCHEDULING_ORIGIN", "UPDATE_ALLOWED_HOSTS",
+                    "UPDATE_FEED_URL", "LINUX_APT_REPOSITORY", "LINUX_APT_KEY_FINGERPRINT"):
             self.assertEqual(neutral[key], "", key)
+        # Development builds never join a package repository or follow a feed.
+        for key in ("UPDATE_FEED_URL", "LINUX_APT_REPOSITORY"):
+            self.assertEqual(development[key], "", key)
         self.assertEqual(neutral["OPEN_TRACKING"], "false")
         identity = ("MACOS_BUNDLE_ID", "MACOS_DATA_DIRECTORY", "KEYCHAIN_NAMESPACE", "LINUX_APP_ID",
                     "LINUX_DATA_DIRECTORY", "LINUX_SECRET_COLLECTION", "LINUX_DISPATCH_UNIT")
@@ -75,6 +84,12 @@ class DistributionProfileTests(unittest.TestCase):
         self.assertEqual(self.run_cli("get", "MACOS_BUNDLE_ID", EMAIL_DISTRIBUTION_PROFILE="development").returncode, 0)
         (self.root / profile.SELECTION_FILE).write_text("unofficial\n")
         self.assertEqual(self.run_cli("shell").returncode, 0)
+
+    def test_path_prints_the_resolved_profile(self):
+        result = self.run_cli("path", EMAIL_DISTRIBUTION_PROFILE="official")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(Path(result.stdout.strip()), (self.root / "config/profiles/official.env").resolve())
+        self.assertEqual(Path(self.run_cli("path").stdout.strip()).name, "unofficial.env")
 
     def test_bare_carriage_returns_are_refused(self):
         with self.assertRaises(profile.ProfileError):

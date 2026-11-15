@@ -86,11 +86,12 @@ class LocalValidationTests(unittest.TestCase):
             work = Path(d)
             (work / 'scripts').mkdir()
             (work / 'apps/macos/Sources/EmailUI').mkdir(parents=True)
-            (work / 'scripts/build-identity.py').write_text("print('fixture-identity')\n")
+            (work / 'scripts/build-identity.py').write_text(
+                "import sys\nassert sys.argv[1:] == ['--swift']\nsys.stdout.write('import Foundation\\nenum EmailBuildIdentity {}\\n')\n")
             step = next(s for s in runner.manifest('macos', work, 'gitleaks', 'image') if s[1] == 'build-identity')
             subprocess.run(step[2], cwd=work, check=True)
             text = (work / 'apps/macos/Sources/EmailUI/BuildIdentity.generated.swift').read_text()
-            self.assertEqual(text, 'import Foundation\nenum EmailBuildIdentity { static let value = "fixture-identity" }\n')
+            self.assertEqual(text, 'import Foundation\nenum EmailBuildIdentity {}\n')
 
     def test_full_run_uses_exact_commit_in_separate_checkout(self):
         with tempfile.TemporaryDirectory() as d:

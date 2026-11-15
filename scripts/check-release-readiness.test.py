@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,34 @@ class PreflightChecks(unittest.TestCase):
     def test_removed_ignore_rule_fails(self):
         self.write(".gitignore", "")
         self.assertIn("Private/generated path is not ignored", self.check().stderr)
+
+    def test_tracked_private_key_armor_fails_without_echoing_contents(self):
+        kind = "PGP " + "PRIVATE KEY BLOCK"
+        self.write("docs/notes.txt", f"-----BEGIN {kind}-----\nnever-print-this-value\n-----END {kind}-----\n")
+        self.git("add", "docs/notes.txt")
+        result = self.check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Private key material is tracked: docs/notes.txt", result.stderr)
+        self.assertNotIn("never-print-this-value", result.stdout + result.stderr)
+
+    def test_apt_keyrings_are_public_and_match_their_profiles(self):
+        repo = SCRIPT.parent.parent
+        for name in ("scripts/apt-repository.py", "scripts/distribution-profile.py",
+                     "config/profiles/official.env", "config/profiles/unofficial.env",
+                     "config/profiles/development.env"):
+            self.write(name, (repo / name).read_text())
+        (self.root / "config/profiles/official.apt.asc").write_bytes((repo / "config/profiles/official.apt.asc").read_bytes())
+        self.git("add", ".")
+        self.assertEqual(self.check().returncode, 0, self.check().stderr)
+        self.git("rm", "-q", "--cached", "config/profiles/official.apt.asc")
+        self.assertIn("official.apt.asc is not tracked", self.check().stderr)
+        self.git("add", "config/profiles/official.apt.asc")
+        profile = (self.root / "config/profiles/official.env").read_text()
+        changed = re.sub(r"(?m)^LINUX_APT_KEY_FINGERPRINT=.*$", "LINUX_APT_KEY_FINGERPRINT=" + "A" * 40, profile)
+        self.assertNotEqual(changed, profile)
+        self.write("config/profiles/official.env", changed)
+        self.git("add", ".")
+        self.assertIn("does not contain the signing key", self.check().stderr)
 
     def test_invalid_tracked_shell_fails(self):
         self.write("scripts/broken.sh", "#!/bin/bash\nif then\n")

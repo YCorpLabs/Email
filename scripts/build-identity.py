@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Fingerprint public app sources, independent of host, Git dirtiness and secrets."""
 import hashlib
+import re
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,5 +37,28 @@ def build_id():
     return "dev-" + digest.hexdigest()[:12]
 
 
+def release_version():
+    """The release version (docs/release-versions.md), from apps/linux/Cargo.toml."""
+    text = (ROOT / "apps/linux/Cargo.toml").read_text()
+    match = re.search(r'(?m)^version = "([0-9A-Za-z.+-]+)"$', text)
+    if not match:
+        raise SystemExit("apps/linux/Cargo.toml has no release version")
+    return match.group(1)
+
+
+def swift_source():
+    """apps/macos/Sources/EmailUI/BuildIdentity.generated.swift (ignored by Git)."""
+    return ("import Foundation\n"
+            "enum EmailBuildIdentity {\n"
+            f'    static let value = "{build_id()}"\n'
+            f'    static let releaseVersion = "{release_version()}"\n'
+            "}\n")
+
+
 if __name__ == "__main__":
-    print(build_id())
+    if sys.argv[1:] == ["--swift"]:
+        sys.stdout.write(swift_source())
+    elif sys.argv[1:]:
+        raise SystemExit("Usage: build-identity.py [--swift]")
+    else:
+        print(build_id())

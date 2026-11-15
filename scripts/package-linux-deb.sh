@@ -40,6 +40,22 @@ install -Dm644 apps/linux/packaging/debian/email-linux.apparmor "$package_dir/et
 install -m755 apps/linux/packaging/debian/postinst "$package_dir/DEBIAN/postinst"
 install -m755 apps/linux/packaging/debian/prerm "$package_dir/DEBIAN/prerm"
 printf '/etc/apparmor.d/email-linux\n' > "$package_dir/DEBIAN/conffiles"
+# Updates (docs/linux-updates.md): a distribution profile's package joins its
+# APT repository on install, as Chrome's and VS Code's packages do. The public
+# key and a deb822 sources file are conffiles, so a user's deletion sticks.
+# A pre-release names the beta suite, a final release the stable suite.
+# Local alphas and non-distribution profiles never add a repository.
+if [[ "$EMAIL_PROFILE_DISTRIBUTION" == true && -n "$EMAIL_PROFILE_LINUX_APT_REPOSITORY" ]]; then
+  apt_keyring="$(python3 scripts/apt-repository.py keyring-path "$EMAIL_DISTRIBUTION_PROFILE")"
+  python3 scripts/apt-repository.py check-keyring "$apt_keyring" "$EMAIL_PROFILE_LINUX_APT_KEY_FINGERPRINT" >/dev/null
+  install -Dm644 "$apt_keyring" "$package_dir/usr/share/keyrings/email-linux-archive-keyring.asc"
+  install -d "$package_dir/etc/apt/sources.list.d"
+  python3 scripts/apt-repository.py sources "$EMAIL_PROFILE_LINUX_APT_REPOSITORY" "$version" "$architecture" \
+    > "$package_dir/etc/apt/sources.list.d/email-linux.sources"
+  chmod 644 "$package_dir/etc/apt/sources.list.d/email-linux.sources"
+  printf '%s\n' /etc/apt/sources.list.d/email-linux.sources /usr/share/keyrings/email-linux-archive-keyring.asc \
+    >> "$package_dir/DEBIAN/conffiles"
+fi
 
 cat > "$package_dir/DEBIAN/control" <<EOF
 Package: email-linux

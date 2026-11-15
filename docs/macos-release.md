@@ -41,12 +41,14 @@ Required inputs are a distribution profile (`official`, or a fork's own profile 
 
 ```sh
 export EMAIL_DISTRIBUTION_PROFILE=official
-export EMAIL_RELEASE_CODESIGN_IDENTITY='Developer ID Application: Your Organization (TEAMID)'
+export EMAIL_RELEASE_CODESIGN_IDENTITY='Developer ID Application: Y CORP AS (5S8WC7RN88)'   # a fork: its own
 export EMAIL_NOTARY_PROFILE='email-release'
 export EMAIL_RELEASE_GOOGLE_CLIENT_ID='your-production-desktop-client-id'
 # Supply EMAIL_RELEASE_GOOGLE_CLIENT_SECRET through your release environment.
-export EMAIL_VERSION='0.1.0'
-export EMAIL_BUILD_NUMBER='1'
+# EMAIL_VERSION defaults to the release version in apps/linux/Cargo.toml and
+# must equal it.
+export EMAIL_BUILD_NUMBER='3'   # one more for every release
+export EMAIL_UPDATE_CHANNEL=stable   # testing for a beta
 # Google sign-in stays off until Google's review passes (GOOGLE_OAUTH_PUBLIC=false
 # in config/profiles/official.env; docs/account-setup.md). Keep
 # EMAIL_GOOGLE_OAUTH_PUBLIC unset here.
@@ -56,17 +58,37 @@ export EMAIL_BUILD_NUMBER='1'
 
 The script signs nested code before the app, checks for an Apple Developer ID certificate requirement, submits the app and DMG to Apple's notary service, staples both tickets, checks the app with Gatekeeper, and emits a SHA-256 checksum. A failure stops the script. A local alpha never gets a successful distribution status marker.
 
+Y Corp AS's identity is **Developer ID Application: Y CORP AS (5S8WC7RN88)**,
+and its notarytool credential profile is `email-release`.
+
+**Signing from a standalone keychain on macOS 27.** Developer ID signing from a
+keychain file that is not on the real user keychain search list fails with
+`errSecInternalComponent` ("unable to build chain to self-signed root"). The
+private search list that the packager gives codesign through its own `HOME`
+(`email_codesign_home`, enough for the fixture and beta identities) is not
+enough for a Developer ID certificate. Until the packager handles this, put the
+release keychain on the user search list for the duration of the build
+(`security list-keychains -d user -s <release keychain> <current entries>`) and
+restore the previous list afterwards; while it is there,
+`scripts/test-macos-updates.sh` stops with "Fixture signing changed the
+keychain search list".
+
 The script packages **the architecture it is built on**. Intel and Apple Silicon need their own builds and hardware tests, or a separately engineered universal-binary build. Use a clean release environment and preserve signing credentials outside source control.
 
-These artifacts are installer preparation, not a finished release. [Signed automatic updates](macos-updates.md) also need production signing and update hosting. Do not publish the local-alpha artifacts as a release.
+These artifacts are installer preparation, not a finished release. The official profile supplies the update feed and its public key, so the app updates itself once its archive is published with `scripts/publish-macos-update.sh` and uploaded ([macOS updates](macos-updates.md), [release checklist](release-checklist.md)). With a Developer ID, betas are built this way too, on the testing channel ([betas](macos-updates.md#betas)). Do not publish the local-alpha artifacts as a release.
 
 ## Unnotarized beta
 
 Until the project has an Apple Developer ID, betas are built with `--beta`. It
-builds the official app, with the `official` profile, bundle ID
-`com.ycorplabs.mail` and the production Google desktop client, and signs it with
-the project's self-signed beta certificate instead of a Developer ID. It is not
-notarized, has no hardened runtime and no update feed. The launcher's checks are
+stays the fallback for any build without a Developer ID; with one, betas are
+`--distribute` builds on the testing channel and update automatically
+([betas](macos-updates.md#betas)). `--beta` builds the official app, with the
+`official` profile, bundle ID `com.ycorplabs.mail` and the production Google
+desktop client, and signs it with the project's self-signed beta certificate
+instead of a Developer ID. It is not notarized, has no hardened runtime and no
+update feed: the packager leaves out the feed the official profile records and
+refuses `EMAIL_UPDATE_FEED_URL` or `EMAIL_UPDATE_PUBLIC_ED_KEY`, so the updater
+reports `not-configured`. The launcher's checks are
 unchanged: every bundled library must carry the same signature as the launcher.
 Ad-hoc signing cannot pass them, because an ad-hoc designated requirement is
 the launcher's own code hash, and no library has that hash.
@@ -94,7 +116,8 @@ Build and check each beta:
 export EMAIL_DISTRIBUTION_PROFILE=official
 export EMAIL_RELEASE_GOOGLE_CLIENT_ID='your-production-desktop-client-id'
 # Supply EMAIL_RELEASE_GOOGLE_CLIENT_SECRET through your release environment.
-export EMAIL_VERSION='0.1.0-beta.2'
+# EMAIL_VERSION defaults to, and must equal, the release version in
+# apps/linux/Cargo.toml (0.1.0-beta.2 for that beta).
 export EMAIL_BUILD_NUMBER='2'   # one more for every release
 ./scripts/package-macos-release.sh --beta
 ./scripts/verify-macos-release.sh dist-release/beta/Email.app
@@ -117,7 +140,17 @@ per account, and testers choose **Always Allow**.
 Testers open an unnotarized beta the first time with System Settings → Privacy
 & Security → **Open Anyway**, or by running
 `xattr -dr com.apple.quarantine /Applications/Email.app` before opening it.
-Betas have no automatic updates; testers download new betas by hand.
+Unnotarized betas have no automatic updates; testers download new betas by
+hand, and the first Developer ID build once more by hand.
+
+About and the support information show the release version and build number
+from the signed Info.plist, for example **Email 0.1.0-beta.2 (2)**.
+Development builds show the release version they were built from
+(`apps/linux/Cargo.toml`, through the generated `BuildIdentity.generated.swift`).
+The Linux About shows the same release version (`CARGO_PKG_VERSION`) and has no
+build number. Checked on a `--beta` build of 0.1.0-beta.2 (build 2) and a
+development build with demo data; the Linux About code was read, not run, as it
+was already correct.
 
 ## Keychain items and repeated password prompts
 
