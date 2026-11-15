@@ -286,8 +286,8 @@ A production update needs:
 1. Apple Developer ID Application certificate and notarytool profile for
    Y Corp AS. The publisher refuses non-Developer ID archives. Available:
    "Developer ID Application: Y CORP AS (5S8WC7RN88)" with the notarytool
-   profile `email-release`. On macOS 27 its keychain must be on the user search
-   list while signing ([public distribution](macos-release.md#public-distribution)).
+   profile `email-release`, from the release keychain
+   ([release keychain](macos-release.md#release-keychain)).
 2. Production EdDSA key pair, stored in the release secret store. Done: its
    public key is the official profile's `UPDATE_PUBLIC_ED_KEY`, and only the
    public key goes into the build.

@@ -17,6 +17,8 @@ stage=""
 on_exit() {
   if [[ -n "$stage" ]]; then rm -rf "$stage"; fi
   if declare -F email_beta_signing_lock >/dev/null; then email_beta_signing_lock; fi
+  # Restores the user's keychain search list (macos-release-signing.sh).
+  if declare -F email_release_signing_lock >/dev/null; then email_release_signing_lock; fi
 }
 trap on_exit EXIT
 # Fixture bundles are disposable acceptance tests: neutral identity and no
@@ -70,13 +72,25 @@ if [[ "$mode" == --distribute || "$mode" == --beta ]]; then
   export EMAIL_RELEASE_BUNDLE_ID="$EMAIL_PROFILE_MACOS_BUNDLE_ID"
 fi
 if [[ "$mode" == --distribute ]]; then
-  : "${EMAIL_RELEASE_CODESIGN_IDENTITY:?Set a Developer ID Application identity for distribution}"
+  # The Developer ID identity: by default from the release keychain
+  # (scripts/macos-release-signing.sh), or one named in
+  # EMAIL_RELEASE_CODESIGN_IDENTITY that codesign finds on its own.
+  release_keychain=""
+  if [[ -z "${EMAIL_RELEASE_CODESIGN_IDENTITY:-}" ]]; then
+    if [[ -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then
+      echo "Set EMAIL_RELEASE_CODESIGN_IDENTITY with EMAIL_RELEASE_CODESIGN_KEYCHAIN, or neither to use the release keychain." >&2
+      exit 2
+    fi
+    source "$repo_root/scripts/macos-release-signing.sh"
+    email_release_signing_check || exit 2
+    release_keychain=1
+  fi
   : "${EMAIL_NOTARY_PROFILE:?Set the existing notarytool Keychain profile name for distribution}"
   # A profile with update hosts must ship its feed; one without has no updater.
   if [[ -n "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
     : "${EMAIL_UPDATE_FEED_URL:?Set the production HTTPS appcast URL (UPDATE_FEED_URL in the profile or EMAIL_UPDATE_FEED_URL)}"
   fi
-  signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
+  signing_identity="${EMAIL_RELEASE_CODESIGN_IDENTITY:-}"
   channel=distribution
 elif [[ "$mode" == --beta ]]; then
   # Unnotarized beta, until the project has an Apple Developer ID: the
@@ -219,14 +233,25 @@ if [[ "$mode" == --beta ]]; then
   email_beta_signing_unlock || exit 2
   signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
 fi
+if [[ -n "${release_keychain:-}" ]]; then
+  # Unlocked and on the user's search list until the DMG is signed; the exit
+  # trap restores the search list and locks it, also on failure.
+  email_release_signing_unlock || exit 2
+  signing_identity="$EMAIL_RELEASE_CODESIGN_IDENTITY"
+  echo "Signing with $EMAIL_RELEASE_CODESIGN_NAME from $EMAIL_RELEASE_CODESIGN_KEYCHAIN"
+fi
 sign_args=(--force --sign "$signing_identity")
 codesign_home=""
 if [[ -n "${EMAIL_RELEASE_CODESIGN_KEYCHAIN:-}" ]]; then
   sign_args+=(--keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN")
   # Before macOS 27, codesign also needs the keychain file on a search list.
-  # It gets a private one; the user's search list is not changed.
-  codesign_home="$stage/codesign-home"
-  email_codesign_home "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" "$codesign_home"
+  # Beta and fixture keychains get a private one; the user's search list is
+  # not changed. The release keychain is already on the user's search list,
+  # which a Developer ID chain needs (macos-release-signing.sh).
+  if [[ -z "${release_keychain:-}" ]]; then
+    codesign_home="$stage/codesign-home"
+    email_codesign_home "$EMAIL_RELEASE_CODESIGN_KEYCHAIN" "$codesign_home"
+  fi
 fi
 if [[ "$mode" == --distribute ]]; then sign_args+=(--options runtime --timestamp); else sign_args+=(--timestamp=none); fi
 sign() {
@@ -293,7 +318,14 @@ fi
 dmg="$output/Email-$EMAIL_VERSION-$(uname -m).dmg"
 hdiutil create -quiet -volname "$volume_name" -srcfolder "$stage/dmg" -ov -format UDZO "$dmg"
 if [[ "$mode" == --distribute ]]; then
-  codesign --force --sign "$signing_identity" --timestamp "$dmg"
+  dmg_sign_args=(--force --sign "$signing_identity" --timestamp)
+  if [[ -n "${release_keychain:-}" ]]; then
+    # App notarization can outlast the keychain's idle lock: unlock again.
+    email_release_signing_unlock || exit 2
+    dmg_sign_args+=(--keychain "$EMAIL_RELEASE_CODESIGN_KEYCHAIN")
+  fi
+  codesign "${dmg_sign_args[@]}" "$dmg"
+  if [[ -n "${release_keychain:-}" ]]; then email_release_signing_lock; fi
   xcrun notarytool submit "$dmg" --keychain-profile "$EMAIL_NOTARY_PROFILE" --wait
   xcrun stapler staple "$dmg"
   xcrun stapler validate "$dmg"
