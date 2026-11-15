@@ -244,6 +244,8 @@ See [MCP](mcp.md).
 | macOS headless engine check | `./scripts/dev.sh --smoke` |
 | macOS Swift rule harnesses | `python3 scripts/check-release-swift.py` |
 | macOS launcher tooling | `python3 scripts/run-macos-launcher-cache.test.py` |
+| macOS updates | `python3 scripts/macos-updates-env.test.py`, `./scripts/test-macos-updates.sh` ([macOS updates](macos-updates.md#tests)) |
+| Linux updates (APT) | `python3 scripts/apt-repository.test.py`, `python3 scripts/upload-updates.test.py`, `./scripts/test-linux-apt.sh` ([Linux updates](linux-updates.md#tests)) |
 | Source checks | `python3 scripts/check-release-readiness.py` and `python3 scripts/check-toolchain.py` |
 
 `scripts/validate-local.py` runs the same groups as CI against a clean,
