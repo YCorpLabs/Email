@@ -132,7 +132,13 @@ sent with tracking stays readable. See [reader privacy](docs/reader-privacy.md).
 
 ### 7. Updates
 
-Linux builds update through the system package manager. On macOS:
+Linux builds update through the system package manager. A distribution `.deb`
+adds your APT repository when it is installed if your profile sets
+`LINUX_APT_REPOSITORY` (HTTPS on one of `UPDATE_ALLOWED_HOSTS`) and
+`LINUX_APT_KEY_FINGERPRINT`, with the public key beside the profile as
+`<profile>.apt.asc`. Generate your own signing key; publish with
+`scripts/publish-linux-apt.sh` ([Linux updates](docs/linux-updates.md)). Leave
+both empty to ship a package without a repository. On macOS:
 
 1. Generate your own Sparkle EdDSA key pair with Sparkle's `generate_keys`.
    Keep the private key in a secret store with an offline backup.

@@ -59,6 +59,10 @@ RULES = {
     "UPDATE_FEED_URL": r"(?:https://\S+)?",
     "UPDATE_PUBLIC_ED_KEY": r"(?:[A-Za-z0-9+/]{43}=)?",
     "UPDATE_ALLOWED_HOSTS": rf"(?:{HOST}(?: {HOST})*)?",
+    # The APT repository a distribution .deb adds on install, and the
+    # fingerprint of the key that signs it (docs/linux-updates.md).
+    "LINUX_APT_REPOSITORY": rf"(?:https://{HOST}(?:/[A-Za-z0-9._~-]+)*)?",
+    "LINUX_APT_KEY_FINGERPRINT": r"(?:[0-9A-F]{40})?",
     # Per-draft email open tracking (Track opens). Development builds only.
     "OPEN_TRACKING": BOOLEAN,
 }
@@ -108,6 +112,13 @@ def parse(text, source):
         raise ProfileError(f"{source}: UPDATE_PUBLIC_ED_KEY is not a 32-byte EdDSA public key")
     if feed and not feed_allowed(feed, values["UPDATE_ALLOWED_HOSTS"]):
         raise ProfileError(f"{source}: UPDATE_FEED_URL must be HTTPS on one of UPDATE_ALLOWED_HOSTS")
+    apt, fingerprint = values["LINUX_APT_REPOSITORY"], values["LINUX_APT_KEY_FINGERPRINT"]
+    if bool(apt) != bool(fingerprint):
+        raise ProfileError(f"{source}: LINUX_APT_REPOSITORY and LINUX_APT_KEY_FINGERPRINT must be set together")
+    # Only a distributed package joins a repository, and only one on an update host.
+    if apt and (values["DISTRIBUTION"] != "true"
+                or apt[len("https://"):].split("/", 1)[0] not in values["UPDATE_ALLOWED_HOSTS"].split(" ")):
+        raise ProfileError(f"{source}: LINUX_APT_REPOSITORY needs DISTRIBUTION=true and a host in UPDATE_ALLOWED_HOSTS")
     return values
 
 
@@ -243,6 +254,7 @@ def main(argv=None):
     parser.add_argument("--root", type=Path, default=ROOT)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("shell", help="Print shell assignments for build scripts")
+    commands.add_parser("path", help="Print the selected profile's absolute file path")
     get = commands.add_parser("get", help="Print one profile value")
     get.add_argument("key", choices=sorted(RULES))
     get.add_argument("--profile", help="Read this named profile instead of the selection")
@@ -253,10 +265,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     root = args.root.resolve()
     try:
-        if args.command in ("shell", "check-google-client") or (args.command == "get" and not args.profile):
+        if args.command in ("shell", "path", "check-google-client") or (args.command == "get" and not args.profile):
             require_selection(root, os.environ)
         if args.command == "shell":
             sys.stdout.write(shell(root, os.environ))
+        elif args.command == "path":
+            print(load(root)[0])
         elif args.command == "get":
             values = named(args.profile, root) if args.profile else load(root)[1]
             print(values[args.key])

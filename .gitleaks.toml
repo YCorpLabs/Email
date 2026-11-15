@@ -19,3 +19,13 @@ regexTarget = "line"
 regexes = [
     '''^\n?\ \ \ \ \ \ \ \ self\.write\("config/oauth\-desktop\.local\.env",\ "SYNTHETIC_FIXTURE=placeholder\\n"\)$''',
 ]
+
+[[rules.allowlists]]
+description = "Public update verification values in the official profile; exact unchanged lines only"
+condition = "AND"
+paths = ['''(^|/)config/profiles/official\.env$''']
+regexTarget = "line"
+regexes = [
+    '''^\n?UPDATE_PUBLIC_ED_KEY=iz87QU2vCaLE3Qq138gmnoHPIcgSt97BXuwpaK/TeKk=$''',
+    '''^\n?LINUX_APT_KEY_FINGERPRINT=20B087BF1D1B2A04102882F213081979B6CEABDA$''',
+]

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 pub const SELECTION_FILE: &str = "config/distribution-profile.local";
 pub const OAUTH_FILE: &str = "config/oauth-desktop.local.env";
 pub const DEFAULT_PROFILE: &str = "unofficial";
-pub const KEYS: [&str; 19] = [
+pub const KEYS: [&str; 21] = [
     "PROFILE",
     "DISTRIBUTION",
     "GOOGLE_CLIENT_ID_REQUIRED",
@@ -30,6 +30,10 @@ pub const KEYS: [&str; 19] = [
     "UPDATE_FEED_URL",
     "UPDATE_PUBLIC_ED_KEY",
     "UPDATE_ALLOWED_HOSTS",
+    // The APT repository a distribution .deb adds on install, and the
+    // fingerprint of the key that signs it (docs/linux-updates.md).
+    "LINUX_APT_REPOSITORY",
+    "LINUX_APT_KEY_FINGERPRINT",
     // Per-draft email open tracking (Track opens). Development builds only.
     "OPEN_TRACKING",
 ];
@@ -128,6 +132,19 @@ fn feed_allowed(url: &str, hosts: &str) -> bool {
         && hosts.split(' ').any(|allowed| allowed == host.to_ascii_lowercase())
 }
 
+/// HTTPS on a host, default port, optional path segments, no trailing slash,
+/// query or fragment; matches the LINUX_APT_REPOSITORY rule in Python.
+fn apt_repository(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("https://") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    parts.next().is_some_and(host)
+        && parts.all(|segment| {
+            !segment.is_empty() && segment.chars().all(|c| alnum(c) || "._~-".contains(c))
+        })
+}
+
 fn valid(key: &str, value: &str) -> bool {
     let optional = |check: fn(&str) -> bool| value.is_empty() || check(value);
     if value.contains("..") {
@@ -162,6 +179,10 @@ fn valid(key: &str, value: &str) -> bool {
         }),
         "UPDATE_PUBLIC_ED_KEY" => optional(ed_public_key),
         "UPDATE_ALLOWED_HOSTS" => optional(|v| v.split(' ').all(host)),
+        "LINUX_APT_REPOSITORY" => optional(apt_repository),
+        "LINUX_APT_KEY_FINGERPRINT" => optional(|v| {
+            v.len() == 40 && v.chars().all(|c| c.is_ascii_digit() || ('A'..='F').contains(&c))
+        }),
         _ => false,
     }
 }
@@ -220,6 +241,22 @@ pub fn parse(text: &str, source: &str) -> Result<BTreeMap<String, String>, Strin
     if !feed.is_empty() && !feed_allowed(feed, &values["UPDATE_ALLOWED_HOSTS"]) {
         return Err(format!(
             "{source}: UPDATE_FEED_URL must be HTTPS on one of UPDATE_ALLOWED_HOSTS"
+        ));
+    }
+    let (apt, fingerprint) = (&values["LINUX_APT_REPOSITORY"], &values["LINUX_APT_KEY_FINGERPRINT"]);
+    if apt.is_empty() != fingerprint.is_empty() {
+        return Err(format!(
+            "{source}: LINUX_APT_REPOSITORY and LINUX_APT_KEY_FINGERPRINT must be set together"
+        ));
+    }
+    // Only a distributed package joins a repository, and only one on an update host.
+    let apt_host = apt.trim_start_matches("https://").split('/').next().unwrap_or_default();
+    if !apt.is_empty()
+        && (values["DISTRIBUTION"] != "true"
+            || !values["UPDATE_ALLOWED_HOSTS"].split(' ').any(|allowed| allowed == apt_host))
+    {
+        return Err(format!(
+            "{source}: LINUX_APT_REPOSITORY needs DISTRIBUTION=true and a host in UPDATE_ALLOWED_HOSTS"
         ));
     }
     Ok(values)
@@ -359,9 +396,28 @@ mod tests {
         // Off for official releases until Google verification passes.
         assert!(!official.flag("GOOGLE_OAUTH_PUBLIC"));
         assert!(catalog("development").flag("GOOGLE_OAUTH_PUBLIC"));
+        assert_eq!(
+            official.get("UPDATE_FEED_URL"),
+            "https://updates.ycorplabs.com/email/macos/appcast.xml"
+        );
+        assert_eq!(official.get("LINUX_APT_REPOSITORY"), "https://updates.ycorplabs.com/email/apt");
+        assert_eq!(
+            official.get("LINUX_APT_KEY_FINGERPRINT"),
+            "20B087BF1D1B2A04102882F213081979B6CEABDA"
+        );
         let neutral = catalog("unofficial");
-        for key in ["SUPPORT_ADDRESS", "SCHEDULING_ORIGIN", "UPDATE_FEED_URL", "UPDATE_ALLOWED_HOSTS"] {
+        for key in [
+            "SUPPORT_ADDRESS",
+            "SCHEDULING_ORIGIN",
+            "UPDATE_FEED_URL",
+            "UPDATE_ALLOWED_HOSTS",
+            "LINUX_APT_REPOSITORY",
+            "LINUX_APT_KEY_FINGERPRINT",
+        ] {
             assert!(neutral.get(key).is_empty(), "{key}");
+        }
+        for key in ["UPDATE_FEED_URL", "LINUX_APT_REPOSITORY"] {
+            assert!(catalog("development").get(key).is_empty(), "{key}");
         }
         assert!(!neutral.flag("OPEN_TRACKING"));
     }

@@ -40,6 +40,8 @@ shell and the scripts always read the same file. Check a selection with
 | Support and feedback | official addresses | official addresses | none |
 | Scheduling origin | official service | official service | none |
 | Update hosts | none | `ycorplabs.com`, `updates.ycorplabs.com` | none |
+| macOS update feed and key | none | `https://updates.ycorplabs.com/email/macos/appcast.xml` | none |
+| Linux APT repository | none | `https://updates.ycorplabs.com/email/apt`, key `20B0…ABDA` | none |
 | `OPEN_TRACKING` (Track opens) | `true` | `false` | `false` |
 | Google client ID required | yes | yes | no |
 | `GOOGLE_OAUTH_PUBLIC` (one-click Google sign-in, see below) | `true` | `false` | `true` |
@@ -134,7 +136,8 @@ Info.plist depend on it.
   Scheduling or data directory.
 - **Linux shell**: `mail_service::profile`.
 - **Scripts**: bundle ID, update hosts and feed, dispatcher labels,
-  MCP registration names, desktop entry names.
+  MCP registration names, desktop entry names, and the APT repository that a
+  distribution `.deb` adds ([Linux updates](linux-updates.md)).
 
 Unset values remove features rather than falling back:
 
@@ -143,6 +146,11 @@ Unset values remove features rather than falling back:
   are hidden in both shells, and the engine refuses Scheduling requests;
 - no update hosts: the macOS updater stays disabled and packaging refuses a
   feed URL;
+- no `LINUX_APT_REPOSITORY`: the `.deb` adds no package repository. The
+  parsers accept one only with `DISTRIBUTION=true`, on one of
+  `UPDATE_ALLOWED_HOSTS`, together with `LINUX_APT_KEY_FINGERPRINT`. Its public
+  key sits beside the profile, as `<profile>.apt.asc`
+  (`config/profiles/official.apt.asc`);
 - `OPEN_TRACKING=false`: the engine compiles the tracking pixel out and both
   shells hide Track opens; saved activity for already-tracked sent mail stays
   readable. The parsers refuse `true` in a distribution profile or without a
@@ -159,7 +167,9 @@ Unset values remove features rather than falling back:
 - `connect-mcp.sh` rebuilds an existing helper that was compiled for another
   profile.
 - A feed or update key recorded in the profile cannot be overridden from the
-  environment. Publishing refuses an archive whose key differs.
+  environment. Publishing refuses an archive whose key differs. An
+  unnotarized `--beta` build never ships a feed, even from a profile that
+  records one.
 
 ## Known gaps
 
