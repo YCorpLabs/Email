@@ -143,13 +143,7 @@ jobs:
       - run: cargo build --release --locked -p mail-service -p mail-mcp
       - name: Build macOS shell and exercise isolated service bridge
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-          value = subprocess.check_output(["python3", "scripts/build-identity.py"], text=True).strip()
-          Path("apps/macos/Sources/EmailUI/BuildIdentity.generated.swift").write_text(
-              'import Foundation\nenum EmailBuildIdentity { static let value = "' + value + '" }\n')
-          PY
+          python3 scripts/build-identity.py --swift > apps/macos/Sources/EmailUI/BuildIdentity.generated.swift
           swift build --package-path apps/macos --disable-sandbox -c release --only-use-versions-from-resolved-file
           bin_dir="$(swift build --package-path apps/macos --disable-sandbox -c release --show-bin-path)"
           "$bin_dir/email-update-policy-checks"
