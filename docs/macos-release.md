@@ -41,7 +41,9 @@ Required inputs are a distribution profile (`official`, or a fork's own profile 
 
 ```sh
 export EMAIL_DISTRIBUTION_PROFILE=official
-export EMAIL_RELEASE_CODESIGN_IDENTITY='Developer ID Application: Y CORP AS (5S8WC7RN88)'   # a fork: its own
+# The Developer ID identity comes from the release keychain (below). To use
+# an identity from your login keychain instead, set
+# EMAIL_RELEASE_CODESIGN_IDENTITY='Developer ID Application: … (TEAMID)'.
 export EMAIL_NOTARY_PROFILE='email-release'
 export EMAIL_RELEASE_GOOGLE_CLIENT_ID='your-production-desktop-client-id'
 # Supply EMAIL_RELEASE_GOOGLE_CLIENT_SECRET through your release environment.
@@ -61,17 +63,44 @@ The script signs nested code before the app, checks for an Apple Developer ID ce
 Y Corp AS's identity is **Developer ID Application: Y CORP AS (5S8WC7RN88)**,
 and its notarytool credential profile is `email-release`.
 
-**Signing from a standalone keychain on macOS 27.** Developer ID signing from a
-keychain file that is not on the real user keychain search list fails with
-`errSecInternalComponent` ("unable to build chain to self-signed root"). The
-private search list that the packager gives codesign through its own `HOME`
-(`email_codesign_home`, enough for the fixture and beta identities) is not
-enough for a Developer ID certificate. Until the packager handles this, put the
-release keychain on the user search list for the duration of the build
-(`security list-keychains -d user -s <release keychain> <current entries>`) and
-restore the previous list afterwards; while it is there,
-`scripts/test-macos-updates.sh` stops with "Fixture signing changed the
-keychain search list".
+### Release keychain
+
+The Developer ID identity lives in its own keychain file, like the beta
+identity: `email-macos-release-signing.keychain-db` and its `.password` file,
+both mode 600, in `~/.config/ycorp-release/` (`EMAIL_RELEASE_SIGNING_DIR`
+selects another directory). Create it once per certificate from the
+certificate Apple issues and the private key of the signing request you
+uploaded:
+
+```sh
+./scripts/macos-release-signing.sh import developerID_application.cer developer-id.key
+./scripts/macos-release-signing.sh status   # identity, SHA-1 and expiry
+```
+
+`import` checks that the key belongs to the certificate and adds Apple's
+Developer ID G2 intermediate, pinned by SHA-256. Back up the key, the
+certificate and both keychain files together, outside source control. The
+certificate expires after about a year (status shows the date). Apps signed
+before then keep working because their signatures are timestamped. A renewed
+certificate from the same team satisfies the designated requirement that
+Sparkle checks, so updates continue.
+
+On macOS 27, codesign builds a Developer ID chain only from keychains on the
+user's real search list. `--keychain` and the private search list that the beta
+and fixture builds use are not enough: signing fails with
+`errSecInternalComponent` ("unable to build chain to self-signed root"). So for
+`--distribute` the packager unlocks the release keychain, puts it first on the
+user's search list until the DMG is signed, and then restores the list exactly.
+Its exit trap restores the list after a failure too. While a release build runs,
+`scripts/test-macos-updates.sh` refuses to start ("Fixture signing changed the
+keychain search list").
+
+The notarytool profile is created once from an App Store Connect team API key
+(role Developer):
+
+```sh
+xcrun notarytool store-credentials email-release --key AuthKey_KEYID.p8 --key-id KEYID --issuer ISSUER-ID
+```
 
 The script packages **the architecture it is built on**. Intel and Apple Silicon need their own builds and hardware tests, or a separately engineered universal-binary build. Use a clean release environment and preserve signing credentials outside source control.
 

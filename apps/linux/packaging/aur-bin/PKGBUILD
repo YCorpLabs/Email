@@ -9,11 +9,11 @@
 # scripts/prepare-aur-package.sh fills in the checksums and writes .SRCINFO;
 # see docs/linux-aur.md.
 pkgname=email-ycorp-bin
-pkgver=0.1.0beta2
+pkgver=0.1.0beta3
 # The release tag; Arch versions cannot contain '-'.
-_tag=v0.1.0-beta.2
+_tag=v0.1.0-beta.3
 # The package version inside the .deb file names (apps/linux/Cargo.toml).
-_debver=0.1.0-beta.2
+_debver=0.1.0-beta.3
 _appid=com.ycorplabs.Mail
 pkgrel=1
 pkgdesc='Keyboard-first, local-first desktop email client (beta, prebuilt)'

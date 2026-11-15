@@ -69,13 +69,24 @@ fi
 if [[ "${EMAIL_VERIFY_REQUIRE_UPDATES:-0}" == 1 && "$status" != *'"enabled":true'* ]]; then
   fail "this release must have automatic updates enabled: $status"
 fi
+# A modified bundle must not update. Without hardened runtime the app starts
+# and its updater refuses with the expected reason. A Developer ID build has
+# hardened runtime, and macOS kills it at launch (SIGKILL, exit 137) because
+# its sealed resources no longer match, which also refuses the update.
+hardened=0
+code_directory="$(codesign -dv "$app" 2>&1 | grep '^CodeDirectory ' || true)"
+if [[ "$code_directory" =~ flags=0x[0-9a-f]+\([^\)]*runtime ]]; then hardened=1; fi
+expect_update_refused() {
+  local bundle="$1" reason="$2" what="$3" status code=0
+  status="$(EMAIL_STORE_PATH="$scratch/$(basename "$bundle").sqlite" "$bundle/Contents/MacOS/Email" --updater-status 2>/dev/null)" || code=$?
+  if [[ "$hardened" == 1 && "$code" == 137 ]]; then return 0; fi
+  [[ "$code" == 0 && "$status" == *"\"reason\":\"$reason\""* ]] || fail "$what was not refused (exit $code): $status"
+}
 ditto "$source_app" "$scratch/SparkleModified.app"
 printf '\001' >> "$scratch/SparkleModified.app/Contents/Frameworks/Sparkle.framework/Versions/B/Autoupdate"
-status="$(EMAIL_STORE_PATH="$scratch/sparkle-modified.sqlite" "$scratch/SparkleModified.app/Contents/MacOS/Email" --updater-status)"
-[[ "$status" == *'"reason":"module-signature-invalid"'* ]] || fail "modified Sparkle was not refused: $status"
+expect_update_refused "$scratch/SparkleModified.app" module-signature-invalid "modified Sparkle"
 ditto "$source_app" "$scratch/ConfigModified.app"
 /usr/libexec/PlistBuddy -c 'Delete :SUFeedURL' "$scratch/ConfigModified.app/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c 'Add :SUFeedURL string https://updates.example.invalid/appcast.xml' "$scratch/ConfigModified.app/Contents/Info.plist"
-status="$(EMAIL_STORE_PATH="$scratch/config-modified.sqlite" "$scratch/ConfigModified.app/Contents/MacOS/Email" --updater-status)"
-[[ "$status" == *'"reason":"signature-invalid"'* ]] || fail "modified update configuration was not refused: $status"
+expect_update_refused "$scratch/ConfigModified.app" signature-invalid "modified update configuration"
 printf 'Release package checks passed: signatures, relocation, isolated store, environment override, missing library, modified library, bundled MCP, Sparkle %s embedding and signer, updater status, modified Sparkle, modified update configuration.\n' "$EMAIL_SPARKLE_VERSION"

@@ -43,7 +43,7 @@ EMAIL_LINUX_RELEASE_CHANNEL=distribution ./scripts/package-linux-release.sh aarc
 With a Developer ID (betas on the testing channel, finals on stable):
 
 ```sh
-export EMAIL_RELEASE_CODESIGN_IDENTITY='Developer ID Application: Y CORP AS (5S8WC7RN88)'
+# Signs with the release keychain (macos-release-signing.sh status shows it).
 export EMAIL_NOTARY_PROFILE=email-release
 export EMAIL_BUILD_NUMBER=3
 export EMAIL_UPDATE_CHANNEL=testing    # stable for a final
@@ -53,10 +53,9 @@ EMAIL_VERIFY_REQUIRE_UPDATES=1 ./scripts/verify-macos-release.sh dist-release/di
 
 `--distribute` notarizes and staples the app and the DMG, checks them with
 Gatekeeper and writes `Email-0.2.0-beta.1-3-<arch>.zip`, the update archive.
-Build on Apple Silicon and on Intel for both architectures. On macOS 27 the
-release keychain must be on the user keychain search list while it signs, and
-the list restored afterwards ([macOS distribution
-builds](macos-release.md#public-distribution)).
+Build on Apple Silicon and on Intel for both architectures. While it signs, the
+packager puts the release keychain on the user keychain search list and
+restores the list afterwards ([release keychain](macos-release.md#release-keychain)).
 
 Without a Developer ID, build `--beta` instead (`EMAIL_BUILD_NUMBER=3
 ./scripts/package-macos-release.sh --beta`): no notarization, no feed, and
