@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$repo_root/scripts/package-notices.sh"
 source "$repo_root/scripts/macos-updates-env.sh"
 source "$repo_root/scripts/distribution-profile.sh"
+source "$repo_root/scripts/release-version.sh"
 export EMAIL_UPDATE_FIXTURE_BUNDLE_ID
 require_package_notices "$repo_root"
 mode="${1:---local-alpha}"
@@ -29,7 +30,18 @@ elif [[ "$mode" == --local-alpha ]]; then
   email_require_google_client_id "$repo_root"
 fi
 export EMAIL_GOOGLE_CLIENT_ID EMAIL_GOOGLE_CLIENT_SECRET EMAIL_MICROSOFT_CLIENT_ID
-export EMAIL_VERSION="${EMAIL_VERSION:-0.1.0}"
+# CFBundleShortVersionString: the release version (docs/release-versions.md),
+# which the About window and Sparkle show.
+release_version="$(email_release_version "$repo_root")"
+export EMAIL_VERSION="${EMAIL_VERSION:-$release_version}"
+if [[ ! "$EMAIL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+  echo "EMAIL_VERSION must be a release version such as 0.2.0 or 0.2.0-beta.1." >&2
+  exit 2
+fi
+if [[ ( "$mode" == --distribute || "$mode" == --beta ) && "$EMAIL_VERSION" != "$release_version" ]]; then
+  echo "EMAIL_VERSION $EMAIL_VERSION differs from the release version $release_version in apps/linux/Cargo.toml." >&2
+  exit 2
+fi
 export EMAIL_BUILD_NUMBER="${EMAIL_BUILD_NUMBER:-1}"
 # Sparkle orders builds by CFBundleVersion. Only positive integers are allowed
 # so every published build is strictly greater than the last.
@@ -37,29 +49,9 @@ if [[ ! "$EMAIL_BUILD_NUMBER" =~ ^[1-9][0-9]{0,8}$ ]]; then
   echo "EMAIL_BUILD_NUMBER must be a positive integer without leading zeros." >&2
   exit 2
 fi
-# The profile's feed applies unless the release environment overrides it. Hosts
-# come only from the profile: without them the updater is disabled.
-export EMAIL_UPDATE_FEED_URL="${EMAIL_UPDATE_FEED_URL:-$EMAIL_PROFILE_UPDATE_FEED_URL}"
-export EMAIL_UPDATE_PUBLIC_ED_KEY="${EMAIL_UPDATE_PUBLIC_ED_KEY:-$EMAIL_PROFILE_UPDATE_PUBLIC_ED_KEY}"
-export EMAIL_UPDATE_ALLOWED_HOSTS="$EMAIL_PROFILE_UPDATE_ALLOWED_HOSTS"
-# A feed or key recorded in the profile cannot be replaced from the environment.
-for update_value in UPDATE_FEED_URL UPDATE_PUBLIC_ED_KEY; do
-  profile_name="EMAIL_PROFILE_$update_value" environment_name="EMAIL_$update_value"
-  if [[ -n "${!profile_name}" && "${!environment_name}" != "${!profile_name}" ]]; then
-    echo "$environment_name differs from the $EMAIL_PROFILE_PROFILE profile's $update_value." >&2
-    exit 2
-  fi
-done
-export EMAIL_UPDATE_CHANNEL="${EMAIL_UPDATE_CHANNEL:-stable}"
-case "$EMAIL_UPDATE_CHANNEL" in stable|testing) ;; *) echo "EMAIL_UPDATE_CHANNEL must be stable or testing." >&2; exit 2 ;; esac
-if [[ -n "$EMAIL_UPDATE_FEED_URL" && -z "$EMAIL_UPDATE_PUBLIC_ED_KEY" ]]; then
-  echo "EMAIL_UPDATE_FEED_URL needs EMAIL_UPDATE_PUBLIC_ED_KEY." >&2
-  exit 2
-fi
-if [[ "$mode" != --fixture && -n "$EMAIL_UPDATE_FEED_URL" && -z "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
-  echo "The $EMAIL_PROFILE_PROFILE distribution profile has no UPDATE_ALLOWED_HOSTS; its builds cannot use an update feed." >&2
-  exit 2
-fi
+# Feed, key, hosts and channel for this mode (macos-updates-env.sh). An
+# unnotarized --beta never gets a feed, even from a profile that records one.
+email_resolve_update_feed "$mode" || exit 2
 export EMAIL_UPDATE_FIXTURE=0
 if [[ "$mode" == --distribute || "$mode" == --beta ]]; then
   if [[ "$EMAIL_PROFILE_DISTRIBUTION" != true ]]; then
@@ -97,8 +89,9 @@ elif [[ "$mode" == --beta ]]; then
     echo "Beta builds sign only with the identity from scripts/macos-beta-signing.sh; unset EMAIL_RELEASE_CODESIGN_IDENTITY and EMAIL_RELEASE_CODESIGN_KEYCHAIN." >&2
     exit 2
   fi
-  if [[ -n "$EMAIL_UPDATE_FEED_URL" ]]; then
-    echo "Beta builds are not notarized and have no updater; unset EMAIL_UPDATE_FEED_URL." >&2
+  # email_resolve_update_feed cleared the feed; refuse if anything set it again.
+  if [[ -n "$EMAIL_UPDATE_FEED_URL" || -n "$EMAIL_UPDATE_PUBLIC_ED_KEY" ]]; then
+    echo "Beta builds are not notarized and have no updater." >&2
     exit 2
   fi
   source "$repo_root/scripts/macos-beta-signing.sh"
@@ -134,8 +127,7 @@ cd "$repo_root"
 # another profile would replace the MCP helper registered from this checkout.
 export CARGO_TARGET_DIR="$repo_root/target/package-$channel"
 "$cargo_bin" build --release --locked -p mail-service -p mail-mcp
-printf 'import Foundation\nenum EmailBuildIdentity { static let value = "%s" }\n' "$(python3 "$repo_root/scripts/build-identity.py")" \
-  > "$repo_root/apps/macos/Sources/EmailUI/BuildIdentity.generated.swift"
+python3 "$repo_root/scripts/build-identity.py" --swift > "$repo_root/apps/macos/Sources/EmailUI/BuildIdentity.generated.swift"
 swift_args=(--package-path apps/macos --disable-sandbox -c release --only-use-versions-from-resolved-file)
 swift build "${swift_args[@]}"
 bin_dir="$(swift build "${swift_args[@]}" --show-bin-path)"

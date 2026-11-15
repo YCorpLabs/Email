@@ -196,7 +196,7 @@ case "$(uname -s)" in
     # Generated, ignored by Git, and required by the Swift build. Rewrite it only
     # when it changes, so SwiftPM does not recompile EmailUI on every run.
     identity_file=apps/macos/Sources/EmailUI/BuildIdentity.generated.swift
-    identity_source="$(printf 'import Foundation\nenum EmailBuildIdentity { static let value = "%s" }' "$build_identity")"
+    identity_source="$(python3 scripts/build-identity.py --swift)"
     if [[ ! -f "$identity_file" || "$(cat "$identity_file")" != "$identity_source" ]]; then
       printf '%s\n' "$identity_source" > "$identity_file"
     fi

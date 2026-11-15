@@ -190,7 +190,7 @@ fi
 "$cargo_bin" build -p mail-service ${profile_args[@]+"${profile_args[@]}"}
 
 build_identity="$(python3 "$repo_root/scripts/build-identity.py")"
-printf 'import Foundation\nenum EmailBuildIdentity { static let value = "%s" }\n' "$build_identity" > "$repo_root/apps/macos/Sources/EmailUI/BuildIdentity.generated.swift"
+python3 "$repo_root/scripts/build-identity.py" --swift > "$repo_root/apps/macos/Sources/EmailUI/BuildIdentity.generated.swift"
 cd "$repo_root/apps/macos"
 mkdir -p .swiftpm-cache .clang-cache
 export CLANG_MODULE_CACHE_PATH="$PWD/.clang-cache"

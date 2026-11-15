@@ -10,6 +10,53 @@ EMAIL_SPARKLE_TOOLS_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca0
 # Disposable acceptance-test bundles only; keep in step with UpdatePolicy.swift.
 EMAIL_UPDATE_FIXTURE_BUNDLE_ID=invalid.email.update-fixture
 
+# Resolves the update configuration for packaging mode $1 (--local-alpha,
+# --distribute, --beta or --fixture) from the loaded distribution profile
+# (EMAIL_PROFILE_*) and the environment, and exports EMAIL_UPDATE_FEED_URL,
+# EMAIL_UPDATE_PUBLIC_ED_KEY, EMAIL_UPDATE_ALLOWED_HOSTS and
+# EMAIL_UPDATE_CHANNEL. Returns 2 with a message when they are not acceptable.
+#
+# - The profile's feed and key apply unless the environment supplies them; a
+#   feed or key recorded in the profile cannot be replaced from the environment.
+# - Hosts come only from the profile: without them the updater is disabled.
+# - --beta builds are not notarized and never get a feed, even though the
+#   official profile records one. Setting a feed for --beta is refused.
+email_resolve_update_feed() {
+  local mode="$1" update_value profile_name environment_name
+  if [[ "$mode" == --beta ]]; then
+    if [[ -n "${EMAIL_UPDATE_FEED_URL:-}" || -n "${EMAIL_UPDATE_PUBLIC_ED_KEY:-}" ]]; then
+      echo "Beta builds are not notarized and have no updater; unset EMAIL_UPDATE_FEED_URL and EMAIL_UPDATE_PUBLIC_ED_KEY." >&2
+      return 2
+    fi
+    EMAIL_UPDATE_FEED_URL="" EMAIL_UPDATE_PUBLIC_ED_KEY=""
+  else
+    EMAIL_UPDATE_FEED_URL="${EMAIL_UPDATE_FEED_URL:-$EMAIL_PROFILE_UPDATE_FEED_URL}"
+    EMAIL_UPDATE_PUBLIC_ED_KEY="${EMAIL_UPDATE_PUBLIC_ED_KEY:-$EMAIL_PROFILE_UPDATE_PUBLIC_ED_KEY}"
+    for update_value in UPDATE_FEED_URL UPDATE_PUBLIC_ED_KEY; do
+      profile_name="EMAIL_PROFILE_$update_value" environment_name="EMAIL_$update_value"
+      if [[ -n "${!profile_name}" && "${!environment_name}" != "${!profile_name}" ]]; then
+        echo "$environment_name differs from the $EMAIL_PROFILE_PROFILE profile's $update_value." >&2
+        return 2
+      fi
+    done
+  fi
+  EMAIL_UPDATE_ALLOWED_HOSTS="$EMAIL_PROFILE_UPDATE_ALLOWED_HOSTS"
+  EMAIL_UPDATE_CHANNEL="${EMAIL_UPDATE_CHANNEL:-stable}"
+  export EMAIL_UPDATE_FEED_URL EMAIL_UPDATE_PUBLIC_ED_KEY EMAIL_UPDATE_ALLOWED_HOSTS EMAIL_UPDATE_CHANNEL
+  case "$EMAIL_UPDATE_CHANNEL" in
+    stable|testing) ;;
+    *) echo "EMAIL_UPDATE_CHANNEL must be stable or testing." >&2; return 2 ;;
+  esac
+  if [[ -n "$EMAIL_UPDATE_FEED_URL" && -z "$EMAIL_UPDATE_PUBLIC_ED_KEY" ]]; then
+    echo "EMAIL_UPDATE_FEED_URL needs EMAIL_UPDATE_PUBLIC_ED_KEY." >&2
+    return 2
+  fi
+  if [[ "$mode" != --fixture && -n "$EMAIL_UPDATE_FEED_URL" && -z "$EMAIL_UPDATE_ALLOWED_HOSTS" ]]; then
+    echo "The $EMAIL_PROFILE_PROFILE distribution profile has no UPDATE_ALLOWED_HOSTS; its builds cannot use an update feed." >&2
+    return 2
+  fi
+}
+
 # Prints a directory holding Sparkle's bin/ tools, verified by SHA-256.
 # The download is cached outside the repository; extraction is per call.
 email_sparkle_tools() {

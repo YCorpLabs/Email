@@ -46,5 +46,16 @@ class BuildIdentityTests(unittest.TestCase):
         (self.root / 'apps/feature.swift').write_text('struct Feature {}')
         self.assertNotEqual(original, module.build_id())
 
+    def test_swift_source_names_the_identity_and_release_version(self):
+        (self.root / 'apps/linux').mkdir(parents=True, exist_ok=True)
+        (self.root / 'apps/linux/Cargo.toml').write_text('[package]\nname = "email-linux"\nversion = "0.2.0-beta.1"\n')
+        source = module.swift_source()
+        self.assertIn(f'static let value = "{module.build_id()}"\n', source)
+        self.assertIn('static let releaseVersion = "0.2.0-beta.1"\n', source)
+        self.assertTrue(source.startswith('import Foundation\nenum EmailBuildIdentity {\n'))
+        (self.root / 'apps/linux/Cargo.toml').write_text('[package]\nversion = "0.2.0\\" + x"\n')
+        with self.assertRaises(SystemExit):
+            module.swift_source()
+
 if __name__ == '__main__':
     unittest.main()
