@@ -9,11 +9,11 @@
 # scripts/prepare-aur-package.sh fills in the checksums and writes .SRCINFO;
 # see docs/linux-aur.md.
 pkgname=email-ycorp-bin
-pkgver=0.1.0beta1
+pkgver=0.1.0beta2
 # The release tag; Arch versions cannot contain '-'.
-_tag=v0.1.0-beta.1
+_tag=v0.1.0-beta.2
 # The package version inside the .deb file names (apps/linux/Cargo.toml).
-_debver=0.1.0
+_debver=0.1.0-beta.2
 _appid=com.ycorplabs.Mail
 pkgrel=1
 pkgdesc='Keyboard-first, local-first desktop email client (beta, prebuilt)'
@@ -35,8 +35,8 @@ source_x86_64=("$pkgname-$pkgver-amd64.deb::$url/releases/download/$_tag/email-l
 source_aarch64=("$pkgname-$pkgver-arm64.deb::$url/releases/download/$_tag/email-linux_${_debver}_arm64.deb")
 noextract=("$pkgname-$pkgver-amd64.deb" "$pkgname-$pkgver-arm64.deb")
 # Replaced by scripts/prepare-aur-package.sh for the published release.
-sha256sums_x86_64=('af5be9eb32aa8c4adda7be4780ad1f2d6712e1d3d15869d15fd9031206531bb0')
-sha256sums_aarch64=('c48e7aac0cba0016cd3d96b8f19c76f4a36ab4ab1daf618628e884ac38c2cf2a')
+sha256sums_x86_64=('01998b639800a8108376f38f982270e89ccf3d3287c650ba5ff627bc4dbd52e0')
+sha256sums_aarch64=('bb86e0b3fe9c81f71051dc8516dd0bf75130dc02298f7488145ad7336d71dc66')
 
 prepare() {
   # makepkg links only this architecture's .deb into $srcdir.
@@ -53,10 +53,8 @@ prepare() {
 package() {
   local root="$srcdir/deb"
   install -Dm755 "$root/usr/bin/email-linux" "$pkgdir/usr/bin/email-linux"
-  # The MCP helper ships in the .deb from the release after v0.1.0-beta.1.
-  if [[ -f "$root/usr/lib/email-linux/mail-mcp" ]]; then
-    install -Dm755 "$root/usr/lib/email-linux/mail-mcp" "$pkgdir/usr/lib/email-linux/mail-mcp"
-  fi
+  # The MCP helper that Agent access connects agents to (in the .deb since v0.1.0-beta.2).
+  install -Dm755 "$root/usr/lib/email-linux/mail-mcp" "$pkgdir/usr/lib/email-linux/mail-mcp"
   install -Dm644 "$root/usr/share/applications/$_appid.desktop" -t "$pkgdir/usr/share/applications"
   install -Dm644 "$root/usr/share/metainfo/$_appid.metainfo.xml" -t "$pkgdir/usr/share/metainfo"
   install -Dm644 "$root/usr/share/icons/hicolor/1024x1024/apps/$_appid.png" \

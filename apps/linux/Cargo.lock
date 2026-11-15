@@ -674,7 +674,7 @@ dependencies = [
 
 [[package]]
 name = "email-linux"
-version = "0.1.0"
+version = "0.1.0-beta.2"
 dependencies = [
  "base64 0.22.1",
  "distribution-profile",

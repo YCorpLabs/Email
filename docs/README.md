@@ -29,7 +29,8 @@ Project policies live in the repository root:
   agent demo.
 - [Distribution profiles](distribution-profile.md): how a build's identity and
   services are chosen; plain builds use the neutral `unofficial` profile.
-- Release packaging: [macOS distribution builds](macos-release.md),
+- Release packaging: [release versions](release-versions.md),
+  [macOS distribution builds](macos-release.md),
   [macOS automatic updates](macos-updates.md) and the
   [AUR package](linux-aur.md).
 

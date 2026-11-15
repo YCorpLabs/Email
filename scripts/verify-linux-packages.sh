@@ -90,6 +90,11 @@ dpkg-deb -f "/packages/$DEB" Architecture Depends > /results/control.txt
 # Test tooling and a font; not package dependencies.
 apt-get install -y --no-install-recommends file xvfb x11-utils xdotool imagemagick dbus fonts-dejavu-core sqlite3 procps > /results/tools.log 2>&1' \
     -e DEB="$deb" -e MCP="$mcp" -e ARCH="$arch"
+  deb_version="$(sed -n 's/^deb_version=//p' "$info")"
+  if [[ -n "$deb_version" && "$(awk '{print $2}' "$results_root/ubuntu-$arch/installed.txt")" != "$deb_version" ]]; then
+    echo "The installed email-linux is not version $deb_version." >&2
+    exit 1
+  fi
 
   if [[ "$arch" == x86_64 ]]; then
     if [[ -z "${EMAIL_LINUX_ARCH_PACKAGE:-}" && "$channel" != local-alpha ]]; then
