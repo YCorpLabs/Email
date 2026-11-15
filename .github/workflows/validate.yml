@@ -44,6 +44,9 @@ jobs:
       - run: python3 scripts/check-release-readiness.test.py
       - run: python3 scripts/linux-build-config.test.py
       - run: python3 scripts/distribution-profile.test.py
+      - run: python3 scripts/macos-updates-env.test.py
+      - run: python3 scripts/apt-repository.test.py
+      - run: python3 scripts/upload-updates.test.py
       - run: python3 scripts/generate-third-party-notices.py --check
       - name: Scan complete reachable source history for secrets
         env:

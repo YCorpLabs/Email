@@ -1,13 +1,56 @@
 #!/usr/bin/env python3
 """Offline source preflight. Success does not authorize public distribution."""
 
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The armor header of a private key: OpenPGP ("PGP PRIVATE KEY BLOCK"), PEM
+# ("PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY") and OpenSSH.
+PRIVATE_KEY_ARMOR = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----")
+
+
+def module(name, filename):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / filename)
+    loaded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loaded)
+    return loaded
+
+
+def apt_key_failures(tracked):
+    """Each committed APT keyring holds only public keys, and each profile that
+    names an APT repository has its keyring with the profile's fingerprint."""
+    if not (ROOT / "scripts/apt-repository.py").is_file():
+        return []
+    apt = module("apt_repository", "apt-repository.py")
+    profiles = module("distribution_profile", "distribution-profile.py")
+    failures = []
+    for name in sorted(n for n in tracked if n.startswith("config/profiles/") and n.endswith(".apt.asc")):
+        try:
+            apt.keyring_fingerprints(ROOT / name)
+        except (apt.RepositoryError, OSError) as error:
+            failures.append(f"APT keyring {name}: {error}")
+    for name in sorted(n for n in tracked if n.startswith("config/profiles/") and n.endswith(".env")):
+        try:
+            values = profiles.load(ROOT, {}, ROOT / name)[1]
+        except (profiles.ProfileError, OSError) as error:
+            failures.append(f"Profile {name}: {error}")
+            continue
+        if values["LINUX_APT_REPOSITORY"]:
+            keyring = apt.keyring_for(ROOT / name)
+            if str(keyring.relative_to(ROOT)) not in tracked:
+                failures.append(f"Profile {name} names an APT repository but {keyring.name} is not tracked")
+                continue
+            try:
+                apt.check_keyring(keyring, values["LINUX_APT_KEY_FINGERPRINT"])
+            except (apt.RepositoryError, OSError) as error:
+                failures.append(f"Profile {name}: {error}")
+    return failures
 
 
 def git(*args):
@@ -33,6 +76,11 @@ def main():
             or ".sqlite-" in path.name
         ):
             failures.append(f"Private/local file is tracked: {name}")
+    for name in sorted(tracked):
+        path = ROOT / name
+        if path.is_file() and not path.is_symlink() and PRIVATE_KEY_ARMOR.search(path.read_bytes()):
+            failures.append(f"Private key material is tracked: {name}")
+    failures += apt_key_failures(tracked)
     for name in ("Cargo.lock", "apps/linux/Cargo.lock"):
         if name not in tracked or not (ROOT / name).is_file():
             failures.append(f"Missing tracked dependency lockfile: {name}")
@@ -62,7 +110,8 @@ def main():
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
-    print("Source preflight passed: lockfiles, local-file exclusions, shell syntax, diff whitespace.")
+    print("Source preflight passed: lockfiles, local-file exclusions, private keys, APT keyrings, shell syntax,")
+    print("diff whitespace.")
     print("Public release approval remains external: Google verification, signing/notarization,")
     print("license/notices, privacy/support, provider acceptance and restore acceptance.")
     return 0
