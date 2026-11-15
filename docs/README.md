@@ -11,6 +11,8 @@ Project policies live in the repository root:
 
 ## Using Email
 
+- [Install on Arch Linux](arch-updates.md#setup) from the signed `[ycorp]`
+  pacman repository; `pacman -Syu` keeps it up to date.
 - [Connect Gmail with an app password](gmail-app-password.md).
 - [Microsoft 365 admin consent](microsoft-365-admin-consent.md), for builds
   that offer Microsoft accounts.
@@ -33,8 +35,9 @@ Project policies live in the repository root:
   [release versions](release-versions.md),
   [macOS distribution builds](macos-release.md),
   [macOS automatic updates](macos-updates.md),
-  [Linux updates through APT](linux-updates.md) and the
-  [AUR package](linux-aur.md).
+  [Linux updates through APT](linux-updates.md),
+  [Arch Linux updates through pacman](arch-updates.md) and the
+  [AUR packages](linux-aur.md).
 
 ### How the engine works
 

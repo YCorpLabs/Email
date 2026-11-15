@@ -5,6 +5,7 @@ Nothing here runs Wrangler or contacts the network."""
 import importlib.util
 from io import StringIO
 from pathlib import Path, PurePosixPath
+import shutil
 import tempfile
 import unittest
 
@@ -13,7 +14,12 @@ spec = importlib.util.spec_from_file_location("upload_updates", HERE / "upload-u
 upload = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upload)
 apt = upload.apt
+arch = upload.arch
 OFFICIAL_KEY = HERE.parent / "config/profiles/official.apt.asc"
+# The repo-add stand-in from the pacman repository tests.
+spec = importlib.util.spec_from_file_location("arch_repository_test", HERE / "arch-repository.test.py")
+arch_test = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(arch_test)
 
 
 class Planning(unittest.TestCase):
@@ -142,6 +148,111 @@ class Planning(unittest.TestCase):
             upload.fetch = lambda url: appcast.format(item.format(v=2, n=99)).encode()
             with self.assertRaises(upload.UploadError):
                 upload.check_remote_macos(feed, "https://u.test/email/macos")
+        finally:
+            upload.fetch = original
+
+    def arch_repository(self, *versions):
+        """A staged pacman repository, written the way publish-arch-repo.sh does."""
+        root = self.dir / "arch"
+        root.mkdir(exist_ok=True)
+        (root / arch.KEY_FILE).write_bytes(OFFICIAL_KEY.read_bytes())
+        for version in versions:
+            for architecture in arch.ARCHITECTURES:
+                directory = root / architecture
+                directory.mkdir(exist_ok=True)
+                name = f"{arch.PACKAGE}-{version}-{architecture}.pkg.tar.zst"
+                (directory / name).write_bytes(f"{version} {architecture}".encode())
+                (directory / f"{name}.sig").write_bytes(b"signature")
+                arch_test.repo_add(root, architecture, name)
+                arch.finalize(root, [architecture])
+                for kind in arch.DATABASES:
+                    for signature in (f"ycorp.{kind}.sig", f"ycorp.{kind}.tar.gz.sig"):
+                        (directory / signature).write_bytes(b"database signature")
+        arch.verify(root)
+        return root
+
+    def test_arch_order_and_caching(self):
+        root = self.arch_repository("0.1.0beta2-1", "0.1.0beta3-1")
+        steps, skipped = upload.plan(root, "arch", "bucket/email/arch", {})
+        self.assertEqual(skipped, 0)
+        names = [name for _, name, _, _, _ in steps]
+        phases = [phase for phase, *_ in steps]
+        self.assertEqual(phases, sorted(phases))
+        caches = {name: cache for _, name, cache, _, _ in steps}
+        packages = [n for n in names if ".pkg.tar.zst" in n]
+        self.assertEqual(len(packages), 8)  # two versions, two architectures, each with its signature
+        self.assertTrue(all(caches[n] == upload.IMMUTABLE for n in packages))
+        self.assertEqual({n for n in names if caches[n] == upload.IMMUTABLE}, set(packages))
+        last_package = max(names.index(n) for n in packages)
+        databases = [i for i, n in enumerate(names) if "/ycorp." in n]
+        self.assertLess(last_package, min(databases))
+        self.assertLess(last_package, names.index(arch.KEY_FILE))
+        # pacman -Sy reads ycorp.db and ycorp.db.sig, so they go last.
+        self.assertEqual(sorted(names[-4:]), ["aarch64/ycorp.db", "aarch64/ycorp.db.sig", "x86_64/ycorp.db",
+                                              "x86_64/ycorp.db.sig"])
+        self.assertEqual(len(databases), 16)
+        self.assertTrue(all(caches[names[i]] == upload.SHORT for i in databases))
+        types = {name: content for _, name, _, content, _ in steps}
+        self.assertEqual(types["x86_64/email-ycorp-bin-0.1.0beta3-1-x86_64.pkg.tar.zst"], "application/zstd")
+        self.assertEqual(types["x86_64/email-ycorp-bin-0.1.0beta3-1-x86_64.pkg.tar.zst.sig"], "application/pgp-signature")
+        self.assertEqual(types["x86_64/ycorp.db"], "application/gzip")
+        self.assertEqual(types["x86_64/ycorp.files.tar.gz"], "application/gzip")
+        self.assertEqual(types["x86_64/ycorp.db.sig"], "application/pgp-signature")
+        self.assertEqual(types[arch.KEY_FILE], "application/pgp-keys")
+        # The manifest guards packages here too.
+        manifest = {"bucket/email/arch": {n: d for _, n, c, _, d in steps if c == upload.IMMUTABLE}}
+        again, skipped = upload.plan(root, "arch", "bucket/email/arch", manifest)
+        self.assertEqual(skipped, 8)
+        (root / packages[0]).write_bytes(b"replaced")
+        with self.assertRaises(upload.UploadError):
+            upload.plan(root, "arch", "bucket/email/arch", manifest)
+
+    def test_arch_unknown_files(self):
+        root = self.arch_repository("0.1.0beta3-1")
+        for name in ("x86_64/ycorp.db.tar.gz.old", "x86_64/email-ycorp-bin-0.1.0beta3-1-aarch64.pkg.tar.zst",
+                     "x86_64/email-ycorp-0.1.0beta3-1-x86_64.pkg.tar.zst", "i686/ycorp.db", "ycorp.db"):
+            with self.subTest(name):
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("stray")
+                with self.assertRaises(upload.UploadError):
+                    upload.plan(root, "arch", "bucket/email/arch", {})
+                path.unlink()
+
+    def test_arch_published_history_must_be_staged(self):
+        published_root = self.arch_repository("0.1.0beta2-1")
+        published = {a: (published_root / a / "ycorp.db").read_bytes() for a in arch.ARCHITECTURES}
+        fetch = lambda url: next((data for a, data in published.items() if url.endswith(f"/{a}/ycorp.db")), None)
+        base = "https://updates.example.test/email/arch"
+        original = upload.fetch
+        try:
+            upload.fetch = fetch
+            # The same repository, and one with a newer release added, both pass.
+            upload.check_remote_arch(published_root, base)
+            newer = self.arch_repository("0.1.0beta3-1")
+            self.assertEqual(newer, published_root)
+            upload.check_remote_arch(newer, base)
+            # A staging directory without the published package...
+            (newer / "x86_64/email-ycorp-bin-0.1.0beta2-1-x86_64.pkg.tar.zst").unlink()
+            with self.assertRaises(upload.UploadError) as caught:
+                upload.check_remote_arch(newer, base)
+            self.assertIn("email-ycorp-bin-0.1.0beta2-1-x86_64.pkg.tar.zst", str(caught.exception))
+            # ...or older than what is published, or with other bytes at the same version, is refused.
+            for label, versions in (("older", ("0.1.0beta1-1",)), ("different", ("0.1.0beta2-1",))):
+                with self.subTest(label):
+                    shutil.rmtree(self.dir / "arch")
+                    stale = self.arch_repository(*versions)
+                    if label == "different":
+                        for a in arch.ARCHITECTURES:
+                            name = f"{arch.PACKAGE}-0.1.0beta2-1-{a}.pkg.tar.zst"
+                            (stale / a / name).write_bytes(b"rebuilt")
+                            arch_test.repo_add(stale, a, name)
+                            arch.finalize(stale, [a])
+                    with self.assertRaises(upload.UploadError):
+                        upload.check_remote_arch(stale, base)
+            # Nothing published yet: nothing to compare.
+            upload.fetch = lambda url: None
+            upload.check_remote_arch(stale, base)
         finally:
             upload.fetch = original
 

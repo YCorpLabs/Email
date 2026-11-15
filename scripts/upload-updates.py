@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
 """Upload a verified update staging directory to the update bucket.
 
-Run through scripts/upload-updates.sh. See docs/linux-updates.md and
-docs/macos-updates.md.
+Run through scripts/upload-updates.sh. See docs/linux-updates.md,
+docs/arch-updates.md and docs/macos-updates.md.
 
     scripts/upload-updates.sh --dry-run --source ../email-apt --prefix email/apt
     scripts/upload-updates.sh --source ../email-apt --prefix email/apt
 
-The source is either an APT repository staged by publish-linux-apt.sh (it has
-dists/) or a Sparkle feed staged by publish-macos-update.sh (it has
-appcast.xml). Before anything is uploaded the source is verified again, as a
-client would, and compared with what is published: a staged index that lacks a
-published package or build is refused, so a stale staging directory can never
-drop earlier releases.
+The source is an APT repository staged by publish-linux-apt.sh (it has
+dists/), a pacman repository staged by publish-arch-repo.sh (it has
+ycorp.asc and <arch>/ycorp.db) or a Sparkle feed staged by
+publish-macos-update.sh (it has appcast.xml). Before anything is uploaded the
+source is verified again, as a client would, and compared with what is
+published: a staged index that lacks a published package or build is refused,
+so a stale staging directory can never drop earlier releases.
 
 Files go up in dependency order, so an index never names a file that is not
 there yet: packages, archives and by-hash indexes first, then Packages and
-release notes, then Release and Release.gpg, and InRelease or appcast.xml last.
-Versioned files are cached for a year and never change; indexes are cached
-for five minutes. Uploads use Wrangler, pinned exactly, with `--remote`;
-Wrangler takes its Cloudflare credentials from its own login or
-CLOUDFLARE_API_TOKEN. Dotfiles are never uploaded: `.upload-manifest.json`
+release notes, then Release and Release.gpg, and InRelease, ycorp.db or
+appcast.xml last. Versioned files are cached for a year and never change;
+indexes are cached for five minutes. Uploads use Wrangler, pinned exactly,
+with `--remote`; Wrangler takes its Cloudflare credentials from its own login
+or CLOUDFLARE_API_TOKEN. Dotfiles are never uploaded: `.upload-manifest.json`
 records the versioned files already uploaded, so they are not sent again and
 can never be replaced by different bytes.
 """
@@ -50,6 +51,8 @@ SHORT = "public, max-age=300"
 SPARKLE = "{http://www.andymatuschak.org/xml-namespaces/sparkle}"
 CONTENT_TYPES = {
     ".deb": "application/vnd.debian.binary-package",
+    ".zst": "application/zstd",
+    ".sig": "application/pgp-signature",
     ".gz": "application/gzip",
     ".gpg": "application/pgp-signature",
     ".asc": "application/pgp-keys",
@@ -68,7 +71,9 @@ def load(name, filename):
     return module
 
 
-apt = load("apt_repository", "apt-repository.py")
+arch = load("arch_repository", "arch-repository.py")
+# The APT module arch-repository.py loaded, so one RepositoryError covers both.
+apt = arch.apt
 
 
 class UploadError(ValueError):
@@ -107,6 +112,23 @@ def classify_apt(name):
     raise UploadError(f"{name} is not part of an APT repository; remove it from the staging directory")
 
 
+def classify_arch(name):
+    """Upload phase and caching for a pacman repository file. ycorp.db and
+    its signature go last: pacman -Sy reads nothing else."""
+    parts = name.parts
+    if len(parts) == 1 and name.name == arch.KEY_FILE:
+        return 1, SHORT
+    if len(parts) == 2 and parts[0] in arch.ARCHITECTURES:
+        package = arch.PACKAGE_FILE.fullmatch(parts[1].removesuffix(".sig"))
+        if package and package["arch"] == parts[0]:
+            return 0, IMMUTABLE
+        if parts[1] in (f"{arch.REPOSITORY}.db", f"{arch.REPOSITORY}.db.sig"):
+            return 3, SHORT
+        if parts[1] in arch.database_files():
+            return 2, SHORT
+    raise UploadError(f"{name} is not part of a pacman repository; remove it from the staging directory")
+
+
 def classify_macos(name):
     """Upload phase and caching for a Sparkle feed file."""
     if len(name.parts) != 1:
@@ -123,6 +145,8 @@ def classify_macos(name):
 def content_type(name):
     if name.name in ("Packages", "Release", "InRelease"):
         return "text/plain; charset=utf-8"
+    if name.name in (f"{arch.REPOSITORY}.db", f"{arch.REPOSITORY}.files"):
+        return "application/gzip"
     return CONTENT_TYPES.get(name.suffix, "application/octet-stream")
 
 
@@ -154,6 +178,28 @@ def check_remote_apt(source, base):
                     raise UploadError(f"{relative}: the published {entry['Filename']} ({entry['Version']}) is missing "
                                       "or different in the staged repository. Recreate the staging directory from "
                                       "the published repository before publishing again.")
+
+
+def check_remote_arch(source, base):
+    """The published database entries must still be in the staged databases,
+    the same or older, and their package files must still be staged."""
+    for architecture in arch.ARCHITECTURES:
+        relative = f"{architecture}/{arch.REPOSITORY}.db"
+        published = fetch(f"{base}/{relative}")
+        if not published:
+            continue
+        staged = arch.read_db(source, architecture)
+        for name, entry in arch.parse_db(published).items():
+            filename, digest = arch.field(entry, "FILENAME"), arch.field(entry, "SHA256SUM")
+            version, ours = arch.field(entry, "VERSION"), staged.get(name)
+            newer = ours is not None and arch.vercmp(arch.field(ours, "VERSION"), version)
+            same = ours is not None and (arch.field(ours, "FILENAME"), arch.field(ours, "SHA256SUM")) == (filename, digest)
+            package = source / architecture / filename
+            if ours is None or newer < 0 or (newer == 0 and not same) or not package.is_file() or \
+                    sha256(package) != digest:
+                raise UploadError(f"{relative}: the published {filename} ({version}) is missing, newer or different "
+                                  "in the staged repository. Recreate the staging directory from the published "
+                                  "repository before publishing again.")
 
 
 def appcast_items(data):
@@ -190,10 +236,10 @@ def verify_local(kind, source):
     """The checks the publishers ran, again, with public keys only."""
     if profile_value("DISTRIBUTION") != "true":
         raise UploadError("Uploading requires a distribution profile, such as official (EMAIL_DISTRIBUTION_PROFILE).")
-    if kind == "apt":
+    if kind in ("apt", "arch"):
         path = subprocess.run([sys.executable, str(HERE / "distribution-profile.py"), "path"],
                               capture_output=True, text=True, check=True).stdout.strip()
-        command = [sys.executable, str(HERE / "apt-repository.py"), "verify", str(source),
+        command = [sys.executable, str(HERE / f"{kind}-repository.py"), "verify", str(source),
                    "--keyring", str(apt.keyring_for(path)), "--fingerprint", profile_value("LINUX_APT_KEY_FINGERPRINT")]
     else:
         key, hosts = profile_value("UPDATE_PUBLIC_ED_KEY"), profile_value("UPDATE_ALLOWED_HOSTS")
@@ -216,7 +262,7 @@ def sha256(path):
 
 
 def plan(source, kind, destination, manifest):
-    classify = classify_apt if kind == "apt" else classify_macos
+    classify = {"apt": classify_apt, "arch": classify_arch, "macos": classify_macos}[kind]
     uploaded = manifest.get(destination, {})
     steps, skipped = [], 0
     for name in files(source):
@@ -235,7 +281,7 @@ def plan(source, kind, destination, manifest):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", required=True, type=Path, help="staged directory")
-    parser.add_argument("--prefix", required=True, help="bucket prefix: email/apt or email/macos")
+    parser.add_argument("--prefix", required=True, help="bucket prefix: email/apt, email/arch or email/macos")
     parser.add_argument("--bucket", default=os.environ.get("EMAIL_UPDATES_BUCKET", DEFAULT_BUCKET))
     parser.add_argument("--public-url", default=os.environ.get("EMAIL_UPDATES_PUBLIC_URL", DEFAULT_PUBLIC_URL))
     parser.add_argument("--dry-run", action="store_true", help="verify and print the plan; upload nothing")
@@ -251,8 +297,11 @@ def main(argv=None):
             kind = "apt"
         elif (source / "appcast.xml").is_file():
             kind = "macos"
+        elif (source / arch.KEY_FILE).is_file():
+            kind = "arch"
         else:
-            raise UploadError(f"{args.source} is neither an APT repository (dists/) nor a Sparkle feed (appcast.xml)")
+            raise UploadError(f"{args.source} is not an APT repository (dists/), a pacman repository "
+                              f"({arch.KEY_FILE}) or a Sparkle feed (appcast.xml)")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*(?:/[a-z0-9][a-z0-9-]*)*", prefix) or \
                 prefix.rsplit("/", 1)[-1] != kind:
             raise UploadError(f"--prefix for this {kind} directory must end in /{kind}, such as email/{kind}")
@@ -265,7 +314,7 @@ def main(argv=None):
         if args.skip_remote_check:
             print("Skipping the comparison with the published files.")
         else:
-            (check_remote_apt if kind == "apt" else check_remote_macos)(source, base)
+            {"apt": check_remote_apt, "arch": check_remote_arch, "macos": check_remote_macos}[kind](source, base)
             print(f"Nothing published at {base} is missing from the staged directory.")
         manifest_path = source / MANIFEST
         manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}

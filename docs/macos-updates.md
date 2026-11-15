@@ -268,7 +268,8 @@ neither is the distribution packaging path, which needs Apple credentials.
 
 This is macOS-only. The Linux `.deb` updates through APT
 ([Linux updates](linux-updates.md)), with `stable` and `beta` suites in place
-of channels, and Arch packages through the AUR. Linux has no in-app updater,
+of channels, and Arch packages through the `[ycorp]` pacman repository
+([Arch Linux updates](arch-updates.md)). Linux has no in-app updater,
 update menu, channel switch or draft-aware restart: the package manager
 replaces the files and the running app keeps going until it is restarted.
 There is no shared UI change and no parity claim.
