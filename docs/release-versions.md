@@ -31,7 +31,8 @@ no epoch.
 
 `pkgrel` starts at 1 for each new `pkgver` and rises only for a packaging-only
 change. Sparkle orders macOS builds by `CFBundleVersion`: v0.1.0-beta.1 was
-build 1 and v0.1.0-beta.2 is build 2.
+build 1, v0.1.0-beta.2 build 2 and v0.1.0-beta.3, the first Developer ID build
+with automatic updates, is build 3.
 
 To start a release, set the release version in `apps/linux/Cargo.toml` and
 `apps/linux/Cargo.lock`, and `_tag`, `pkgver`, `pkgrel` and `_debver` in the
