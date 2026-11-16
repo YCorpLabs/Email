@@ -17,7 +17,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/readme/hero-dark.png">
-    <img src="assets/readme/hero-light.png" width="800" alt="Email on macOS: the inbox, with a message from Elena Rossi open in the reader">
+    <img src="assets/readme/hero-light.png" width="800" alt="Email on macOS with a message from Elena Rossi open, and the Linux app in front of it showing a team thread">
   </picture>
 </p>
 
@@ -50,6 +50,14 @@ every account.
 Linux.
 
 <img src="assets/readme/palette.gif" width="800" alt="Opening the command palette and filtering its commands by typing">
+
+**Agents ask before they send.** When an agent wants to send an email, it waits
+under Agent requests until you send, edit or drop it.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/readme/agents-dark.png">
+  <img src="assets/readme/agents-light.png" width="800" alt="The Agent requests page: Claude Code wants to send a reply to Elena Rossi, with Don't send, Edit and Send buttons">
+</picture>
 
 ## Features
 
