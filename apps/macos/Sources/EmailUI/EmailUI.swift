@@ -1300,8 +1300,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 if composePane?.offersTracking == true { items.append(paletteItem(.toggleTracking, "Toggle email open tracking", "COMPOSE", aliases: ["track opens", "pixel", "analytics"])) }
                 items.append(paletteItem(.insertBooking, "Insert booking link…", "COMPOSE", aliases: ["meeting", "schedule", "availability"]))
                 items.append(paletteItem(.signature, "Signature…", "COMPOSE", aliases: ["signatures", "identity", "footer"]))
-                items.append(paletteItem(.sendDraft, "Send message", "SUGGESTED", detail: "10 seconds to undo", aliases: ["send email", "deliver"]))
+                // Return runs the first item, so sending is never the preselected one.
                 items.append(paletteItem(.focusBody, "Write message", "SUGGESTED", aliases: ["body", "message text"]))
+                items.append(paletteItem(.sendDraft, "Send message", "SUGGESTED", detail: "10 seconds to undo", aliases: ["send email", "deliver"]))
                 items.append(paletteItem(.chooseFrom, "Choose From address", "COMPOSE", aliases: ["change sender", "switch identity", "send as", "alias"]))
                 items.append(paletteItem(.focusRecipient, "Edit recipient", "COMPOSE", aliases: ["to", "address"]))
                 items.append(paletteItem(.focusCc, "Edit Cc recipients", "COMPOSE", aliases: ["copy", "carbon copy"]))
@@ -1448,6 +1449,23 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.addAccount, "Add account", "ACCOUNTS"))
         }
         return items
+    }
+
+    /// With an empty query the palette is browsed under section headers, so each
+    /// section appears once: suggestions first, then the sections of the current
+    /// view in the order they are built, then Scheduling and analytics, settings
+    /// and help. Items keep their order within a section. Typed queries are ranked.
+    private func paletteBrowseOrder(_ items: [PaletteItem]) -> [PaletteItem] {
+        let ranks = ["SUGGESTED": 0, "SCHEDULING": 2, "ANALYTICS": 2, "SETTINGS": 3, "HELP": 4]
+        var sections: [String] = []
+        var grouped: [String: [PaletteItem]] = [:]
+        for item in items {
+            if grouped[item.section] == nil { sections.append(item.section) }
+            grouped[item.section, default: []].append(item)
+        }
+        return sections.enumerated()
+            .sorted { (ranks[$0.element] ?? 1, $0.offset) < (ranks[$1.element] ?? 1, $1.offset) }
+            .flatMap { grouped[$0.element] ?? [] }
     }
 
     private func paletteNormalized(_ value: String) -> String {
@@ -1612,10 +1630,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let query = paletteNormalized(paletteSearch.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
         let items = paletteItems()
         if query.isEmpty {
-            paletteResults = Array(items.filter { item in
+            paletteResults = Array(paletteBrowseOrder(items.filter { item in
                 if case .goToLabel = item.target { return palettePage != .root }
                 return true
-            }.prefix(80))
+            }).prefix(80))
         } else {
             let ranked = items.compactMap { item -> (PaletteItem, Int)? in
                 guard let score = paletteScore(item, query: query) else { return nil }
