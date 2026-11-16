@@ -31,6 +31,7 @@ server, and you choose what it can do.
 ## Install
 
 Download the latest beta from
+[ycorplabs.com/email/download](https://ycorplabs.com/email/download/) or
 [Releases](https://github.com/YCorpLabs/Email/releases). After that, Email
 keeps itself up to date.
 
