@@ -152,7 +152,8 @@ jobs:
           EMAIL_STORE_PATH="$scratch/smoke.sqlite" MAIL_SERVICE_LIBRARY="$PWD/target/release/libmail_service.dylib" "$bin_dir/email-desktop" --smoke-service
           target/release/mail-mcp --help > /dev/null
       - name: Exercise signed update fixtures without production credentials
-        timeout-minutes: 20
+        # The Intel runner usually needs 12 to 15 minutes here and once ran out of 20.
+        timeout-minutes: ${{ matrix.runner == 'macos-26-intel' && 30 || 20 }}
         run: ./scripts/test-macos-updates.sh
       - name: Retain unsigned CI binaries with identity
         if: ${{ github.event_name != 'pull_request' }}
