@@ -5,8 +5,9 @@ Compiles the real EmailUI sources with a check entry point, seeds a disposable
 store with EMAIL_DEMO=launch through the real mail-service library, then walks
 the states used in the launch recordings: the inbox, a long conversation, an
 inline picture, the blocked remote images notice, an invitation, attachments,
-search, a split, dark mode and a narrow window. With --snapshots it writes a
-PNG of each state, including the reader's WebKit content.
+search, a split, dark mode, a narrow window, the command palette with an
+empty query and the reply box. With --snapshots it writes a PNG of each state,
+including the reader's WebKit content.
 
 The store and HOME are temporary. No real account, Keychain item or provider
 is used, and nothing is sent.
@@ -172,6 +173,31 @@ check = r'''
         select("demo:launch:launch-plan")
         wait("the narrow reader renders") { rendered("we ship on") }
         snapshot("13-narrow")
+
+        // The command palette and the reply box, as recorded with ⌘K and R.
+        func headers() -> [String] { paletteResults.map(\.section).reduce(into: [String]()) { if $0.last != $1 { $0.append($1) } } }
+        // The panel's frame view draws its background; match the window's appearance as the app does.
+        func snapshotPalette(_ name: String) { if let view = palette.contentView?.superview ?? palette.contentView { snapshotView(view, name) } }
+        palette.appearance = appearance
+        setContentSize(NSSize(width: 1440, height: 900))
+        select("demo:launch:elena-intro")
+        wait("the meeting request renders again") { rendered("30-minute intro call") }
+        openCommands()
+        snapshotPalette("14-palette")
+        expect(Set(headers()).count == headers().count, "each palette section header appears once: \(headers())")
+        expect(paletteResults.first?.section == "SUGGESTED" && paletteResults.first?.title == "Reply", "palette suggestions come first")
+        closePalette()
+        reply()
+        wait("the reply box opens") { composePane != nil }
+        func texts(_ view: NSView) -> [String] { ((view as? NSTextField).map { [$0.stringValue] } ?? []) + view.subviews.flatMap(texts) }
+        pump(2)
+        snapshot("15-reply")
+        expect(!texts(contentView!).contains { $0.contains("Could not load additional From addresses") }, "the demo reply box loads its From addresses")
+        openCommands()
+        snapshotPalette("16-reply-palette")
+        expect(Set(headers()).count == headers().count, "each composer palette section header appears once: \(headers())")
+        closePalette()
+        dismissComposePane()
         close()
     }
 '''

@@ -176,8 +176,16 @@ account has agent access turned on…", which is also a good shot.
   `demo_raw_messages`, a table only demo stores have. `mail-service` reads it
   instead of a provider for attachments, inline pictures and invitation refresh,
   using the same parser as IMAP mail. Sync treats a `demo:` account without
-  provider settings as having nothing to fetch and its local changes as final.
+  provider settings as having nothing to fetch and its local changes as final,
+  and `list_send_as` answers with the account's own address instead of asking
+  Gmail, so the reply box loads its From addresses without an error.
 - Checks: `cargo test -p mail-core demo`, `cargo test -p mail-service
   launch_demo`, `python3 apps/macos/Tests/run-launch-demo-checks.py --library
   target/debug/libmail_service.dylib [--snapshots DIR]` (macOS), and
-  `apps/linux/qa/launch-demo.sh` in the Linux container (see its header).
+  `apps/linux/qa/launch-demo.sh` in the Linux container (see its header). The
+  macOS check also opens the command palette with an empty query (each section
+  header once, Suggested first) and the reply box (no From address error).
+  Checked on Linux in the container on 16 November 2026: the reply box shows no
+  From address error, and the palette has no section headers, so none repeat.
+  Its empty-query list does not put suggestions such as Reply first; that
+  parity gap remains.

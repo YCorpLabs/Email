@@ -1312,7 +1312,9 @@ impl MailService {
             Request::ListAccounts => self.value(self.store.list_accounts()),
             Request::ListSendAs { account_id } => {
                 let account = self.account(&account_id)?;
-                if account.provider == Provider::Gmail {
+                // A seeded demo account has no Gmail client to ask; like IMAP
+                // accounts, it sends only from its own address.
+                if account.provider == Provider::Gmail && !self.is_offline_demo(&account.id) {
                     let saved = self.saved_config(&account_id)?;
                     let client = self.cloud_client(&saved)?;
                     let aliases = client.send_as_aliases().map_err(|e| e.to_string())?;
@@ -2216,7 +2218,7 @@ impl MailService {
             );
         };
         let account = self.account(id)?;
-        if is_demo_account(&account.id) && self.saved_config(id).is_err() {
+        if self.is_offline_demo(&account.id) {
             return self.settle_demo_account(id);
         }
         let saved = self.saved_config(id)?;
@@ -2252,6 +2254,11 @@ impl MailService {
             result["sync_error"] = Value::String(error);
         }
         Ok(result)
+    }
+    /// A seeded demo account that was never given provider settings. It has
+    /// no server or OAuth client behind it, so provider requests answer locally.
+    fn is_offline_demo(&self, id: &str) -> bool {
+        is_demo_account(id) && self.saved_config(id).is_err()
     }
     /// Seeded demo accounts have no provider: nothing to fetch, and local
     /// changes are final, so sync reports success instead of a failure banner.
@@ -3477,6 +3484,33 @@ mod tests {
         let lanes = service.request_json(r#"{"op":"sync_all"}"#).unwrap();
         assert!(lanes.as_array().unwrap().iter().all(|lane| lane["ok"] == true), "{lanes}");
         assert!(service.store.pending_actions().unwrap().is_empty());
+        // Both demo accounts are Gmail-style, yet the composer's From lookup
+        // answers with the account's own address instead of asking Gmail.
+        for account in service.store.list_accounts().unwrap() {
+            assert_eq!(account.provider, Provider::Gmail);
+            let aliases = service
+                .request_json(&json!({"op":"list_send_as","account_id":account.id}).to_string())
+                .unwrap();
+            assert_eq!(
+                aliases,
+                json!([{"email":account.email,"display_name":account.display_name,"is_default":true}])
+            );
+        }
+        // A real Gmail account still asks Gmail; without its saved settings that fails.
+        let real = Uuid::new_v4().to_string();
+        service
+            .store
+            .upsert_account(&Account {
+                id: real.clone(),
+                provider: Provider::Gmail,
+                email: "someone@gmail.example".into(),
+                display_name: "Someone".into(),
+            })
+            .unwrap();
+        assert!(service
+            .request_json(&json!({"op":"list_send_as","account_id":real}).to_string())
+            .unwrap_err()
+            .contains("account config missing"));
         // Search over the seeded inbox, as the apps request it.
         let rows = service
             .request_json(r#"{"op":"search","query":"invoice","limit":100,"offset":0,"is_inbox":true}"#)
