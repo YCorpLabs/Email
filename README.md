@@ -28,6 +28,23 @@ server, and you choose what it can do.
 - A calendar view for Google calendars. It needs Google sign-in, which the
   beta builds don't have yet.
 
+## Install
+
+Download the latest beta from
+[Releases](https://github.com/YCorpLabs/Email/releases). After that, Email
+keeps itself up to date.
+
+- **macOS** (Apple Silicon, macOS 13 or later): open the `.dmg` and drag
+  Email to Applications. It's notarized by Apple. New versions come through
+  **Email › Check for Updates…**.
+- **Ubuntu 24.04 or later** (x86_64 or ARM64): install the `.deb` with
+  `sudo apt install ./email-linux_<version>_amd64.deb` (`_arm64.deb` on ARM).
+  It adds Email's package repository, so `sudo apt upgrade` brings new
+  versions. [Linux updates](docs/linux-updates.md) has the details.
+- **Arch Linux** (x86_64 or aarch64): add the signed `[ycorp]` repository
+  once, then `sudo pacman -Syu email-ycorp-bin`. The setup is in
+  [Arch Linux updates](docs/arch-updates.md).
+
 ## Build from source
 
 Builds from source use the `unofficial`
