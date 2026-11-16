@@ -8,8 +8,9 @@ new releases like any other package. There is no in-app updater on Linux.
 Only distribution builds do this (`DISTRIBUTION=true` and a
 `LINUX_APT_REPOSITORY` in the profile, built with
 `EMAIL_LINUX_RELEASE_CHANNEL=distribution`). Local alphas and packages built
-with the `development` or neutral `unofficial` profile add no repository. Arch
-packages update through the AUR ([AUR packages](linux-aur.md)).
+with the `development` or neutral `unofficial` profile add no repository.
+Arch Linux has its own pacman repository, `[ycorp]`, signed with the same key
+([Arch Linux updates](arch-updates.md)).
 
 ## What the package installs
 
@@ -86,6 +87,7 @@ repository. A package keeps its release-version file name
 | User ID | Y Corp AS Email packages <support@ycorplabs.com> |
 | Expires | 2031-11-14 |
 
+The same key signs the Arch repository ([Arch Linux updates](arch-updates.md)).
 The profile records the fingerprint (`LINUX_APT_KEY_FINGERPRINT`) and the
 public key sits beside it (`config/profiles/official.apt.asc`). The packager
 refuses a key file without that fingerprint or with any secret-key packet, and
@@ -108,7 +110,9 @@ apt refuses signatures from an expired key, so act a year before 2031-11-14:
   in a later release.
 
 A machine that skipped every release in between has to fetch the new key with
-the manual setup below.
+the manual setup below. Arch machines get the key only from the setup in
+[Arch Linux updates](arch-updates.md#signing-key), so tell Arch users to fetch
+it again after an extension or a rotation.
 
 ## Publishing
 
@@ -155,10 +159,11 @@ package, so a stale or empty one cannot drop releases. To recreate it, download
 
 ### Uploading
 
-`scripts/upload-updates.sh` copies a staged directory (this repository, or the
-macOS feed) to the bucket with Wrangler, pinned exactly (`npx wrangler@4.155.0
-r2 object put --remote`). Wrangler takes credentials from its own login or
-`CLOUDFLARE_API_TOKEN`. Before uploading it verifies the directory again,
+`scripts/upload-updates.sh` copies a staged directory (this repository, the
+[Arch repository](arch-updates.md#uploading) or the macOS feed) to the bucket
+with Wrangler, pinned exactly (`npx wrangler@4.155.0 r2 object put --remote`).
+Wrangler takes credentials from its own login or `CLOUDFLARE_API_TOKEN`.
+Before uploading it verifies the directory again,
 with the profile's public keys, and compares it with what is published at
 `https://updates.ycorplabs.com/<prefix>`. Then it uploads in dependency order:
 

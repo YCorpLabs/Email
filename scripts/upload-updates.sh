@@ -4,6 +4,7 @@
 # publishers did not stage. Details: scripts/upload-updates.py.
 #
 #   scripts/upload-updates.sh --dry-run --source DIR --prefix email/apt
+#   scripts/upload-updates.sh --dry-run --source DIR --prefix email/arch
 #   scripts/upload-updates.sh --dry-run --source DIR --prefix email/macos
 #   scripts/upload-updates.sh --source DIR --prefix email/apt
 set -euo pipefail

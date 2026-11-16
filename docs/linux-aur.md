@@ -11,11 +11,16 @@ declare `x86_64` and `aarch64`:
 Publishing to the AUR is a maintainer action. Nothing in this repository pushes
 to the AUR.
 
-## Installing before the AUR packages exist
+## Installing while the AUR is closed
 
-New AUR account registration was closed when the first beta shipped, so the
-packages are not on the AUR yet. Until they are, build them from a clone of
-this repository:
+The AUR is closed to new accounts, with no date for reopening, so the packages
+are not on the AUR yet. Until they are, Arch users install `email-ycorp-bin`
+from Email's signed pacman repository, `[ycorp]`, and `pacman -Syu` keeps it
+up to date: see [Arch Linux updates](arch-updates.md#setup). The repository
+carries the package this PKGBUILD builds, so publishing it on the AUR later
+changes nothing for those machines.
+
+The alternative is to build a package from a clone of this repository:
 
 ```sh
 git clone https://github.com/YCorpLabs/Email
@@ -25,7 +30,8 @@ makepkg -si
 
 This needs the PKGBUILDs on `main` to carry the release's checksums (step 5
 below) and the release to be published, because both PKGBUILDs download their
-sources from the GitHub release.
+sources from the GitHub release. A package built this way gets no updates
+until it is built again, or until the machine adds `[ycorp]`.
 
 ## email-ycorp: built from source
 
@@ -82,6 +88,8 @@ collections. Switching between them means adding accounts again.
      scripts/package-linux-release.sh
    ```
 3. Run `scripts/prepare-aur-package.sh --ref <release commit> --build --update-repo`.
+   The `email-ycorp-bin` packages it builds are the ones the release stages
+   in the `[ycorp]` repository ([Arch Linux updates](arch-updates.md#publishing)).
    In a clean Arch x86_64 container it writes the source tarball
    `dist-linux/aur/Email-<version>.tar.gz`, records its SHA-256 and those of
    the two `.deb` files in the PKGBUILDs, writes `.SRCINFO`, verifies every
@@ -104,8 +112,9 @@ collections. Switching between them means adding accounts again.
    EMAIL_LINUX_ARCH_PACKAGE=$PWD/dist-linux/aur/email-ycorp-0.1.0beta1-1-x86_64.pkg.tar.zst \
      scripts/verify-linux-packages.sh x86_64
    ```
-7. Create an account on <https://aur.archlinux.org> and add an SSH public key
-   under *My Account*. Then, for each package:
+7. Once AUR registration reopens, create an account on
+   <https://aur.archlinux.org> and add an SSH public key under *My Account*.
+   Then, for each package:
 
    ```sh
    git clone ssh://aur@aur.archlinux.org/email-ycorp.git aur-email-ycorp
@@ -120,13 +129,15 @@ collections. Switching between them means adding accounts again.
    push creates the package. An AUR repository must contain only `PKGBUILD`,
    `.SRCINFO` and files the PKGBUILD references.
 8. On a real Arch or Omarchy machine, install it the way users will
-   (`yay -S email-ycorp-bin` or `git clone` plus `makepkg -si`) and check the
+   (from `[ycorp]` with `pacman -Syu`, or `yay -S email-ycorp-bin` once it is
+   on the AUR) and check the
    launcher and icon, Wayland rendering, keyboard navigation, Secret Service
    storage across a relaunch and account sign-in.
 
 For later releases, bump `_tag`, `pkgver` and `_debver` (or `pkgrel` for
-packaging-only changes), rerun steps 2 to 5 and push the new PKGBUILD and
-`.SRCINFO` to both AUR repositories.
+packaging-only changes), rerun steps 2 to 5, stage and upload the
+`email-ycorp-bin` packages to `[ycorp]`, and push the new PKGBUILD and
+`.SRCINFO` to both AUR repositories once they exist.
 
 ## Verification without a release
 

@@ -3,11 +3,13 @@
 One version, both platforms, from version bump to GitHub release. Details live
 in [release versions](release-versions.md), [macOS distribution
 builds](macos-release.md), [macOS updates](macos-updates.md), [Linux
-updates](linux-updates.md) and [AUR packages](linux-aur.md).
+updates](linux-updates.md), [Arch Linux updates](arch-updates.md) and [AUR
+packages](linux-aur.md).
 
 The commands use `0.2.0-beta.1` and build `3`; substitute the release's
-values. Keep the two update staging directories between releases, outside
-this checkout, for example `../email-updates/macos` and `../email-updates/apt`.
+values. Keep the three update staging directories between releases, outside
+this checkout, for example `../email-updates/macos`, `../email-updates/apt`
+and `../email-updates/arch`.
 
 ## 1. Prepare the version
 
@@ -37,6 +39,16 @@ EMAIL_LINUX_RELEASE_CHANNEL=distribution ./scripts/package-linux-release.sh aarc
       `./usr/share/keyrings/email-linux-archive-keyring.asc`, and the sources
       file names `Suites: beta` (`stable` for a final).
 - [ ] Every `BUILD-INFO-*.txt` names the release commit.
+
+Then the Arch packages, repackaged from those `.deb` files
+([AUR packages](linux-aur.md#publish-a-release), step 3):
+
+```sh
+./scripts/prepare-aur-package.sh --ref <release commit> --build --update-repo
+```
+
+- [ ] `dist-linux/aur-bin/` has `email-ycorp-bin-0.2.0beta1-1-x86_64.pkg.tar.zst`
+      and `email-ycorp-bin-0.2.0beta1-1-aarch64.pkg.tar.zst`.
 
 ## 3. Build, sign and notarize macOS
 
@@ -78,30 +90,41 @@ EMAIL_UPDATE_ED_PRIVATE_KEY="$(<from the release secret store>)" \
 Repeat for the other architecture's archive. Use `--channel stable` for a
 final. The script stages and verifies; it uploads nothing.
 
-## 5. Stage the APT repository
+## 5. Stage the Linux repositories
+
+Both are signed with the same key, from the same GnuPG home:
 
 ```sh
-EMAIL_APT_GNUPGHOME=<release GnuPG home> ./scripts/publish-linux-apt.sh \
-  --staging ../email-updates/apt \
+export EMAIL_APT_GNUPGHOME=<release GnuPG home>
+./scripts/publish-linux-apt.sh --staging ../email-updates/apt \
   dist-linux/email-linux_0.2.0-beta.1_amd64.deb dist-linux/email-linux_0.2.0-beta.1_arm64.deb
+./scripts/publish-arch-repo.sh --staging ../email-updates/arch \
+  dist-linux/aur-bin/email-ycorp-bin-0.2.0beta1-1-x86_64.pkg.tar.zst \
+  dist-linux/aur-bin/email-ycorp-bin-0.2.0beta1-1-aarch64.pkg.tar.zst
 ```
 
-A beta goes to the `beta` suite; a final goes to `stable` and `beta`.
+A beta goes to the APT `beta` suite; a final goes to `stable` and `beta`.
+`[ycorp]` has no suites: every release, beta or final, replaces the previous
+package for its architecture.
 
 ## 6. Upload
 
 ```sh
 ./scripts/upload-updates.sh --dry-run --source ../email-updates/macos --prefix email/macos
 ./scripts/upload-updates.sh --dry-run --source ../email-updates/apt --prefix email/apt
-# Review both plans, then:
+./scripts/upload-updates.sh --dry-run --source ../email-updates/arch --prefix email/arch
+# Review the three plans, then:
 ./scripts/upload-updates.sh --source ../email-updates/macos --prefix email/macos
 ./scripts/upload-updates.sh --source ../email-updates/apt --prefix email/apt
+./scripts/upload-updates.sh --source ../email-updates/arch --prefix email/arch
 ```
 
 - [ ] `curl -fsS https://updates.ycorplabs.com/email/macos/appcast.xml` lists
       the new build.
 - [ ] `curl -fsS https://updates.ycorplabs.com/email/apt/dists/beta/InRelease`
       shows the new `Date`.
+- [ ] `curl -fsS https://updates.ycorplabs.com/email/arch/x86_64/ycorp.db | tar -tzf - | head -1`
+      shows `email-ycorp-bin-0.2.0beta1-1/`, and the same for `aarch64`.
 
 ## 7. GitHub release
 
@@ -118,3 +141,6 @@ A beta goes to the `beta` suite; a final goes to `stable` and `beta`.
       installs the new build (testing channel for a beta).
 - [ ] On Ubuntu with the previous release: `sudo apt update && apt list
       --upgradable` shows `email-linux`, and `sudo apt upgrade` installs it.
+- [ ] On Arch with the previous release from `[ycorp]`: `sudo pacman -Syu`
+      installs the new `email-ycorp-bin`, and `pacman -Qi email-ycorp-bin`
+      says `Validated By : Signature`.
