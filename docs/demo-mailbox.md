@@ -191,3 +191,14 @@ account has agent access turned on…", which is also a good shot.
   From address error, and the palette has no section headers, so none repeat.
   Its empty-query list does not put suggestions such as Reply first; that
   parity gap remains.
+  Checked on Linux in the container on 17 November 2026, dark and light, at
+  1120×700 and 760×700 (GDK_SCALE=2), against the macOS list and reader:
+  list rows show one preview line with up to two `#Label` tags, as macOS does
+  (before, snippets showed their blank lines and signature separators); today's
+  mail shows the time and older mail the locale's short date (before, every
+  row showed "Nov 17"); earlier messages in a thread show the sender left and
+  "14 Nov 2026 at 08:40" right, with the shown message in ink (before, a
+  centred "Name · Nov 15"); and the reader toolbar's first button is the
+  contact toggle with its own icon (before, the view switch gave it the
+  archive icon and tooltip because it looked up the archive button by
+  position).
