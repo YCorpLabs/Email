@@ -13,20 +13,29 @@ an account can be made; the repository can stay as it is next to them.
 
 ## Setup
 
-Once per machine:
+Once per machine (also on [ycorplabs.com/email/download](https://ycorplabs.com/email/download/#arch)):
 
-```sh
-curl -fsSLO https://updates.ycorplabs.com/email/arch/ycorp.asc
-sudo pacman-key --add ycorp.asc
-sudo pacman-key --lsign-key 20B087BF1D1B2A04102882F213081979B6CEABDA
-sudo tee -a /etc/pacman.conf >/dev/null <<'EOF'
+1. Trust the key Email's packages are signed with:
 
-[ycorp]
-SigLevel = Required
-Server = https://updates.ycorplabs.com/email/arch/$arch
-EOF
-sudo pacman -Syu email-ycorp-bin
-```
+   ```sh
+   curl -fsSLO https://updates.ycorplabs.com/email/arch/ycorp.asc
+   sudo pacman-key --add ycorp.asc
+   sudo pacman-key --lsign-key 20B087BF1D1B2A04102882F213081979B6CEABDA
+   ```
+
+2. Add these lines to the end of `/etc/pacman.conf`:
+
+   ```ini
+   [ycorp]
+   SigLevel = Required
+   Server = https://updates.ycorplabs.com/email/arch/$arch
+   ```
+
+3. Install Email:
+
+   ```sh
+   sudo pacman -Syu email-ycorp-bin
+   ```
 
 `pacman-key --lsign-key` trusts only the key with that full fingerprint. If
 `ycorp.asc` held any other key, signing fails and pacman refuses everything

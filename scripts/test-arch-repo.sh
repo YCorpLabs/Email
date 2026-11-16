@@ -296,17 +296,22 @@ start_client() { # name platform image; client() acts on it from now on
 }
 
 # The setup from the docs, with the test's host and key.
-python3 - "$repo_root/docs/arch-updates.md" "$host" "$fingerprint" > "$work/setup.sh" <<'PY' || fail "setup snippet in docs/arch-updates.md"
-import re, sys
+python3 - "$repo_root/docs/arch-updates.md" "$host" "$fingerprint" > "$work/setup.sh" <<'PY' || fail "setup blocks in docs/arch-updates.md"
+import re, shlex, sys, textwrap
 text = open(sys.argv[1]).read()
-blocks = [b for b in re.findall(r"```sh\n(.*?)```", text, re.S) if "pacman-key --lsign-key" in b]
-assert len(blocks) == 1, "expected one setup block"
-block = blocks[0]
+def blocks(lang):
+    return [textwrap.dedent(b) for b in re.findall(r"```" + lang + r"\n(.*?)^ *```", text, re.S | re.M)]
+keys = [b for b in blocks("sh") if "pacman-key --lsign-key" in b]
+installs = [b for b in blocks("sh") if "pacman -Syu email-ycorp-bin" in b and "pacman-key" not in b]
+confs = [b for b in blocks("ini") if b.startswith("[ycorp]")]
+assert len(keys) == len(installs) == len(confs) == 1, "expected one key, one pacman.conf and one install block"
+# Step 2 asks people to add the lines with an editor; the test appends them.
+block = keys[0] + "printf '\\n%s' " + shlex.quote(confs[0]) + " | sudo tee -a /etc/pacman.conf >/dev/null\n" + installs[0]
 replacements = [("https://updates.ycorplabs.com", f"http://{sys.argv[2]}"),
                 ("20B087BF1D1B2A04102882F213081979B6CEABDA", sys.argv[3]),
                 ("pacman -Syu email-ycorp-bin", "pacman -Syu --noconfirm email-ycorp-bin")]
 for old, new in replacements:
-    assert old in block, f"the setup block has no {old!r}"
+    assert old in block, f"the setup blocks have no {old!r}"
     block = block.replace(old, new)
 sys.stdout.write('set -euo pipefail\nsudo() { "$@"; }\ncd "$(mktemp -d)"\n' + block)
 PY
