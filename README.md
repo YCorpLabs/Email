@@ -1,17 +1,55 @@
-# Email by YCorp
+<p align="center">
+  <img src="assets/readme/icon.png" width="112" height="112" alt="">
+</p>
 
-A fast, keyboard-first email client for macOS and Linux. Your mail lives on
-your own computer and search is instant.
+<h1 align="center">Email by YCorp</h1>
 
-Both apps are fully native (AppKit on macOS, GTK 4 on Linux) and share one Rust
-engine. It talks straight to your mail provider and keeps a local SQLite cache.
-If you want your own AI agents to read your mail, there's an optional local MCP
-server, and you choose what it can do.
+<p align="center">A fast, keyboard-first email client for macOS and Linux.</p>
+
+<p align="center">
+  <a href="https://ycorplabs.com/email/download/"><b>Download</b></a> ·
+  <a href="https://ycorplabs.com/email/">Website</a> ·
+  <a href="docs/README.md">Docs</a> ·
+  <a href="docs/mcp.md">Agent access</a> ·
+  <a href="SUPPORT.md">Support</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/readme/hero-dark.png">
+    <img src="assets/readme/hero-light.png" width="800" alt="Email on macOS: the inbox, with a message from Elena Rossi open in the reader">
+  </picture>
+</p>
+
+Email keeps your mail on your own computer, so search is instant and the app
+never waits on a server. Both apps are native, AppKit on macOS and GTK 4 on
+Linux, and share one Rust engine that talks straight to Gmail, iCloud or any
+IMAP account.
+
+Your AI agents can work with your mail too, through a local MCP server. Every
+account is off until you turn it on, and anything an agent wants to send waits
+for your approval.
 
 > [!WARNING]
 > **It's a beta.** Gmail on macOS is what's been tested most; other providers
 > and plenty of edge cases still need real-world testing. Keep important mail
 > on your provider, and expect things to break now and then.
+
+## A quick look
+
+**Search everything you've downloaded.** It runs on your computer, across
+every account.
+
+<img src="assets/readme/search.gif" width="800" alt="Typing invoice, then brightwater, into search; matching conversations appear and open in the reader">
+
+**Triage from the keyboard.** `j` and `k` move, `e` archives, `s` snoozes.
+
+<img src="assets/readme/triage.gif" width="800" alt="Moving through the inbox with j and k, archiving with e and snoozing with s">
+
+**Everything else is in the command palette.** `⌘K` on macOS, `Ctrl+K` on
+Linux.
+
+<img src="assets/readme/palette.gif" width="800" alt="Opening the command palette and filtering its commands by typing">
 
 ## Features
 
@@ -48,78 +86,27 @@ keeps itself up to date.
 
 ## Build from source
 
+```sh
+./scripts/dev.sh
+```
+
+This builds the app for macOS or a Linux desktop and opens it with demo
+messages in an isolated store, `dist/demo/mail.sqlite`. It needs no signing
+identity, OAuth client or mail account, and never opens a real mail store. From
+any computer with Docker, `./scripts/build-linux-container.sh` builds a Linux
+binary.
+
 Builds from source use the `unofficial`
 [distribution profile](docs/distribution-profile.md): their own app ID,
 Keychain items and data folder, so they never clash with an official install.
 They come without an OAuth client, support address, Scheduling service or
 update feed until you add your own.
 
-### Quick start
-
-```sh
-./scripts/dev.sh
-```
-
-This builds the app for macOS or a Linux desktop and opens it with three demo
-messages in an isolated store, `dist/demo/mail.sqlite`. It needs no signing
-identity, OAuth client or mail account, and never opens a real mail store. From
-any computer with Docker, `./scripts/build-linux-container.sh` builds a Linux
-binary. [Building and running Email](docs/building.md) covers requirements,
-tests, the source layout and common errors.
-
-### macOS signed app
-
-Requires macOS 13 or later, the Xcode command line tools, Rust (via
-[rustup](https://rustup.rs)) and OpenSSL 3 on your `PATH`, for example from
-Homebrew. The system LibreSSL cannot create the signing bundle.
-
-```sh
-./scripts/setup-macos-signing.sh        # once: a local code-signing identity
-# In Keychain Access, rename the imported private key to
-# "Email Local Development Signing Key", as the script instructs.
-./scripts/authorize-macos-signing.sh    # once, in your own Terminal
-./scripts/run-macos.sh                  # build dist/Email.app and open it
-```
-
-`./scripts/run-macos.sh --package` builds without launching. Keep
-`dist/Email.app` and `dist/Runtime` together. To try the app against a
-disposable cache, set `EMAIL_STORE_PATH` to a database in its own directory,
-such as `/absolute/path/test/mail.sqlite`. Add `EMAIL_DEMO=1` for demo messages,
-or `EMAIL_DEMO=launch` for the [launch demo mailbox](docs/demo-mailbox.md);
-both are ignored without `EMAIL_STORE_PATH`.
-
-### Linux
-
-Install the GTK 4, WebKitGTK 6 and pkg-config development packages and Rust.
-Then run `./scripts/run-linux.sh`, or build a package with
-`./scripts/package-linux-deb.sh`. See [apps/linux/README.md](apps/linux/README.md)
-for dependencies, the verification container and Arch packaging.
-
-### Bring your own OAuth client
-
-iCloud and IMAP accounts work without any registration: use an app-specific or
-provider-issued app password. Browser sign-in for Gmail needs your own Google
-desktop OAuth client. Never commit its values; put them in the ignored
-`config/oauth-desktop.local.env`:
-
-```sh
-EMAIL_GOOGLE_CLIENT_ID=<your client ID>.apps.googleusercontent.com
-EMAIL_GOOGLE_CLIENT_SECRET=<its desktop client secret>
-```
-
-Exported environment variables override this file. [FORKING.md](FORKING.md)
-explains how to register the client, which APIs and scopes to enable, and the
-limits of Google's Testing mode and personal-use exemption.
-
-### Checks
-
-```sh
-cargo test --workspace --locked
-./scripts/dev.sh --smoke                    # macOS headless engine check
-./scripts/build-linux-container.sh --test   # Linux tests from any OS
-python3 scripts/check-release-swift.py
-python3 scripts/validate-local.py --profile source --gitleaks /path/to/gitleaks
-```
+- [Building and running Email](docs/building.md): requirements, the signed
+  macOS app, Linux packages, demo mode, tests and common errors.
+- [FORKING.md](FORKING.md): your own Google OAuth client for Gmail sign-in, and
+  shipping a build under your own name. iCloud and IMAP accounts need no
+  registration; they use an app password.
 
 ## Privacy and security model
 
@@ -177,17 +164,13 @@ the in-app permissions both apply. Scheduling settings need the separate
 
 See [docs/mcp.md](docs/mcp.md) for the tool list and limits.
 
-## Architecture
+## How it's built
 
-- `crates/mail-core`: accounts, messages, threads, SQLite cache, full-text
-  search, drafts and queued actions.
-- `crates/mail-imap`: IMAP sync, MIME parsing and SMTP send.
-- `crates/mail-cloud`: Gmail API, Microsoft Graph, OAuth with PKCE.
-- `crates/mail-service`: account configuration, credential storage, provider
-  coordination, safe HTML rendering and the C ABI used by the macOS shell.
-- `crates/mail-mcp`: the local MCP server and scheduled-send dispatcher.
-- `crates/distribution-profile`: the build-time distribution profile parser.
-- `apps/macos` and `apps/linux`: the native desktop shells.
+A Rust engine (`crates/`) handles accounts, sync, the SQLite cache, search and
+sending, and the local MCP server. The macOS app (`apps/macos`, AppKit) and the
+Linux app (`apps/linux`, GTK 4) are thin native shells on top of it.
+[Where things live](docs/building.md#where-things-live) maps the source, and
+[architecture](docs/architecture.md) covers the rules the engine follows.
 
 ## Contributing, support and forks
 
