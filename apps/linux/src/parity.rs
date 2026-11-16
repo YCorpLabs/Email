@@ -553,8 +553,8 @@ impl Ui {
             }
         } else if self.compose_pane.borrow().is_some() && page == "root" {
             for (id, title, keys, words) in [
-                ("send", "Send message", "Ctrl Enter", "deliver"),
                 ("body", "Write message", "", "body text"),
+                ("send", "Send message", "Ctrl Enter", "deliver"),
                 (
                     "from",
                     "Choose From address",

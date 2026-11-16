@@ -1300,8 +1300,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 if composePane?.offersTracking == true { items.append(paletteItem(.toggleTracking, "Toggle email open tracking", "COMPOSE", aliases: ["track opens", "pixel", "analytics"])) }
                 items.append(paletteItem(.insertBooking, "Insert booking link…", "COMPOSE", aliases: ["meeting", "schedule", "availability"]))
                 items.append(paletteItem(.signature, "Signature…", "COMPOSE", aliases: ["signatures", "identity", "footer"]))
-                items.append(paletteItem(.sendDraft, "Send message", "SUGGESTED", detail: "10 seconds to undo", aliases: ["send email", "deliver"]))
+                // Return runs the first item, so sending is never the preselected one.
                 items.append(paletteItem(.focusBody, "Write message", "SUGGESTED", aliases: ["body", "message text"]))
+                items.append(paletteItem(.sendDraft, "Send message", "SUGGESTED", detail: "10 seconds to undo", aliases: ["send email", "deliver"]))
                 items.append(paletteItem(.chooseFrom, "Choose From address", "COMPOSE", aliases: ["change sender", "switch identity", "send as", "alias"]))
                 items.append(paletteItem(.focusRecipient, "Edit recipient", "COMPOSE", aliases: ["to", "address"]))
                 items.append(paletteItem(.focusCc, "Edit Cc recipients", "COMPOSE", aliases: ["copy", "carbon copy"]))

@@ -196,6 +196,7 @@ check = r'''
         openCommands()
         snapshotPalette("16-reply-palette")
         expect(Set(headers()).count == headers().count, "each composer palette section header appears once: \(headers())")
+        expect(paletteResults.first?.title == "Write message", "Return in the composer palette never sends: \(paletteResults.first?.title ?? "none")")
         closePalette()
         dismissComposePane()
         close()

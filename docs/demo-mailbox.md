@@ -185,6 +185,8 @@ account has agent access turned on…", which is also a good shot.
   `apps/linux/qa/launch-demo.sh` in the Linux container (see its header). The
   macOS check also opens the command palette with an empty query (each section
   header once, Suggested first) and the reply box (no From address error).
+  In the reply box the palette preselects Write message, never Send message,
+  so Return after Cmd-K cannot send; Linux lists them in the same order.
   Checked on Linux in the container on 16 November 2026: the reply box shows no
   From address error, and the palette has no section headers, so none repeat.
   Its empty-query list does not put suggestions such as Reply first; that
