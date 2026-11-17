@@ -399,13 +399,22 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case toggleLabel(String), createLabel(String), snoozeUntil(Date), unsnooze
         case toggleImages, contact, appearance(Int), notifications, testNotifications, notificationPreviews
         case sendDraft, saveDraft, scheduleDraft, attachFile, chooseFrom, focusRecipient, focusCc, focusBcc, focusBody
-        case agentAccess, agentRequests
+        case agentAccess, agentRequests, schedulingAccount
         case snippets, saveSnippet, insertSnippet(String), about, support, feedback, invitations, followup, followups, signature, bookings, insertBooking, trackingActivity, toggleTracking
         case calendarSearch, calendarCreate, calendarRefresh, calendarView(Int), calendarMove(Int), calendarToday, calendarJump, calendarHelp, calendarDate(Date)
 
-        var requiresScheduling: Bool {
+        /// Booking commands exist only while Scheduling is connected.
+        var requiresSchedulingConnection: Bool {
             switch self {
-            case .bookings, .insertBooking, .trackingActivity, .toggleTracking: return true
+            case .bookings, .insertBooking: return true
+            default: return false
+            }
+        }
+        /// Open activity needs the profile's Scheduling service (development
+        /// builds track opens; released builds only keep saved counts).
+        var requiresSchedulingService: Bool {
+            switch self {
+            case .trackingActivity, .toggleTracking: return true
             default: return false
             }
         }
@@ -417,6 +426,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let shortcut: String
         let detail: String
         let aliases: [String]
+        /// Added to a typed query's match score, to prefer a command in its
+        /// context (Insert booking link… over Bookings in the composer).
+        var rank = 0
     }
     private var palettePage: PalettePage = .root
     private var paletteRootQuery = ""
@@ -467,6 +479,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         splits = bridge?.splits() ?? []
         core = bridge
         usesCore = bridge != nil
+        if let bridge { SchedulingConnection.shared.start(core: bridge) }
         threads = bridge != nil ? stored : (ProcessInfo.processInfo.environment["EMAIL_FIXTURE"] == "1" ? fixtureThreads : [])
         let availableWidth = NSScreen.main?.visibleFrame.width ?? 1400
         let initialWidth = min(1600, max(1100, availableWidth * 0.92))
@@ -488,6 +501,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         initialFirstResponder = table
         makeFirstResponder(table)
         buildPalette()
+        SchedulingConnection.shared.onConnected = { [weak self] in self?.syncStatus.stringValue = "Scheduling connected" }
         checkSavedOpenActivity()
         restoreTriageUndo()
         refreshInbox()
@@ -1265,10 +1279,25 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         PaletteItem(target: target, title: title, section: section, shortcut: shortcut, detail: detail, aliases: aliases)
     }
 
-    /// Scheduling commands exist only when the profile names a Scheduling service.
+    /// Booking commands exist only while Scheduling is connected; before that
+    /// the palette offers Connect Scheduling…. Open activity follows the
+    /// profile's Scheduling service.
     private func paletteItems() -> [PaletteItem] {
-        let scheduling = DistributionProfile.current?.hasScheduling == true
-        return allPaletteItems().filter { scheduling || !$0.target.requiresScheduling }
+        let service = DistributionProfile.current?.hasScheduling == true
+        let connected = SchedulingConnection.shared.isConnected
+        return allPaletteItems().filter {
+            (connected || !$0.target.requiresSchedulingConnection) && (service || !$0.target.requiresSchedulingService)
+        }
+    }
+
+    /// Manage accounts at its Scheduling entry: Connect Scheduling… until
+    /// connected, then Scheduling.
+    private var schedulingAccountItem: PaletteItem? {
+        let connection = SchedulingConnection.shared
+        guard connection.available, !knownAccounts.isEmpty else { return nil }
+        return connection.isConnected
+            ? paletteItem(.schedulingAccount, "Scheduling", "SETTINGS", aliases: ["booking", "meeting links", "disconnect scheduling", "manage accounts"])
+            : paletteItem(.schedulingAccount, "Connect Scheduling…", "SETTINGS", aliases: ["booking link", "meeting links", "scheduling", "calendar link"])
     }
 
     private func allPaletteItems() -> [PaletteItem] {
@@ -1298,7 +1327,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             }
             if composePane != nil {
                 if composePane?.offersTracking == true { items.append(paletteItem(.toggleTracking, "Toggle email open tracking", "COMPOSE", aliases: ["track opens", "pixel", "analytics"])) }
-                items.append(paletteItem(.insertBooking, "Insert booking link…", "COMPOSE", aliases: ["meeting", "schedule", "availability"]))
+                // Typing "book" here inserts a link: rank it above Bookings and meeting links.
+                var insertBooking = paletteItem(.insertBooking, "Insert booking link…", "COMPOSE", aliases: ["meeting", "schedule", "availability"])
+                insertBooking.rank = 200
+                items.append(insertBooking)
                 items.append(paletteItem(.signature, "Signature…", "COMPOSE", aliases: ["signatures", "identity", "footer"]))
                 // Return runs the first item, so sending is never the preselected one.
                 items.append(paletteItem(.focusBody, "Write message", "SUGGESTED", aliases: ["body", "message text"]))
@@ -1313,6 +1345,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 items.append(paletteItem(.scheduleDraft, "Schedule send", "COMPOSE", aliases: ["send later"]))
                 items.append(paletteItem(.saveDraft, "Save draft", "COMPOSE", aliases: ["save message"]))
                 items.append(paletteItem(.discardComposerDraft, "Discard draft", "COMPOSE", detail: "Z in Drafts to undo", aliases: ["delete draft", "trash draft", "remove draft", "throw away"]))
+                if !SchedulingConnection.shared.isConnected, let connect = schedulingAccountItem { items.append(connect) }
                 items.append(paletteItem(.shortcuts, "Keyboard shortcuts", "HELP", shortcut: "?"))
                 return items
             }
@@ -1395,6 +1428,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.notificationPreviews, MailNotifications.shared.previews ? "Hide sender and subject in notifications" : "Show sender and subject in notifications", "SETTINGS", aliases: ["notification previews", "alert privacy"]))
             items.append(paletteItem(.manageAccounts, "Manage accounts", "SETTINGS", aliases: ["account settings"]))
             items.append(paletteItem(.agentAccess, "Agent access", "SETTINGS", aliases: ["mcp", "ai", "agent", "codex", "claude", "assistant", "connect"]))
+            if let scheduling = schedulingAccountItem { items.append(scheduling) }
             items.append(paletteItem(.toggleImages, RemoteImagePreference.isEnabled(.standard) ? "Block remote images by default" : "Load remote images by default", "SETTINGS", shortcut: "I", aliases: ["privacy", "pictures", "tracking"]))
             items.append(paletteItem(.appearance(0), "Appearance: Follow System", "SETTINGS", aliases: ["theme", "system"]))
             items.append(paletteItem(.appearance(1), "Appearance: Light", "SETTINGS", aliases: ["theme", "light mode"]))
@@ -1637,7 +1671,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         } else {
             let ranked = items.compactMap { item -> (PaletteItem, Int)? in
                 guard let score = paletteScore(item, query: query) else { return nil }
-                return (item, score)
+                return (item, score + item.rank)
             }.sorted { lhs, rhs in
                 lhs.1 == rhs.1 ? lhs.0.title.localizedStandardCompare(rhs.0.title) == .orderedAscending : lhs.1 > rhs.1
             }.prefix(40).map(\.0)
@@ -1853,6 +1887,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             syncStatus.stringValue = MailNotifications.shared.previews ? "Notifications show sender and subject" : "Notifications hide sender and subject"
         case .manageAccounts: manageAccounts()
         case .agentAccess: openAgentAccess()
+        case .schedulingAccount: manageAccounts()
         case .agentRequests: showAgentRequests()
         case .shortcuts: showNotice("g then i/u/f/a/s/d/o: Inbox, Unread, Favorites, Archive, Snoozed, Drafts, Outbox\nj / k: next / previous email · Ctrl-D / Ctrl-U: half-page down / up\n/: search · Esc: leave search · e: archive · !: spam · m/u: read/unread\nf: favorite · r/⇧r: reply/reply all · c: compose · l: labels · s: snooze\nx: select · ⇧J/⇧K: extend selection · ⌘A: select loaded results\nz: undo archive/move · ⌘K: commands · ⌘R: sync · ⌘U: unsubscribe\nIn Drafts: ↵ edit · ⌫ or # discard · z: undo discard")
         case .unsubscribe: unsubscribeSelection()
@@ -2374,7 +2409,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     }
     func refreshTrackingButton() { updateTrackingButton() }
     func showBookingPanel() {
-        guard let core, DistributionProfile.current?.hasScheduling == true else { return }
+        guard let core, SchedulingConnection.shared.isConnected else { return }
         BookingPanel.present(core: core, emailGuest: { [weak self] address, hostEmail in
             guard let self else { return }
             self.closeCalendarWorkspace()
@@ -2953,16 +2988,27 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func manageAccounts() {
-        guard core != nil else { showNotice("Mail engine unavailable."); return }
-        let accounts = knownAccounts
-        guard !accounts.isEmpty else { addAccount(); return }
+    /// Connected accounts: the mail accounts, then the Scheduling account when
+    /// the build has a Scheduling service.
+    func manageAccountsAlert() -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "Connected accounts"
-        alert.informativeText = accounts.map { "\($0.email) (\($0.provider))" }.joined(separator: "\n")
+        alert.informativeText = knownAccounts.map { "\($0.email) (\($0.provider))" }.joined(separator: "\n")
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Remove an account…")
         alert.addButton(withTitle: "Agent Access…")
+        if SchedulingConnection.shared.available {
+            let entry = SchedulingAccountEntry()
+            entry.alert = alert
+            alert.accessoryView = entry
+        }
+        return alert
+    }
+
+    private func manageAccounts() {
+        guard core != nil else { showNotice("Mail engine unavailable."); return }
+        guard !knownAccounts.isEmpty else { addAccount(); return }
+        let alert = manageAccountsAlert()
         switch alert.runModal() {
         case .alertSecondButtonReturn: removeAccount()
         case .alertThirdButtonReturn: openAgentAccess()

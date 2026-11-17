@@ -243,7 +243,7 @@ final class ComposePane: NSView, NSTextFieldDelegate {
         guard offersTracking else { return }
         tracking.state = tracking.state == .on ? .off : .on; trackingToggled()
     }
-    func paletteBooking() { guard DistributionProfile.current?.hasScheduling == true else { return }; BookingPanel.present(core: core, insert: { [weak self] url in self?.insertSnippet(url) }) }
+    func paletteBooking() { guard SchedulingConnection.shared.isConnected else { return }; BookingPanel.present(core: core, insert: { [weak self] url in self?.insertSnippet(url) }) }
 
     private var selectedFromIdentity: FromIdentity? {
         let index = from.indexOfSelectedItem
@@ -588,10 +588,12 @@ final class ComposePane: NSView, NSTextFieldDelegate {
             actions.addArrangedSubview(send)
         }
         // Track opens needs a profile with OPEN_TRACKING (which implies its
-        // Scheduling service); booking links need the Scheduling service.
+        // Scheduling service). Booking link shows only while Scheduling is
+        // connected, and follows connecting or disconnecting while open.
         if offersTracking { stack.addArrangedSubview(tracking) }
         stack.addArrangedSubview(actions)
-        booking.isHidden = DistributionProfile.current?.hasScheduling != true
+        booking.isHidden = !SchedulingConnection.shared.isConnected
+        NotificationCenter.default.addObserver(self, selector: #selector(schedulingDidChange), name: SchedulingConnection.changed, object: nil)
         actions.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         applyTheme()
     }
@@ -607,13 +609,13 @@ final class ComposePane: NSView, NSTextFieldDelegate {
                 let connection = try await core.callAsync(["op":"booking_status"]) as? [String:Any] ?? [:]
                 if connection["connected"] as? Bool != true && tracking.state == .on {
                     tracking.state = .off
-                    status.stringValue = "Connect scheduling, then enable Track opens."
-                    BookingPanel.present(core:core)
+                    status.stringValue = "Connect Scheduling in Manage accounts, then turn on Track opens."
                 }
             } catch { tracking.state = .off; status.stringValue = error.localizedDescription }
         }
     }
     @objc private func bookingClicked() { paletteBooking() }
+    @objc private func schedulingDidChange() { booking.isHidden = !SchedulingConnection.shared.isConnected }
     @objc private func closeClicked() { recipientCompletion.dismiss(); requestClose() }
 
     private func updateRecipientKeyLoop() {
