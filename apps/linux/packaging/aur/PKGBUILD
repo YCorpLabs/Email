@@ -12,9 +12,9 @@
 # unless the builder supplies them. The default is the neutral profile.
 # email-ycorp-bin installs the official prebuilt build instead.
 pkgname=email-ycorp
-pkgver=0.1.0beta3
+pkgver=0.1.0beta4
 # The release tag; Arch versions cannot contain '-'.
-_tag=v0.1.0-beta.3
+_tag=v0.1.0-beta.4
 pkgrel=1
 pkgdesc='Keyboard-first, local-first desktop email client (beta, built from source)'
 arch=('x86_64' 'aarch64')
