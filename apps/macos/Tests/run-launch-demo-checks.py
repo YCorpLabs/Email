@@ -5,9 +5,10 @@ Compiles the real EmailUI sources with a check entry point, seeds a disposable
 store with EMAIL_DEMO=launch through the real mail-service library, then walks
 the states used in the launch recordings: the inbox, a long conversation, an
 inline picture, the blocked remote images notice, an invitation, attachments,
-search, a split, dark mode, a narrow window, the command palette with an
-empty query and the reply box. With --snapshots it writes a PNG of each state,
-including the reader's WebKit content.
+search, a split, the inbox subtitle after Agent requests, dark mode, a narrow
+window, the command palette with an empty query and the reply box. With
+--snapshots it writes a PNG of each state, including the reader's WebKit
+content.
 
 The store and HOME are temporary. No real account, Keychain item or provider
 is used, and nothing is sent.
@@ -162,6 +163,15 @@ check = r'''
         snapshot("11-sent")
         showInbox(scope: .all)
         wait("the inbox returns") { threads.first?.subject == "Intro call next week?" }
+
+        // Agent requests have their own subtitle; leaving shows the mail status again.
+        let mailStatus = syncStatus.stringValue
+        expect(!mailStatus.isEmpty && !syncStatus.isHidden, "the inbox subtitle shows the mail status: \(mailStatus)")
+        showAgentRequests()
+        expect(syncStatus.isHidden && !agentRequestsStatus.isHidden, "Agent requests show their own subtitle")
+        showInbox(scope: .all)
+        expect(!syncStatus.isHidden && agentRequestsStatus.isHidden && syncStatus.stringValue == mailStatus, "leaving Agent requests shows the mail status again: \(syncStatus.stringValue)")
+        wait("the inbox returns after Agent requests") { threads.first?.subject == "Intro call next week?" }
 
         appearance = NSAppearance(named: .darkAqua); applyTheme()
         select("demo:launch:elena-intro")
