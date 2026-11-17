@@ -116,6 +116,10 @@ popover that leaves the grid visible. Plus/minus adjusts hour density; the viewe
 time anchor is retained. Local reloads retain the previous grid until replacement
 results arrive, with generation guards against stale-period responses.
 
+**Bookings and links** sits at the bottom of the rail only while Scheduling is
+connected ([Scheduling](scheduling.md)); it appears and disappears as you
+connect or disconnect, also while Calendar is open.
+
 Narrow Mac windows use a compact rail popover. Linux keeps a
 minimum week-grid width with horizontal scrolling in very narrow tiles. Mac
 mini-month dates are custom-drawn without individual accessibility elements. The
