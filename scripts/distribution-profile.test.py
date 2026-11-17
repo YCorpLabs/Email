@@ -42,6 +42,9 @@ class DistributionProfileTests(unittest.TestCase):
         self.assertEqual(official["MACOS_BUNDLE_ID"], "com.ycorplabs.mail")
         self.assertEqual(official["LINUX_APP_ID"], "com.ycorplabs.Mail")
         self.assertEqual(official["DISTRIBUTION"], "true")
+        # Released builds leave Scheduling out until it launches; development keeps it.
+        self.assertEqual(official["SCHEDULING_ORIGIN"], "")
+        self.assertEqual(development["SCHEDULING_ORIGIN"], "https://meet.ycorplabs.com")
         # Recorded production update values (docs/macos-updates.md, docs/linux-updates.md).
         self.assertEqual(official["UPDATE_FEED_URL"], "https://updates.ycorplabs.com/email/macos/appcast.xml")
         self.assertEqual(official["UPDATE_PUBLIC_ED_KEY"], "iz87QU2vCaLE3Qq138gmnoHPIcgSt97BXuwpaK/TeKk=")
