@@ -29,7 +29,7 @@ optdepends=('gnome-keyring: Secret Service credential storage (or another Secret
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/releases/download/$_tag/Email-${_tag#v}.tar.gz")
 # Replaced by scripts/prepare-aur-package.sh for the published release.
-sha256sums=('b5fa74274f8d0bfd4c60d05ca2dd913464286a32f957e19548d076d850b51804')
+sha256sums=('02f452ce30cb1f18193d7f5bda6645a8e23a5975370d8677ca8a751f975eda71')
 
 _src() { printf '%s' "$srcdir/Email-${_tag#v}"; }
 
