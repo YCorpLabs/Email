@@ -129,10 +129,11 @@ package for its architecture.
 ## 7. GitHub release
 
 - [ ] Tag the release commit `v0.2.0-beta.1` and push the tag.
-- [ ] Create the GitHub release from the tag, marked as a pre-release for a
-      beta, with the `.deb` files, the macOS downloads (DMG or zip), the
-      Linux binaries and `SHA256SUMS`. Check the uploaded assets against
-      their checksums.
+- [ ] Create the GitHub release from the tag and mark it as the latest
+      release, also for a beta (the version name already says beta, and a
+      pre-release never shows as Latest on GitHub). Attach the `.deb` files,
+      the macOS downloads (DMG or zip), the Linux binaries and `SHA256SUMS`.
+      Check the uploaded assets against their checksums.
 - [ ] Record the AUR checksums on `main` ([AUR packages](linux-aur.md)).
 
 ## 8. Check the update path
