@@ -307,16 +307,15 @@ if [[ "$mode" == --beta ]]; then
   printf 'Built %s\n' "$update_archive"
   exit 0
 fi
-volume_name="Email"
-if [[ "$mode" == --local-alpha ]]; then volume_name="Email Local Alpha"; fi
-mkdir -p "$stage/dmg"
-cp -R "$app" "$stage/dmg/Email.app"
-ln -s /Applications "$stage/dmg/Applications"
-if [[ "$mode" == --local-alpha ]]; then
-  printf 'This is a locally signed development alpha. It is not notarized by Apple and is not a public release. Its separate bundle ID does not reuse the development app account-token grants.\n' > "$stage/dmg/LOCAL-ALPHA.txt"
-fi
 dmg="$output/Email-$EMAIL_VERSION-$(uname -m).dmg"
-hdiutil create -quiet -volname "$volume_name" -srcfolder "$stage/dmg" -ov -format UDZO "$dmg"
+# The DMG and its Finder window layout (make-macos-dmg.sh). It is signed,
+# notarized and stapled below, after the layout is written.
+dmg_args=(--app "$app" --volume-name Email --output "$dmg")
+if [[ "$mode" == --local-alpha ]]; then
+  printf 'This is a locally signed development alpha. It is not notarized by Apple and is not a public release. Its separate bundle ID does not reuse the development app account-token grants.\n' > "$stage/LOCAL-ALPHA.txt"
+  dmg_args=(--app "$app" --volume-name "Email Local Alpha" --output "$dmg" --note "$stage/LOCAL-ALPHA.txt")
+fi
+"$repo_root/scripts/make-macos-dmg.sh" "${dmg_args[@]}"
 if [[ "$mode" == --distribute ]]; then
   dmg_sign_args=(--force --sign "$signing_identity" --timestamp)
   if [[ -n "${release_keychain:-}" ]]; then
