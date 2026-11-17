@@ -52,8 +52,33 @@ fn secret_id_for(store: Option<&std::path::Path>) -> String {
     }
 }
 const MAX_BYTES: u64 = 2 * 1024 * 1024;
-pub(super) const DEVICE_SCOPE: &str = "booking:read email:tracking";
-const SETTINGS_SCOPE: &str = "booking:read email:tracking booking:settings";
+/// What a desktop connection asks for: read access to meeting links and
+/// bookings. Email requests the scope explicitly, and the service must issue
+/// exactly what was requested (see `contracts/scheduling.json`).
+pub(super) const DEVICE_SCOPE: &str = "booking:read";
+/// The MCP setup connection adds settings access, nothing else.
+const SETTINGS_SCOPE: &str = "booking:read booking:settings";
+/// Grants issued before Email requested a scope also carried optional email
+/// activity. They keep working until they expire or the device disconnects.
+const EARLIER_SCOPES: [&str; 2] = [
+    "booking:read email:tracking",
+    "booking:read email:tracking booking:settings",
+];
+fn requested_scope(settings_write: bool) -> &'static str {
+    if settings_write {
+        SETTINGS_SCOPE
+    } else {
+        DEVICE_SCOPE
+    }
+}
+/// The device-grant request. `scope` is what Email asks for; `settingsWrite`
+/// stays for services that predate requested scopes and agrees with it.
+fn start_payload(name: &str, challenge: &str, settings_write: bool) -> Value {
+    json!({"name":name,"codeChallenge":challenge,"settingsWrite":settings_write,"scope":requested_scope(settings_write)})
+}
+fn known_scope(scope: &str) -> bool {
+    scope == DEVICE_SCOPE || scope == SETTINGS_SCOPE || EARLIER_SCOPES.contains(&scope)
+}
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Secrets {
@@ -193,7 +218,7 @@ fn remember_secrets(value: Secrets) {
 fn decode_secret(result: Result<String, keyring::Error>) -> Result<Secrets, String> {
     match result {
         Ok(value) => serde_json::from_str(&value)
-            .map_err(|_| "Booking secure storage is invalid. Reconnect booking.".into()),
+            .map_err(|_| "Scheduling secure storage is invalid. Connect Scheduling again in Manage accounts.".into()),
         Err(keyring::Error::NoEntry) => Ok(Secrets::default()),
         Err(_) => Err("Booking secure storage is unavailable.".into()),
     }
@@ -210,16 +235,16 @@ fn save_secrets(value: &Secrets) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 fn secrets() -> Result<Secrets, String> {
     origin()?;
-    use super::lifecycle::{CredentialStore, OsCredentials};
-    match OsCredentials.read(&secret_id(), false)? {
+    // The OS credential store; QA builds with EMAIL_TEST_CREDENTIALS_DIR use
+    // private files instead, so their checks never touch the Keychain.
+    match super::credential_store().read(&secret_id(), false)? {
         Some(value) => decode_secret(Ok(value)),
         None => Ok(Secrets::default()),
     }
 }
 #[cfg(target_os = "macos")]
 fn save_secrets(value: &Secrets) -> Result<(), String> {
-    use super::lifecycle::{CredentialStore, OsCredentials};
-    OsCredentials.write(
+    super::credential_store().write(
         &secret_id(),
         &serde_json::to_string(value).map_err(|_| "Could not save booking connection.")?,
     )
@@ -229,7 +254,7 @@ fn bearer(value: &Secrets) -> Result<&str, String> {
         .token
         .as_deref()
         .filter(|token| safe_token(token) && value.expires_at > now())
-        .ok_or_else(|| "Connect booking to continue.".into())
+        .ok_or_else(|| "Connect Scheduling in Manage accounts to continue.".into())
 }
 fn safe_token(value: &str) -> bool {
     !value.is_empty() && value.len() <= 4096 && value.bytes().all(|b| b.is_ascii_graphic())
@@ -369,13 +394,10 @@ fn issued_credential(data: &Value, settings_write: bool) -> Result<(String, u64)
         .and_then(Value::as_u64)
         .filter(|e| *e > now())
         .ok_or("Booking connection expiry is invalid.")?;
+    // A new grant must carry exactly the requested scope: never more (such as
+    // email activity), never less.
     if data.get("tokenType").and_then(Value::as_str) != Some("Bearer")
-        || data.get("scope").and_then(Value::as_str)
-            != Some(if settings_write {
-                SETTINGS_SCOPE
-            } else {
-                DEVICE_SCOPE
-            })
+        || data.get("scope").and_then(Value::as_str) != Some(requested_scope(settings_write))
     {
         return Err("Booking service returned an invalid connection scope.".into());
     }
@@ -383,7 +405,7 @@ fn issued_credential(data: &Value, settings_write: bool) -> Result<(String, u64)
 }
 fn status_error(status: u16) -> String {
     match status {
-        401 | 403 => "Booking connection expired or was revoked. Reconnect booking.",
+        401 | 403 => "The Scheduling connection expired or was revoked. Connect it again in Manage accounts.",
         429 => "Booking service is busy. Try again shortly.",
         _ => "Booking service could not complete the request. Try again.",
     }
@@ -401,7 +423,7 @@ fn host_identity(data: &Value) -> Result<Value, String> {
         .filter(|id| valid_host(id))
         .ok_or("Booking service returned an invalid host.")?;
     Ok(
-        json!({"host_id":id,"name":string(data,"name",160).unwrap_or_default(),"scope":data.get("scope").and_then(Value::as_str).filter(|s|matches!(*s,DEVICE_SCOPE|SETTINGS_SCOPE)).unwrap_or(DEVICE_SCOPE),"expires_at":data.get("expiresAt").and_then(Value::as_u64)}),
+        json!({"host_id":id,"name":string(data,"name",160).unwrap_or_default(),"scope":data.get("scope").and_then(Value::as_str).filter(|s|known_scope(s)).unwrap_or(DEVICE_SCOPE),"expires_at":data.get("expiresAt").and_then(Value::as_u64)}),
     )
 }
 fn valid_host(id: &str) -> bool {
@@ -804,7 +826,7 @@ impl MailService {
             Method::POST,
             "/api/device/start",
             None,
-            Some(json!({"name":name,"codeChallenge":challenge,"settingsWrite":settings_write})),
+            Some(start_payload(&name, &challenge, settings_write)),
         )?;
         if status != 200 {
             return Err(status_error(status));
@@ -927,8 +949,7 @@ impl MailService {
         // after the server confirms revocation or says they are already invalid.
         #[cfg(target_os = "macos")]
         {
-            use super::lifecycle::{CredentialStore, OsCredentials};
-            OsCredentials.delete(&secret_id(), false)?;
+            super::credential_store().delete(&secret_id(), false)?;
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -1381,14 +1402,43 @@ mod tests {
         assert!(!result.to_string().contains("private.example"));
     }
     #[test]
-    fn issued_credentials_require_the_complete_device_scope() {
-        let mut data = json!({"accessToken":"safe-token","tokenType":"Bearer","scope":DEVICE_SCOPE,"expiresAt":now()+60000});
+    fn issued_credentials_carry_exactly_the_requested_scope() {
+        assert_eq!(DEVICE_SCOPE, "booking:read");
+        assert_eq!(SETTINGS_SCOPE, "booking:read booking:settings");
+        let mut data = json!({"accessToken":"safe-token","tokenType":"Bearer","scope":"booking:read","expiresAt":now()+60000});
         assert_eq!(issued_credential(&data, false).unwrap().0, "safe-token");
-        data["scope"] = json!("booking:read");
-        assert!(issued_credential(&data, false).is_err());
+        // More than requested (the old default with email activity), less, or
+        // the settings scope for a plain connection: all refused.
+        for scope in ["booking:read email:tracking", "booking:read booking:settings", "booking:settings", "", "booking:read  "] {
+            data["scope"] = json!(scope);
+            assert!(issued_credential(&data, false).is_err(), "{scope:?}");
+        }
         data["scope"] = json!(DEVICE_SCOPE);
         data["expiresAt"] = json!(1);
         assert!(issued_credential(&data, false).is_err());
+    }
+    #[test]
+    fn connections_request_booking_access_without_email_activity() {
+        let plain = start_payload("Email on Mac", "challenge", false);
+        assert_eq!(plain["scope"], "booking:read");
+        assert_eq!(plain["settingsWrite"], false);
+        let settings = start_payload("Email MCP scheduling setup", "challenge", true);
+        assert_eq!(settings["scope"], "booking:read booking:settings");
+        assert_eq!(settings["settingsWrite"], true);
+        assert!(!plain.to_string().contains("email:tracking") && !settings.to_string().contains("email:tracking"));
+    }
+    #[test]
+    fn grants_from_before_the_requested_scope_keep_their_identity() {
+        for scope in EARLIER_SCOPES.into_iter().chain([DEVICE_SCOPE, SETTINGS_SCOPE]) {
+            let host = host_identity(&json!({"hostId":"h_abcdefghijklmnopqrstuvwx","name":"Alex","scope":scope})).unwrap();
+            assert_eq!(host["scope"], scope);
+        }
+        let host = host_identity(&json!({"hostId":"h_abcdefghijklmnopqrstuvwx","scope":"booking:read booking:manage"})).unwrap();
+        assert_eq!(host["scope"], DEVICE_SCOPE);
+        // Stored credentials hold no scope, so an earlier grant needs no migration.
+        let old = json!({"token":"safe-token","expires_at":now()+60000,"host_id":"h_abcdefghijklmnopqrstuvwx"});
+        let secret: Secrets = serde_json::from_value(old).unwrap();
+        assert!(bearer(&secret).is_ok());
     }
     #[test]
     fn rejected_credentials_are_invalidated_without_clearing_a_newer_connection() {

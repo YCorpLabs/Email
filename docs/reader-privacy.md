@@ -110,13 +110,14 @@ In a released build:
 - A new-message composer that covers the reader also hides the notice on macOS,
   so its button is not reachable by keyboard behind the composer (Linux does
   not re-render the covered reader at all).
-- The hosted Scheduling service, its device grant and tracking API are
-  unchanged. The hosted service sets the device grant's scope
-  (`booking:read email:tracking`) and rejects client-chosen scopes, so a
-  released build that connects to Scheduling still asks for optional
-  email-activity access in the browser, and the Linux approval copy keeps
-  saying so. Narrowing the grant for released builds needs a coordinated
-  Scheduling change.
+- Connecting Scheduling asks only for booking access. Email requests the
+  `booking:read` scope (`booking:read booking:settings` for the MCP settings
+  connection) and refuses a grant that carries anything else, so the browser
+  no longer asks for email activity. This needs the Scheduling release that
+  accepts a requested scope (`desktop_scopes` in `contracts/scheduling.json`).
+  Grants made before it still carry `email:tracking` and keep working;
+  released builds never use it. A development build can only register new
+  tracked mail with such an earlier grant.
 
 On Linux the **Recent opens** reader button is shared by all conversations
 (shown when any tracked sent mail exists in a released build with a
