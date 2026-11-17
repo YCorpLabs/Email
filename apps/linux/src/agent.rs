@@ -248,16 +248,9 @@ fn date_time(ms: Option<i64>) -> String {
 }
 
 /// As the macOS inbox list shows times (`AgentRequestRows.time`): today the
-/// time, older the date as the Linux inbox shows it.
+/// time, older the date, exactly as the Linux inbox list.
 pub(super) fn short_time(ms: Option<i64>) -> String {
-    let Some(ms) = ms else { return String::new() };
-    let Some(date) = glib::DateTime::from_unix_local(ms / 1000).ok() else { return String::new() };
-    let today = glib::DateTime::now_local().ok().and_then(|now| now.format("%Y%m%d").ok());
-    if date.format("%Y%m%d").ok() == today {
-        date.format("%H:%M").map(|t| t.to_string()).unwrap_or_default()
-    } else {
-        super::message_time(ms)
-    }
+    ms.map(super::message_time).unwrap_or_default()
 }
 
 fn size(bytes: u64) -> String {
@@ -351,9 +344,10 @@ pub(super) fn request_row(item: &Mail) -> gtk::ListBoxRow {
     title.add_css_class("agent-row-title");
     title.set_xalign(0.0);
     title.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    let preview = gtk::Label::new(Some(&item.preview));
+    let preview = gtk::Label::new(Some(&super::one_line(&item.preview)));
     preview.add_css_class("preview");
     preview.set_xalign(0.0);
+    preview.set_single_line_mode(true);
     preview.set_ellipsize(gtk::pango::EllipsizeMode::End);
     content.append(&top);
     content.append(&title);

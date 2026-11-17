@@ -133,8 +133,12 @@ button:focus-visible { outline: 1px solid @muted; outline-offset: -1px; }
 .remote-images-load:hover { background: @hover; }
 .remote-images-menu button { background: transparent; padding: 5px 10px; font-size: 12px; }
 .remote-images-menu button:hover { background: @hover; }
-.conversation-item { background: transparent; color: @secondary; border-bottom: 1px solid @line; border-radius: 0; padding: 14px 10px; margin: 0; font-size: 11px; }
-.conversation-item:hover { background: @hover; }
+/* Thread messages as the macOS message cards: sender left, date right. */
+.conversation-item { background: transparent; border-bottom: 1px solid @line; border-radius: 0; padding: 16px 0 18px; margin: 0; min-height: 0; }
+.conversation-item:hover { background: transparent; }
+.conversation-sender { color: @muted; font-size: 12px; font-weight: 600; }
+.conversation-date { color: @muted; font-size: 11px; font-weight: 400; }
+.conversation-item.current .conversation-sender { color: @ink; }
 .reading { background: @canvas; }
 /* First run: one welcome with the app's primary button (macOS paintEmptyAction). */
 .welcome-page { background: @canvas; }
@@ -527,10 +531,75 @@ fn sender_name(sender: &str) -> &str {
         .trim_matches('"')
 }
 
+/// A list-row preview on one line, like the macOS row: snippets and draft
+/// bodies keep their line breaks, blank lines and signature separators.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The macOS row prefix: up to two of the conversation's own labels as
+/// `#Label`, then ` · ` before the preview. System labels are never shown.
+fn row_tags(labels: &[String]) -> String {
+    const SYSTEM: [&str; 7] = ["STARRED", "INBOX", "UNREAD", "SENT", "DRAFT", "TRASH", "SPAM"];
+    let tags = labels
+        .iter()
+        .filter(|label| {
+            !label.starts_with("CATEGORY_")
+                && !SYSTEM.iter().any(|system| label.eq_ignore_ascii_case(system))
+        })
+        .take(2)
+        .map(|label| format!("#{label}"))
+        .collect::<Vec<_>>();
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!("{} · ", tags.join(" "))
+    }
+}
+
+/// Hours and minutes in the locale's clock, like macOS `timeStyle: .short`:
+/// 24-hour unless the locale's own time format uses a 12-hour clock.
+fn clock(date: &glib::DateTime) -> String {
+    thread_local! {
+        static TWELVE_HOUR: bool = glib::DateTime::from_local(2000, 1, 1, 13, 0, 0.0)
+            .ok()
+            .and_then(|probe| probe.format("%X").ok())
+            .is_some_and(|text| !text.contains("13"));
+    }
+    let format = if TWELVE_HOUR.with(|twelve| *twelve) { "%-l:%M %p" } else { "%H:%M" };
+    date.format(format)
+        .map(|text| text.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// As the macOS list shows times (`MailListTime`): today the time, older
+/// mail the locale's short date.
 fn message_time(timestamp: i64) -> String {
+    let Ok(date) = glib::DateTime::from_unix_local(timestamp / 1000) else {
+        return String::new();
+    };
+    let today = glib::DateTime::now_local()
+        .ok()
+        .and_then(|now| now.format("%Y%m%d").ok());
+    if today.is_some() && date.format("%Y%m%d").ok() == today {
+        clock(&date)
+    } else {
+        date.format("%x")
+            .map(|text| text.trim().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// A thread message's date, like the macOS message cards (`dateStyle:
+/// .medium, timeStyle: .short`): "14 Nov 2026 at 08:40".
+fn message_date_time(timestamp: i64) -> String {
     glib::DateTime::from_unix_local(timestamp / 1000)
-        .and_then(|date| date.format("%b %e"))
-        .map(|text| text.to_string())
+        .ok()
+        .and_then(|date| {
+            date.format("%-e %b %Y")
+                .ok()
+                .map(|day| format!("{day} at {}", clock(&date)))
+        })
         .unwrap_or_default()
 }
 
@@ -929,6 +998,8 @@ struct Ui {
     sender_label: gtk::Label,
     unsubscribe_button: gtk::Button,
     favorite_button: gtk::Button,
+    /// Archive, or Move to Inbox in the Archive view.
+    archive_button: gtk::Button,
     recipient_details: gtk::Label,
     recipient_button: gtk::MenuButton,
     reading_content: gtk::Box,
@@ -1444,12 +1515,8 @@ impl Ui {
                 MailView::AgentRequests => "Agent requests",
                 MailView::Sent => "Sent",
             }));
-        if let Some(button) = self
-            .thread_actions
-            .first_child()
-            .and_then(|v| v.next_sibling())
-            .and_then(|v| v.downcast::<gtk::Button>().ok())
         {
+            let button = &self.archive_button;
             button.set_tooltip_text(Some(if matches!(view, MailView::Archive) {
                 "Move to Inbox · Shift+E"
             } else {
@@ -1685,10 +1752,15 @@ impl Ui {
             subject.set_xalign(0.0);
             subject.set_margin_start(14);
             subject.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            let preview = gtk::Label::new(Some(&item.preview));
+            let preview = gtk::Label::new(Some(&format!(
+                "{}{}",
+                row_tags(&item.labels),
+                one_line(&item.preview)
+            )));
             preview.add_css_class("preview");
             preview.set_xalign(0.0);
             preview.set_margin_start(14);
+            preview.set_single_line_mode(true);
             preview.set_ellipsize(gtk::pango::EllipsizeMode::End);
             content.append(&top);
             content.append(&subject);
@@ -1823,11 +1895,19 @@ impl Ui {
         *self.history.borrow_mut() = messages.clone();
         self.conversation.set_visible(messages.len() > 1);
         for message in &messages {
-            let button = gtk::Button::with_label(&format!(
-                "{}  ·  {}",
-                sender_name(&message.sender),
-                message_time(message.received_at)
-            ));
+            // As the macOS message cards: sender on the left, date on the right.
+            let button = gtk::Button::new();
+            let summary = gtk::Box::new(Orientation::Horizontal, 12);
+            let sender = gtk::Label::new(Some(&message.sender));
+            sender.add_css_class("conversation-sender");
+            sender.set_xalign(0.0);
+            sender.set_hexpand(true);
+            sender.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            let date = gtk::Label::new(Some(&message_date_time(message.received_at)));
+            date.add_css_class("conversation-date");
+            summary.append(&sender);
+            summary.append(&date);
+            button.set_child(Some(&summary));
             button.add_css_class("conversation-item");
             let ui = self.clone();
             let message = message.clone();
@@ -1882,6 +1962,19 @@ impl Ui {
     fn show_message(self: &Rc<Self>, message: &Message) {
         self.recipient_button.popdown();
         *self.current_message.borrow_mut() = Some(message.clone());
+        // The shown message's row reads in ink, like the open macOS card.
+        let shown = self.history.borrow().iter().position(|m| m.id == message.id);
+        let mut row = self.conversation.first_child();
+        let mut index = 0;
+        while let Some(widget) = row {
+            if Some(index) == shown {
+                widget.add_css_class("current");
+            } else {
+                widget.remove_css_class("current");
+            }
+            row = widget.next_sibling();
+            index += 1;
+        }
         // Loading images "in this email" lasts while that message is shown, also
         // across a refresh that re-selects it; any other message starts over.
         if self.remote_images_message.borrow().as_deref() != Some(message.id.as_str()) {
@@ -4589,9 +4682,10 @@ fn build(app: &gtk::Application) {
     reading.append(&reading_header);
     let reading_content = gtk::Box::new(Orientation::Vertical, 0);
     reading_content.set_vexpand(true);
-    let conversation = gtk::Box::new(Orientation::Vertical, 4);
-    conversation.set_margin_start(18);
-    conversation.set_margin_end(18);
+    let conversation = gtk::Box::new(Orientation::Vertical, 0);
+    // Aligned with the reader title and the message text (28 px).
+    conversation.set_margin_start(28);
+    conversation.set_margin_end(28);
     reading_content.append(&conversation);
     // Shown above the message while its remote images are blocked.
     let remote_images_notice = gtk::Box::new(Orientation::Horizontal, 6);
@@ -4881,6 +4975,7 @@ fn build(app: &gtk::Application) {
         sender_label,
         unsubscribe_button: unsubscribe_button.clone(),
         favorite_button: favorite.clone(),
+        archive_button: archive.clone(),
         recipient_details,
         recipient_button,
         reading_content,
@@ -5721,9 +5816,35 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        application_id, document, has_remote_images, remote_images_enabled, resolve_store_path,
-        snooze_duration, store_path_override, unsubscribe_url,
+        application_id, document, has_remote_images, message_date_time, message_time, one_line,
+        remote_images_enabled, resolve_store_path, row_tags, snooze_duration,
+        store_path_override, unsubscribe_url,
     };
+
+    #[test]
+    fn list_rows_show_one_preview_line_and_the_conversation_labels() {
+        let snippet = "Approved. Thanks for splitting it into small commits.\n\n\u{2014}\nReply to this email directly";
+        assert_eq!(
+            one_line(snippet),
+            "Approved. Thanks for splitting it into small commits. \u{2014} Reply to this email directly"
+        );
+        assert_eq!(one_line("  Hi Alex,\r\n\tLovely  "), "Hi Alex, Lovely");
+        let labels = ["INBOX", "Launch", "UNREAD", "Work", "Family", "CATEGORY_UPDATES"].map(String::from);
+        assert_eq!(row_tags(&labels), "#Launch #Work · ");
+        assert_eq!(row_tags(&["STARRED".to_string(), "INBOX".to_string()]), "");
+    }
+
+    #[test]
+    fn list_times_follow_the_macos_list() {
+        let now = super::glib::DateTime::now_local().unwrap();
+        let today = now.to_unix() * 1000;
+        let time = message_time(today);
+        assert!(time.contains(':') && !time.contains('/'), "today shows the time: {time}");
+        let older = message_time(today - 3 * 24 * 3600 * 1000);
+        assert!(!older.contains(':') && !older.is_empty(), "older mail shows the date: {older}");
+        let card = message_date_time(today);
+        assert!(card.contains(&now.year().to_string()) && card.contains(" at "), "{card}");
+    }
 
     #[test]
     fn isolated_stores_get_their_own_valid_application_ids() {
