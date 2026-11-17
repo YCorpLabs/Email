@@ -314,6 +314,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private var currentMessageID: String? { didSet { if currentMessageID != oldValue { updateTrackingButton() } } }
     private var currentAttachments: [[String: Any]] = []
     private let syncStatus = NSTextField(labelWithString: "")
+    /// The Agent requests subtitle ("2 waiting"). It takes the mail status's
+    /// place there without overwriting it, so leaving shows that status again.
+    private let agentRequestsStatus = NSTextField(labelWithString: "")
     private var sidebarAccounts = NSStackView()
     private var sidebarSplits = NSStackView()
     private var accountSetupWindow: AccountSetupWindow?
@@ -760,9 +763,12 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         syncButton.font = .systemFont(ofSize: 17, weight: .medium)
         syncButton.contentTintColor = EmailTheme.muted
         syncButton.translatesAutoresizingMaskIntoConstraints = false
-        syncStatus.font = .systemFont(ofSize: 11)
-        syncStatus.textColor = EmailTheme.muted
-        syncStatus.translatesAutoresizingMaskIntoConstraints = false
+        for status in [syncStatus, agentRequestsStatus] {
+            status.font = .systemFont(ofSize: 11)
+            status.textColor = EmailTheme.muted
+            status.translatesAutoresizingMaskIntoConstraints = false
+        }
+        agentRequestsStatus.isHidden = true
         search.placeholderString = "Search downloaded mail  /"
         search.toolTip = Self.searchSyntaxHelp
         search.translatesAutoresizingMaskIntoConstraints = false
@@ -852,6 +858,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inbox.addSubview(inboxTitle)
         inbox.addSubview(syncButton)
         inbox.addSubview(syncStatus)
+        inbox.addSubview(agentRequestsStatus)
         inbox.addSubview(search)
         inbox.addSubview(searchFiltersButton)
         let inboxControls = NSStackView(views: [scopeTabs, triageBar])
@@ -863,13 +870,14 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         // Agent requests hide the search field; the list then moves up under the count.
         let belowSearch = inboxControls.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 12)
         controlsBelowSearch = belowSearch
-        controlsBelowStatus = inboxControls.topAnchor.constraint(equalTo: syncStatus.bottomAnchor, constant: 8)
+        controlsBelowStatus = inboxControls.topAnchor.constraint(equalTo: agentRequestsStatus.bottomAnchor, constant: 8)
         inbox.addSubview(inboxScroll)
         inbox.addSubview(inboxEmpty)
         NSLayoutConstraint.activate([
             inboxTitle.leadingAnchor.constraint(equalTo: inbox.leadingAnchor, constant: 20), inboxTitle.topAnchor.constraint(equalTo: inbox.topAnchor, constant: 20),
             syncButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), syncButton.centerYAnchor.constraint(equalTo: inboxTitle.centerYAnchor),
             syncStatus.leadingAnchor.constraint(equalTo: inboxTitle.leadingAnchor), syncStatus.topAnchor.constraint(equalTo: inboxTitle.bottomAnchor, constant: 4),
+            agentRequestsStatus.leadingAnchor.constraint(equalTo: syncStatus.leadingAnchor), agentRequestsStatus.topAnchor.constraint(equalTo: syncStatus.topAnchor),
             search.leadingAnchor.constraint(equalTo: inbox.leadingAnchor, constant: 18), search.trailingAnchor.constraint(equalTo: searchFiltersButton.leadingAnchor, constant: -6), search.topAnchor.constraint(equalTo: syncStatus.bottomAnchor, constant: 12),
             searchFiltersButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), searchFiltersButton.centerYAnchor.constraint(equalTo: search.centerYAnchor), searchFiltersButton.widthAnchor.constraint(equalToConstant: 24), searchFiltersButton.heightAnchor.constraint(equalToConstant: 24),
             inboxControls.leadingAnchor.constraint(equalTo: search.leadingAnchor),
@@ -2545,7 +2553,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         updateTriageBar()
         inboxTitle?.stringValue = "Agent requests"
         search.stringValue = ""
-        syncStatus.stringValue = ""
+        agentRequestsStatus.stringValue = ""
         updateSidebarSelection()
         dismissComposePane()
         table.deselectAll(nil)
@@ -2570,7 +2578,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             agentRequests = rows
             agentRequestTotal = rows.count
             updateAgentRequestsChrome()
-            syncStatus.stringValue = rows.isEmpty ? "" : "\(rows.count) waiting"
+            agentRequestsStatus.stringValue = rows.isEmpty ? "" : "\(rows.count) waiting"
             suppressSelectionChanges = true
             table.reloadData()
             updateEmptyInbox()
@@ -3804,6 +3812,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         let searchHidden = folder == .agentRequests
         search.isHidden = searchHidden
         searchFiltersButton.isHidden = searchHidden
+        // The subtitle follows the destination: the waiting count in Agent
+        // requests, the mail status everywhere else.
+        syncStatus.isHidden = searchHidden
+        agentRequestsStatus.isHidden = !searchHidden
         controlsBelowStatus?.isActive = false
         controlsBelowSearch?.isActive = !searchHidden
         controlsBelowStatus?.isActive = searchHidden

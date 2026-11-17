@@ -557,6 +557,38 @@ fn row_tags(labels: &[String]) -> String {
     }
 }
 
+/// A conversation row. `pinned` is its Favorites star, as on macOS: the
+/// thread's `is_pinned` flag kept in this store, not a provider label.
+fn thread_mail(thread: ThreadSummary, account: String) -> Mail {
+    Mail {
+        thread_id: thread.id,
+        account_id: thread.account_id,
+        account,
+        sender: thread.sender,
+        subject: thread.subject,
+        preview: thread.snippet,
+        received: message_time(thread.last_message_at),
+        unread: thread.unread_count > 0,
+        labels: thread.labels,
+        pinned: thread.is_pinned,
+    }
+}
+
+/// The star in the row and the reader, with the macOS wording.
+fn favorite_icon(pinned: bool) -> &'static str {
+    if pinned { "star-filled" } else { "star-symbolic" }
+}
+
+fn favorite_tooltip(pinned: bool) -> &'static str {
+    if pinned { "Remove from favorites · F" } else { "Add to favorites · F" }
+}
+
+/// F, the row star and the reader star: flip the Favorites flag as macOS does
+/// (`set_thread_pinned`), so both apps show and change the same star.
+fn favorite_request(item: &Mail) -> Value {
+    json!({"op":"set_thread_pinned","thread_id":item.thread_id,"pinned":!item.pinned})
+}
+
 /// Hours and minutes in the locale's clock, like macOS `timeStyle: .short`:
 /// 24-hour unless the locale's own time format uses a 12-hour clock.
 fn clock(date: &glib::DateTime) -> String {
@@ -614,6 +646,7 @@ struct Mail {
     received: String,
     unread: bool,
     labels: Vec<String>,
+    pinned: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1583,6 +1616,7 @@ impl Ui {
                     received: "Draft".into(),
                     unread: false,
                     labels: Vec::new(),
+                    pinned: false,
                 })
                 .collect::<Vec<_>>()
         } else if matches!(view, MailView::Outbox) {
@@ -1601,6 +1635,7 @@ impl Ui {
                     received: item.status,
                     unread: false,
                     labels: Vec::new(),
+                    pinned: false,
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -1632,17 +1667,7 @@ impl Ui {
                         .find(|a| a.id == thread.account_id)
                         .map(|a| a.display_name.clone())
                         .unwrap_or_else(|| thread.account_id.clone());
-                    Mail {
-                        thread_id: thread.id,
-                        account_id: thread.account_id,
-                        account,
-                        sender: thread.sender,
-                        subject: thread.subject,
-                        preview: thread.snippet,
-                        received: message_time(thread.last_message_at),
-                        unread: thread.unread_count > 0,
-                        labels: thread.labels,
-                    }
+                    thread_mail(thread, account)
                 })
                 .collect::<Vec<_>>()
         };
@@ -1655,7 +1680,7 @@ impl Ui {
                         thread_id: message.thread_id.clone(), account_id: message.account_id.clone(),
                         account: accounts.iter().find(|a| a.id == message.account_id).map(|a| a.display_name.clone()).unwrap_or_else(|| message.account_id.clone()),
                         sender: message.sender.clone(), subject: message.subject.clone(), preview: message.body_plain.chars().take(240).collect(),
-                        received: message_time(message.received_at), unread: false, labels: Vec::new(),
+                        received: message_time(message.received_at), unread: false, labels: Vec::new(), pinned: false,
                     });
                 }
             }
@@ -1728,16 +1753,8 @@ impl Ui {
             top.append(&sender);
             let star = gtk::Button::new();
             star.add_css_class("row-star");
-            let starred = item
-                .labels
-                .iter()
-                .any(|label| label.eq_ignore_ascii_case("STARRED"));
-            star.set_child(Some(&mail_icon(if starred {
-                "star-filled"
-            } else {
-                "star-symbolic"
-            })));
-            star.set_tooltip_text(Some("Toggle favorite · F"));
+            star.set_child(Some(&mail_icon(favorite_icon(item.pinned))));
+            star.set_tooltip_text(Some(favorite_tooltip(item.pinned)));
             let weak = Rc::downgrade(self);
             star.connect_clicked(move |_| {
                 if let Some(ui) = weak.upgrade() {
@@ -1883,13 +1900,10 @@ impl Ui {
                 .and_then(|v| serde_json::from_value::<Vec<Message>>(v).ok())
                 .unwrap_or_default()
         };
-        self.favorite_button.set_child(Some(&mail_icon(
-            if item.labels.iter().any(|l| l == "STARRED") {
-                "star-filled"
-            } else {
-                "star-symbolic"
-            },
-        )));
+        self.favorite_button
+            .set_child(Some(&mail_icon(favorite_icon(item.pinned))));
+        self.favorite_button
+            .set_tooltip_text(Some(favorite_tooltip(item.pinned)));
         self.thread_actions
             .set_visible(!matches!(view, MailView::Drafts | MailView::Outbox));
         *self.history.borrow_mut() = messages.clone();
@@ -2686,28 +2700,23 @@ impl Ui {
         });
     }
     fn favorite(self: &Rc<Self>) {
+        // Only conversations have a star (macOS: the inbox folder only).
+        if matches!(
+            *self.view.borrow(),
+            MailView::Drafts | MailView::Outbox | MailView::AgentRequests
+        ) {
+            return;
+        }
         let Some(item) = self
             .selected()
             .and_then(|i| self.items.borrow().get(i).cloned())
         else {
             return;
         };
-        let action = if item
-            .labels
-            .iter()
-            .any(|label| label.eq_ignore_ascii_case("STARRED"))
-        {
-            MailAction::RemoveLabel {
-                thread_id: item.thread_id,
-                label: "STARRED".into(),
-            }
-        } else {
-            MailAction::AddLabel {
-                thread_id: item.thread_id,
-                label: "STARRED".into(),
-            }
-        };
-        self.apply_action(action, &item.account_id);
+        match self.request(favorite_request(&item)) {
+            Ok(_) => self.refresh(),
+            Err(error) => self.status.set_text(&format!("Action failed: {error}")),
+        }
     }
     fn bulk_read_sender(self: &Rc<Self>) {
         let Some(item) = self
@@ -5826,9 +5835,10 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        application_id, document, has_remote_images, message_date_time, message_time, one_line,
-        remote_images_enabled, resolve_store_path, row_tags, snooze_duration,
-        store_path_override, unsubscribe_url,
+        application_id, document, favorite_icon, favorite_request, favorite_tooltip,
+        has_remote_images, message_date_time, message_time, one_line, remote_images_enabled,
+        resolve_store_path, row_tags, snooze_duration, store_path_override, thread_mail,
+        unsubscribe_url,
     };
 
     #[test]
@@ -5842,6 +5852,51 @@ mod tests {
         let labels = ["INBOX", "Launch", "UNREAD", "Work", "Family", "CATEGORY_UPDATES"].map(String::from);
         assert_eq!(row_tags(&labels), "#Launch #Work · ");
         assert_eq!(row_tags(&["STARRED".to_string(), "INBOX".to_string()]), "");
+    }
+
+    #[test]
+    fn favorites_star_is_the_pinned_flag_as_on_macos() {
+        // The launch demo stars conversations the way macOS does, with the
+        // Favorites flag and no STARRED label. Rows, the Favorites tab and F
+        // must all follow that flag.
+        let directory = std::env::temp_dir().join(format!(
+            "email-linux-favorites-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let service = super::MailService::open(directory.join("mail.sqlite")).unwrap();
+        service
+            .request_json(r#"{"op":"seed_demo","set":"launch"}"#)
+            .unwrap();
+        let rows = |filter: u8| {
+            let request =
+                super::parity::thread_search_request(&super::MailView::Inbox, "", filter, 500, 0);
+            super::parity::search_thread_pages(&service, request, 500)
+                .unwrap()
+                .into_iter()
+                .map(|thread| thread_mail(thread, String::new()))
+                .collect::<Vec<_>>()
+        };
+        let plan = |rows: Vec<super::Mail>| {
+            rows.into_iter()
+                .find(|row| row.thread_id == "demo:launch:launch-plan")
+        };
+        let item = plan(rows(0)).expect("Ingrid's launch plan is in the inbox");
+        assert!(item.pinned, "the launch plan row is starred");
+        assert!(!item.labels.iter().any(|label| label.eq_ignore_ascii_case("STARRED")));
+        assert_eq!(favorite_icon(item.pinned), "star-filled");
+        assert_eq!(favorite_tooltip(item.pinned), "Remove from favorites · F");
+        assert!(plan(rows(2)).is_some_and(|row| row.pinned), "Favorites lists it, starred");
+        // F takes it out of Favorites, and F again puts it back.
+        service.request_json(&favorite_request(&item).to_string()).unwrap();
+        let item = plan(rows(0)).unwrap();
+        assert!(!item.pinned && plan(rows(2)).is_none());
+        assert_eq!(favorite_icon(item.pinned), "star-symbolic");
+        assert_eq!(favorite_tooltip(item.pinned), "Add to favorites · F");
+        service.request_json(&favorite_request(&item).to_string()).unwrap();
+        assert!(plan(rows(0)).unwrap().pinned && plan(rows(2)).is_some());
+        drop(service);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
