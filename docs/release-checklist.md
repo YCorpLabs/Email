@@ -74,6 +74,8 @@ Without a Developer ID, build `--beta` instead (`EMAIL_BUILD_NUMBER=3
 steps 4 and 6 do not apply to macOS.
 
 - [ ] About shows **Email 0.2.0-beta.1 (3)**.
+- [ ] Opening the DMG shows the installer window: Email, an arrow, Applications
+      ([DMG window](macos-release.md#dmg-window)).
 
 ## 4. Publish the macOS feed
 
