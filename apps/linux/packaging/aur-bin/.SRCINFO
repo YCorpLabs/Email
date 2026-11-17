@@ -1,6 +1,6 @@
 pkgbase = email-ycorp-bin
 	pkgdesc = Keyboard-first, local-first desktop email client (beta, prebuilt)
-	pkgver = 0.1.0beta3
+	pkgver = 0.1.0beta4
 	pkgrel = 1
 	url = https://github.com/YCorpLabs/Email
 	arch = x86_64
@@ -17,15 +17,15 @@ pkgbase = email-ycorp-bin
 	depends = openssl-3
 	depends = webkitgtk-6.0
 	optdepends = gnome-keyring: Secret Service credential storage (or another Secret Service provider)
-	provides = email-ycorp=0.1.0beta3
+	provides = email-ycorp=0.1.0beta4
 	conflicts = email-ycorp
-	noextract = email-ycorp-bin-0.1.0beta3-amd64.deb
-	noextract = email-ycorp-bin-0.1.0beta3-arm64.deb
+	noextract = email-ycorp-bin-0.1.0beta4-amd64.deb
+	noextract = email-ycorp-bin-0.1.0beta4-arm64.deb
 	options = !strip
 	options = !debug
-	source_x86_64 = email-ycorp-bin-0.1.0beta3-amd64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.3/email-linux_0.1.0-beta.3_amd64.deb
+	source_x86_64 = email-ycorp-bin-0.1.0beta4-amd64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.4/email-linux_0.1.0-beta.4_amd64.deb
 	sha256sums_x86_64 = 77248248de4f58e8e5acea2d97341f3b467c00aa3b128d971b0e17b02cf19e55
-	source_aarch64 = email-ycorp-bin-0.1.0beta3-arm64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.3/email-linux_0.1.0-beta.3_arm64.deb
+	source_aarch64 = email-ycorp-bin-0.1.0beta4-arm64.deb::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.4/email-linux_0.1.0-beta.4_arm64.deb
 	depends_aarch64 = gdk-pixbuf2
 	depends_aarch64 = libsoup3
 	depends_aarch64 = pango
