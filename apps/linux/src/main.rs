@@ -3427,8 +3427,17 @@ impl Ui {
         booking_link.add_css_class("compose-tool");
         booking_link.set_tooltip_text(Some("Insert a booking link · also in Commands"));
         { let ui = self.clone(); let body = body.clone(); booking_link.connect_clicked(move |_|booking::open(&ui,Some(body.clone()))); }
-        // Booking links and open tracking need the profile's Scheduling service.
-        booking_link.set_visible(booking::configured());
+        // Booking link shows only while Scheduling is connected, and follows
+        // connecting or disconnecting while the composer is open.
+        booking_link.set_visible(booking::connected());
+        {
+            let weak = booking_link.downgrade();
+            booking::on_change(move || {
+                let Some(button) = weak.upgrade() else { return false };
+                button.set_visible(booking::connected());
+                true
+            });
+        }
         let signature = gtk::Button::with_label("Signature…");
         signature.add_css_class("compose-tool");
         signature.set_tooltip_text(Some("Edit or insert a signature for this From address"));
@@ -3583,7 +3592,7 @@ impl Ui {
                     if !button.is_active(){return;}
                     match result {
                         Ok(value) if value["connected"].as_bool()==Some(true)=>{},
-                        Ok(_)=>{button.set_active(false);ui.status.set_text("Connect Scheduling, then enable Track opens.");booking::open(&ui,None);},
+                        Ok(_)=>{button.set_active(false);ui.status.set_text("Connect Scheduling in Manage accounts, then turn on Track opens.");},
                         Err(error)=>{button.set_active(false);ui.status.set_text(&format!("Could not check tracking access: {error}"));}
                     }
                 });
@@ -5339,6 +5348,7 @@ fn build(app: &gtk::Application) {
         unsubscribe_button.connect_clicked(move |_| ui.unsubscribe());
     }
     ui.check_saved_open_activity();
+    booking::load_connection(&ui);
     {
         let ui=ui.clone();
         tracking_activity.connect_clicked(move |_|{let id=ui.current_message.borrow().as_ref().map(|message|message.id.clone());if ui.contact.root.is_visible() { ui.refresh_contact_activity(true); ui.contact.activity_refresh.grab_focus(); }
