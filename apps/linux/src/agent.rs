@@ -320,6 +320,7 @@ pub(super) fn request_rows(ui: &Ui) -> Vec<Mail> {
             labels: Vec::new(),
             filter: None,
             is_inbox: false,
+            pinned: false,
         })
         .collect();
     REQUESTS.with(|slot| *slot.borrow_mut() = rows);

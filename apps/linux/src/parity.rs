@@ -74,6 +74,44 @@ fn score(item: &Command, query: &str) -> Option<usize> {
     }
     Some(total)
 }
+/// Matching commands, best match first. On an equal score a match in the
+/// title beats one only in the search words, as on macOS; after that the
+/// listed order decides. The composer lists its own commands first, so "book"
+/// there puts Insert booking link… ahead of Bookings and meeting links.
+fn rank(items: Vec<Command>, query: &str) -> Vec<Command> {
+    let mut scored: Vec<_> = items
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let total = score(&item, query)?;
+            let title = Command::new("", &item.title, "", "");
+            let in_title = score(&title, query) == Some(total);
+            Some((total, !in_title, index, item))
+        })
+        .collect();
+    scored.sort_by_key(|(total, words_only, index, _)| (*total, *words_only, *index));
+    scored.into_iter().map(|(_, _, _, item)| item).collect()
+}
+/// Manage accounts at its Scheduling entry: Connect Scheduling… until
+/// connected, then Scheduling. None without a Scheduling service.
+fn scheduling_command() -> Option<Command> {
+    booking::configured().then(|| scheduling_command_for(booking::connected()))
+}
+fn scheduling_command_for(connected: bool) -> Command {
+    if connected {
+        Command::new("scheduling", "Scheduling", "", "booking meeting links disconnect manage accounts")
+    } else {
+        Command::new("scheduling", "Connect Scheduling…", "", "booking link meeting links calendar link")
+    }
+}
+/// Which Scheduling-related commands a palette may list.
+fn scheduling_command_visible(id: &str, service: bool, connected: bool) -> bool {
+    match id {
+        "bookings" | "composer:booking" => connected,
+        "tracking activity" | "composer:tracking" | "scheduling" => service,
+        _ => true,
+    }
+}
 fn calendar_reminder(input: &str, now: &glib::DateTime) -> Option<(i64, String, String)> {
     let lower = input.to_lowercase();
     let mut words: Vec<&str> = lower.split_whitespace().collect();
@@ -552,6 +590,7 @@ impl Ui {
                 items = calendar.command_items(page == "calendar-search");
             }
         } else if self.compose_pane.borrow().is_some() && page == "root" {
+            let general = std::mem::take(&mut items);
             for (id, title, keys, words) in [
                 ("body", "Write message", "", "body text"),
                 ("send", "Send message", "Ctrl Enter", "deliver"),
@@ -590,6 +629,10 @@ impl Ui {
                     continue;
                 }
                 items.push(Command::new(&format!("composer:{id}"), title, keys, words));
+            }
+            items.extend(general);
+            if !booking::connected() {
+                items.extend(scheduling_command());
             }
         } else if page == "snippets" {
             if let Ok(value) = self.request(json!({"op":"list_snippets"})) {
@@ -716,6 +759,7 @@ impl Ui {
                 }
             }
             if page != "accounts" {
+                items.extend(scheduling_command());
                 if self.last_triage.borrow().is_some() && !matches!(*self.view.borrow(), MailView::Drafts) {
                     items.push(Command::new(
                         "undo triage",
@@ -914,20 +958,11 @@ impl Ui {
         if !self.calendar_available(&self.accounts()) {
             items.retain(|item| !matches!(item.id.as_str(), "calendar" | "invitations"));
         }
-        if !booking::configured() {
-            // Scheduling commands exist only when the profile names a service.
-            items.retain(|item| {
-                !matches!(item.id.as_str(), "bookings" | "tracking activity" | "composer:booking" | "composer:tracking")
-            });
-        }
+        // Booking commands exist only while Scheduling is connected; open
+        // activity follows the profile's Scheduling service.
+        items.retain(|item| scheduling_command_visible(&item.id, booking::configured(), booking::connected()));
         if page != "labels" {
-            let mut scored: Vec<_> = items
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, item)| score(&item, &query).map(|s| (s, index, item)))
-                .collect();
-            scored.sort_by_key(|(s, index, _)| (*s, *index));
-            items = scored.into_iter().map(|(_, _, item)| item).collect();
+            items = rank(items, &query);
         } else {
             items.retain(|i| score(i, &query).is_some());
         }
@@ -1059,7 +1094,7 @@ impl Ui {
             "contact" => self.toggle_contact(),
             "new split" => self.create_split(),
             "add account" => self.add_account(),
-            "manage" => self.manage_accounts(),
+            "manage" | "scheduling" => self.manage_accounts(),
             "agent" => {
                 agent::open(self);
             }
@@ -1405,7 +1440,11 @@ impl Ui {
         box_.add_css_class("settings-card");
         for account in self.accounts() {
             let line = gtk::Box::new(Orientation::Horizontal, 12);
-            let label = plain_label(&account.email, "command-title");
+            let label = if self.signed_out.borrow().contains(&account.id) {
+                plain_label(&format!("{} (signed out)", account.email), "command-title")
+            } else {
+                plain_label(&account.email, "command-title")
+            };
             label.set_hexpand(true);
             line.append(&label);
             let remove = gtk::Button::with_label("Remove");
@@ -1422,6 +1461,20 @@ impl Ui {
             });});
             line.append(&remove);
             box_.append(&line);
+        }
+        if booking::configured() {
+            // The Scheduling account, under the mail accounts. It follows the
+            // connection while the window is open.
+            let slot = gtk::Box::new(Orientation::Vertical, 0);
+            self.fill_scheduling_row(&slot);
+            box_.append(&slot);
+            let weak_slot = slot.downgrade();
+            let weak_ui = Rc::downgrade(self);
+            booking::on_change(move || {
+                let (Some(slot), Some(ui)) = (weak_slot.upgrade(), weak_ui.upgrade()) else { return false };
+                ui.fill_scheduling_row(&slot);
+                true
+            });
         }
         let add = gtk::Button::with_label("Add account…");
         let ui = self.clone();
@@ -1441,6 +1494,54 @@ impl Ui {
         box_.append(&agent_access);
         dialog.set_child(Some(&box_));
         dialog.present();
+    }
+    /// The Scheduling row in Manage accounts: name, status lines, the button
+    /// (Connect, Cancel or Disconnect) and Manage online when connected.
+    fn fill_scheduling_row(self: &Rc<Self>, slot: &gtk::Box) {
+        while let Some(child) = slot.first_child() {
+            slot.remove(&child);
+        }
+        let state = booking::connection();
+        let (details, action, manage_online) = booking::account_row(&state);
+        let line = gtk::Box::new(Orientation::Horizontal, 12);
+        let names = gtk::Box::new(Orientation::Vertical, 2);
+        names.set_hexpand(true);
+        names.append(&plain_label(booking::name(), "command-title"));
+        for detail in &details {
+            names.append(&plain_label(detail, "command-detail"));
+        }
+        if let Some(problem) = booking::problem() {
+            let label = plain_label(&problem, "agent-error");
+            label.set_wrap(true);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::None);
+            names.append(&label);
+        }
+        line.append(&names);
+        if manage_online {
+            if let Some(studio) = mail_service::profile::SCHEDULING_ORIGIN.map(|origin| format!("{origin}/studio")) {
+                let link = gtk::Button::with_label("Manage online");
+                link.add_css_class("agent-link");
+                link.set_valign(gtk::Align::Center);
+                link.update_property(&[gtk::accessible::Property::Label(&format!("Manage {} online", booking::name()))]);
+                link.connect_clicked(move |_| {
+                    if let Some(display) = gdk::Display::default() {
+                        let _ = gtk::gio::AppInfo::launch_default_for_uri(&studio, Some(&display.app_launch_context()));
+                    }
+                });
+                line.append(&link);
+            }
+        }
+        let button = gtk::Button::with_label(action);
+        button.set_valign(gtk::Align::Center);
+        button.update_property(&[gtk::accessible::Property::Label(&format!("{action} {}", booking::name()))]);
+        let ui = self.clone();
+        button.connect_clicked(move |_| match booking::connection() {
+            booking::Connection::Disconnected => booking::connect(&ui),
+            booking::Connection::Waiting { .. } => booking::cancel(),
+            booking::Connection::Connected { .. } => booking::disconnect(&ui),
+        });
+        line.append(&button);
+        slot.append(&line);
     }
     pub(super) fn toggle_contact(self: &Rc<Self>) {
         let activity = self.activity_panel.borrow().clone();
@@ -1866,6 +1967,63 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn scheduling_commands_follow_the_service_and_the_connection() {
+        for (id, service, connected, visible) in [
+            ("bookings", true, false, false),
+            ("bookings", true, true, true),
+            ("composer:booking", true, false, false),
+            ("composer:booking", true, true, true),
+            ("scheduling", false, false, false),
+            ("scheduling", true, false, true),
+            ("tracking activity", true, false, true),
+            ("tracking activity", false, false, false),
+            ("composer:tracking", false, false, false),
+            ("manage", false, false, true),
+        ] {
+            assert_eq!(scheduling_command_visible(id, service, connected), visible, "{id} {service} {connected}");
+        }
+        assert_eq!(scheduling_command_for(false).title, "Connect Scheduling…");
+        assert_eq!(scheduling_command_for(true).title, "Scheduling");
+        // Both open Manage accounts, and "sched" or "book" finds them.
+        for connected in [false, true] {
+            let command = scheduling_command_for(connected);
+            assert_eq!(command.id, "scheduling");
+            assert!(score(&command, "sched").is_some() && score(&command, "book").is_some(), "{connected}");
+        }
+    }
+
+    #[test]
+    fn book_inserts_a_link_in_the_composer_and_opens_bookings_elsewhere() {
+        let bookings = Command::new("bookings", "Bookings and meeting links", "", "booking analytics scheduling");
+        let insert = Command::new("composer:booking", "Insert booking link…", "", "meeting schedule availability");
+        let titles = |items: Vec<Command>| rank(items, "book").into_iter().map(|c| c.title).collect::<Vec<_>>();
+        // The composer lists its own commands before the general ones.
+        assert_eq!(titles(vec![insert.clone(), bookings.clone()]), ["Insert booking link…", "Bookings and meeting links"]);
+        assert_eq!(titles(vec![bookings, scheduling_command_for(true)]), ["Bookings and meeting links", "Scheduling"]);
+        // "sched" finds the Scheduling command by its title first, also after
+        // commands that only list a matching word.
+        let outbox = Command::new("outbox", "Go to Outbox", "G O", "scheduled undo send");
+        let bookings = Command::new("bookings", "Bookings and meeting links", "", "booking analytics scheduling");
+        assert_eq!(rank(vec![outbox.clone(), scheduling_command_for(false)], "sched")[0].title, "Connect Scheduling…");
+        assert_eq!(rank(vec![bookings, outbox, scheduling_command_for(true)], "sched")[0].title, "Scheduling");
+    }
+
+    #[test]
+    fn manage_accounts_row_names_each_scheduling_state() {
+        use booking::{Connection, account_row};
+        assert_eq!(account_row(&Connection::Disconnected), (vec!["Not connected".to_string()], "Connect", false));
+        assert_eq!(
+            account_row(&Connection::Waiting { code: "WDJB-MJHT".into() }),
+            (vec!["Waiting for your browser · Code if asked: WDJB-MJHT".to_string()], "Cancel", false)
+        );
+        assert_eq!(
+            account_row(&Connection::Connected { account: Some("alex@fernhill.example".into()) }),
+            (vec!["alex@fernhill.example".to_string(), "Connected on this computer".to_string()], "Disconnect", true)
+        );
+        assert_eq!(account_row(&Connection::Connected { account: None }).0, ["Connected on this computer"]);
+    }
+
     #[test]
     fn clearing_every_recipient_is_detected_only_when_some_existed() {
         assert!(recipients_cleared(["a@example.com", "", ""], ["", "  ", ""]));
@@ -2546,6 +2704,43 @@ pub(super) fn pending_retry_delay(value: &Value) -> Option<u64> {
     )
 }
 
+/// The accounts `list_accounts` marks `needs_sign_in`.
+pub(super) fn signed_out_accounts(accounts: &Value) -> std::collections::HashSet<String> {
+    accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|account| account["needs_sign_in"] == true)
+        .filter_map(|account| account["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The status line after `sync_all` (macOS `syncAll`). A signed-out account
+/// has its own notice and sidebar mark, so it counts apart from failures.
+pub(super) fn sync_summary(results: &[Value]) -> String {
+    let signed_out = results
+        .iter()
+        .filter(|item| item["data"]["needs_sign_in"] == true)
+        .count();
+    let failures = results
+        .iter()
+        .filter(|item| item["data"]["needs_sign_in"] != true)
+        .filter(|item| item.get("error").is_some() || item["data"].get("sync_error").is_some())
+        .count();
+    let synced = results.len() - signed_out - failures;
+    let signed_out = match signed_out {
+        0 => None,
+        1 => Some("1 account signed out".to_owned()),
+        count => Some(format!("{count} accounts signed out")),
+    };
+    match (failures, signed_out) {
+        (0, None) => "Sync complete.".into(),
+        (0, Some(count)) if synced == 0 => count,
+        (0, Some(count)) => format!("Sync complete · {count}"),
+        _ => "Some accounts could not sync. Check account settings.".into(),
+    }
+}
+
 /// Modified desktop/editor bindings must not fall through to destructive mail actions.
 pub(super) fn allows_mail_shortcuts(mods: gdk::ModifierType) -> bool {
     !mods.intersects(
@@ -2569,6 +2764,35 @@ pub(super) fn shortcut_key(key: gdk::Key, mods: gdk::ModifierType) -> gdk::Key {
 #[cfg(test)]
 mod workflow_tests {
     use super::*;
+    #[test]
+    fn signed_out_accounts_count_apart_from_sync_failures() {
+        let accounts = json!([
+            {"id": "a", "email": "a@example.com", "needs_sign_in": true},
+            {"id": "b", "email": "b@example.com", "needs_sign_in": false},
+            {"id": "c", "email": "c@example.com"}
+        ]);
+        assert_eq!(
+            signed_out_accounts(&accounts),
+            std::collections::HashSet::from(["a".to_owned()])
+        );
+        let ok = json!({"account_id": "b", "ok": true, "data": {"messages_added": 0}});
+        let signed_out = json!({"account_id": "a", "ok": false, "data": {"needs_sign_in": true,
+            "sync_error": "Google signed this account out. Sign in again to get new mail."}});
+        let failed = json!({"account_id": "c", "ok": false, "error": "offline"});
+        assert_eq!(sync_summary(&[ok.clone()]), "Sync complete.");
+        assert_eq!(
+            sync_summary(&[ok.clone(), signed_out.clone()]),
+            "Sync complete · 1 account signed out"
+        );
+        assert_eq!(
+            sync_summary(&[signed_out.clone(), signed_out.clone()]),
+            "2 accounts signed out"
+        );
+        assert_eq!(
+            sync_summary(&[ok, signed_out, failed]),
+            "Some accounts could not sync. Check account settings."
+        );
+    }
     #[test]
     fn from_identity_prefers_receiving_alias_then_provider_default() {
         let identities = std::collections::BTreeMap::from([

@@ -363,7 +363,7 @@ specific requested edit; do not retry conflicts automatically. Optional create
 
 ## Scheduling and open activity
 
-The MCP exposes read-only `booking_status`, `booking_list`, `booking_link`, `booking_availability`, `booking_analytics` and `tracking_activity`. Connect scheduling through the native app or the explicit setup authorization below. These read tools cannot approve a device, access credentials, change bookings, enable tracking or send mail. Availability is a suggestion, not a reservation; open counts measure image requests, not verified reads.
+The MCP exposes read-only `booking_status`, `booking_list`, `booking_link`, `booking_availability`, `booking_analytics` and `tracking_activity`. These tools, and the setup tools below, are listed only when the build's [distribution profile](distribution-profile.md) names a Scheduling service; official builds have none until Scheduling launches. Connect Scheduling in the app's Manage accounts, or through the explicit setup authorization below; until then the booking tools answer that Scheduling isn't connected. These read tools cannot approve a device, access credentials, change bookings, enable tracking or send mail. Availability is a suggestion, not a reservation; open counts measure image requests, not verified reads.
 
 The activity candidate enriches `tracking_activity` with local subjects, recipients,
 conversation identifiers, cached reply evidence, existing follow-up state and a

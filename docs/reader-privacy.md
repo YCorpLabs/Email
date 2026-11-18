@@ -86,8 +86,12 @@ distribution profile (`DISTRIBUTION=true`) or without a `SCHEDULING_ORIGIN`.
 
 In a released build:
 
-- Mail already sent with tracking keeps its counts: the reader's open-activity
-  button, contact-pane activity, alerts, and **Recent opens** still work.
+- Official builds have no Scheduling service until it launches, so they show
+  no open activity at all: no open-count button, contact-pane activity or
+  **Recent opens**, and the service reports no saved activity.
+- In a build with a Scheduling service but without open tracking, mail already
+  sent with tracking keeps its counts: the reader's open-activity button,
+  contact-pane activity, alerts, and **Recent opens** still work.
   **Recent opens** and the Linux activity button appear only when such mail
   exists in the local cache, checked at launch and when the palette opens until
   found (an open palette is not rebuilt; the next one lists it). The check is
@@ -106,17 +110,19 @@ In a released build:
 - A new-message composer that covers the reader also hides the notice on macOS,
   so its button is not reachable by keyboard behind the composer (Linux does
   not re-render the covered reader at all).
-- The hosted Scheduling service, its device grant and tracking API are
-  unchanged. The hosted service sets the device grant's scope
-  (`booking:read email:tracking`) and rejects client-chosen scopes, so released
-  builds still ask for optional email-activity access in the browser, and the
-  Linux approval copy keeps saying so. Narrowing the grant for released builds
-  needs a coordinated Scheduling change.
+- Connecting Scheduling asks only for booking access. Email requests the
+  `booking:read` scope (`booking:read booking:settings` for the MCP settings
+  connection) and refuses a grant that carries anything else, so the browser
+  no longer asks for email activity. This needs the Scheduling release that
+  accepts a requested scope (`desktop_scopes` in `contracts/scheduling.json`).
+  Grants made before it still carry `email:tracking` and keep working;
+  released builds never use it. A development build can only register new
+  tracked mail with such an earlier grant.
 
 On Linux the **Recent opens** reader button is shared by all conversations
-(shown when any tracked sent mail exists in a released build, always in
-development builds), while macOS shows its open-count button only on tracked
-sent messages.
+(shown when any tracked sent mail exists in a released build with a
+Scheduling service, always in development builds), while macOS shows its
+open-count button only on tracked sent messages.
 
 ## Tests
 
@@ -139,10 +145,12 @@ python3 apps/macos/Tests/run-reader-privacy-checks.py \
 The harness compiles the real `EmailUI` sources once and drives `MailWindow`
 against disposable stores, a disposable HOME and a separate preferences domain.
 The shell reads open tracking from the engine's profile, so the library picks
-the variant: `official` (Scheduling on, `OPEN_TRACKING=false`) is the public
-case, `development` the development one. Each run checks that the library
-carries the intended profile and that the engine's `available` flag matches
-it.
+the variant: `official` (no Scheduling service, `OPEN_TRACKING=false`) is the
+public case, `development` (Scheduling and open tracking) the development one.
+Each run checks that the library carries the intended profile, that only the
+development library has a Scheduling service, that the engine's `available`
+flag matches it, and that the composer's **Booking link** button and the
+booking palette commands appear only with a Scheduling service.
 
 The migration rules have an isolated check (`RemoteImagePreferenceChecks`, run
 by `scripts/check-release-swift.py`), including that a new install records no

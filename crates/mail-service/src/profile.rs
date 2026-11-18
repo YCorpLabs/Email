@@ -42,6 +42,21 @@ pub fn setup_guide_url() -> Option<&'static str> {
         .map(|_| "https://ycorplabs.com/email/guide/")
 }
 
+/// How the shells name the Scheduling service in Manage accounts. Only Y Corp's
+/// own service carries the product name; a fork's service is just
+/// "Scheduling" (see TRADEMARKS.md).
+pub fn scheduling_name() -> Option<&'static str> {
+    SCHEDULING_ORIGIN.map(|origin| scheduling_name_for(origin))
+}
+
+fn scheduling_name_for(origin: &str) -> &'static str {
+    if origin == "https://meet.ycorplabs.com" {
+        "Scheduling by YCorp"
+    } else {
+        "Scheduling"
+    }
+}
+
 /// Values the native shells present. Never contains credentials.
 pub fn json() -> Value {
     json!({
@@ -49,6 +64,7 @@ pub fn json() -> Value {
         "support_address": SUPPORT_ADDRESS,
         "feedback_address": FEEDBACK_ADDRESS,
         "scheduling_origin": SCHEDULING_ORIGIN,
+        "scheduling_name": scheduling_name(),
         "open_tracking": OPEN_TRACKING,
         "setup_guide_url": setup_guide_url(),
         "macos_data_directory": MACOS_DATA_DIRECTORY,
@@ -72,5 +88,15 @@ mod tests {
         // development builds link to it, the neutral profile never does.
         assert_eq!(setup_guide_url().is_some(), ID == "official" || ID == "development", "{ID}");
         assert_eq!(value["setup_guide_url"].as_str(), setup_guide_url());
+        assert_eq!(value["scheduling_name"].as_str(), scheduling_name());
+        assert_eq!(scheduling_name().is_some(), SCHEDULING_ORIGIN.is_some());
+    }
+
+    #[test]
+    fn only_the_official_scheduling_service_carries_the_product_name() {
+        assert_eq!(scheduling_name_for("https://meet.ycorplabs.com"), "Scheduling by YCorp");
+        for fork in ["https://meet.example.com", "https://meet.ycorplabs.com.example", "https://ycorplabs.com"] {
+            assert_eq!(scheduling_name_for(fork), "Scheduling", "{fork}");
+        }
     }
 }

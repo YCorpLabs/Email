@@ -2,9 +2,9 @@
 """Exercise actual AppKit remote-image blocking and profile-gated open tracking.
 
 Compiles the real EmailUI sources once and drives them against two mail-service
-libraries: one built with the `official` distribution profile (Scheduling on,
-OPEN_TRACKING=false, the public case) and one with `development`
-(OPEN_TRACKING=true). The shell reads open tracking from the engine's profile,
+libraries: one built with the `official` distribution profile (no Scheduling
+service, OPEN_TRACKING=false, the public case) and one with `development`
+(Scheduling and OPEN_TRACKING=true). The shell reads open tracking from the engine's profile,
 so the library alone selects the variant. Stores, HOME and the preferences
 domain are disposable; the installed app, its Keychain items and real accounts
 are never used and nothing is sent.
@@ -35,6 +35,7 @@ check = r'''
     func checkReaderPrivacy() {
         let environment = ProcessInfo.processInfo.environment
         let openTracking = DistributionProfile.current?.openTracking == true
+        let scheduling = DistributionProfile.current?.hasScheduling == true
         let variant = openTracking ? "dev" : "public"
         let tracked = environment["EMAIL_CHECK_TRACKED"] == "1"
         func expect(_ ok: Bool, _ name: String) { precondition(ok, "\(variant): \(name)"); print("PASS [\(variant)\(tracked ? " tracked" : "")] \(name)"); fflush(stdout) }
@@ -92,7 +93,7 @@ check = r'''
         expect(remoteImagesNotice.isHidden, "notice starts hidden")
         let available = (core?.call(["op": "tracking_get", "message_id": "demo:1"]) as? [String: Any])?["available"] as? Bool
         expect(variant == environment["EMAIL_CHECK_VARIANT"], "the library carries the intended distribution profile")
-        expect(DistributionProfile.current?.hasScheduling == true, "the profile has a Scheduling service")
+        expect(scheduling == (variant == "dev"), "only the development profile has a Scheduling service")
         expect(available == openTracking, "the engine's tracking availability matches its profile")
 
         if !tracked {
@@ -194,13 +195,19 @@ check = r'''
         pump(0.5)
         expect(composePane!.trackingOptionShown == openTracking && composePane!.offersTracking == openTracking, "Track opens appears only with the development profile")
         expect(paletteItems().contains { $0.target == .toggleTracking } == openTracking, "palette tracking toggle appears only with the development profile")
+        // Booking surfaces wait for a Scheduling connection, which a fresh store
+        // never has; only the connect command follows the service.
+        expect(!composePane!.bookingButtonShown, "Booking link waits for a Scheduling connection")
+        expect(!paletteItems().contains { $0.target == .insertBooking || $0.target == .bookings }, "booking palette commands wait for a Scheduling connection")
+        expect(paletteItems().contains { $0.target == .schedulingAccount } == (scheduling && !knownAccounts.isEmpty), "Connect Scheduling… appears only with a Scheduling service")
         snapshot("5-composer")
         composePane!.paletteDiscard()
         wait("untouched composer closes") { composePane == nil }
         let savedActivity = (core?.call(["op": "tracking_capability"]) as? [String: Any])?["saved_activity"] as? Bool
-        expect(savedActivity == tracked, "the service reports saved activity only with tracked sent mail")
-        wait("saved-activity check settles") { offersOpenActivity == (openTracking || tracked) }
-        expect(paletteItems().contains { $0.target == .trackingActivity } == (openTracking || tracked), "Recent opens appears with the development profile or tracked mail")
+        // Saved activity needs the Scheduling service that recorded it.
+        expect(savedActivity == (tracked && scheduling), "the service reports saved activity only with tracked sent mail and a Scheduling service")
+        wait("saved-activity check settles") { offersOpenActivity == (openTracking || (tracked && scheduling)) }
+        expect(paletteItems().contains { $0.target == .trackingActivity } == (openTracking || (tracked && scheduling)), "Recent opens appears with the development profile, or tracked mail and a Scheduling service")
 
         if tracked {
             // Saved counts only: keep the contact pane (which refreshes from the
@@ -208,7 +215,13 @@ check = r'''
             // hosted refresh fails closed before a credential is read.
             contactPanePreference = false; updateContactPaneVisibility()
             currentMessageID = "demo:tracked-sent"
-            wait("tracked sent mail keeps its open count") { !trackingActivityButton.isHidden && trackingActivityButton.title == " 3" }
+            if scheduling {
+                wait("tracked sent mail keeps its open count") { !trackingActivityButton.isHidden && trackingActivityButton.title == " 3" }
+            } else {
+                updateTrackingButton()
+                pump(1)
+                expect(trackingActivityButton.isHidden, "without a Scheduling service tracked sent mail shows no open count")
+            }
             currentMessageID = nil
             showDrafts()
             wait("tracked draft is listed") { filteredDrafts.contains { $0.subject == "Tracked draft (fixture)" } }
@@ -219,12 +232,16 @@ check = r'''
             composePane!.paletteSaveDraft()
             func trackedDraft() -> Bool { ((core?.call(["op": "tracking_get", "message_id": "demo:tracked-draft"]) as? [String: Any])?["enabled"] as? Bool) == true }
             pump(1.5)
-            expect(trackedDraft(), openTracking ? "development profile keeps a draft's tracking on save" : "public composer makes no tracking call; the service drops it after an accepted send")
+            if scheduling {
+                expect(trackedDraft(), openTracking ? "development profile keeps a draft's tracking on save" : "public composer makes no tracking call; the service drops it after an accepted send")
+            } else {
+                expect(!trackedDraft(), "without a Scheduling service the service reports no tracking for the draft")
+            }
         }
         close()
     }
 '''
-compose_accessor = '    var trackingOptionShown: Bool { tracking.superview != nil }\n'
+compose_accessor = '    var trackingOptionShown: Bool { tracking.superview != nil }\n    var bookingButtonShown: Bool { !booking.isHidden }\n'
 main = '''import AppKit
 @main struct Check { @MainActor static func main() {
     if CommandLine.arguments.contains("--prepare") { _ = CoreBridge()?.call(["op": "seed_demo"]); return }

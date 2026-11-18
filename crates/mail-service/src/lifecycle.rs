@@ -385,6 +385,23 @@ impl MailService {
         calendar: bool,
         tokens: TokenSet,
     ) -> Result<(), String> {
+        self.commit_grant(saved, calendar, tokens, |item| {
+            if calendar {
+                item.google_calendar_enabled = true
+            } else {
+                item.google_photos_enabled = true
+            }
+        })
+    }
+    /// Store a new grant for this account's mail (or Calendar) token, apply
+    /// `update` to its settings and start a new generation, all or nothing.
+    pub(super) fn commit_grant(
+        &self,
+        saved: &SavedConfig,
+        calendar: bool,
+        tokens: TokenSet,
+        update: impl FnOnce(&mut SavedConfig),
+    ) -> Result<(), String> {
         let _lifecycle = self.lifecycle_lock()?;
         let mut configs = self.configs.lock().map_err(|_| "config lock poisoned")?;
         let mut next = self.verify_generation(saved)?;
@@ -408,11 +425,7 @@ impl MailService {
             .ok_or("Account settings missing")?;
         item.generation = Uuid::new_v4().to_string();
         let generation = item.generation.clone();
-        if calendar {
-            item.google_calendar_enabled = true
-        } else {
-            item.google_photos_enabled = true
-        }
+        update(item);
         if let Err(error) = self.save_configs(&next) {
             if let Some(previous) = previous {
                 let _ = self.credentials.write(&key, &previous);
@@ -687,6 +700,62 @@ mod tests {
             )
             .unwrap(),
         }
+    }
+    #[test]
+    fn a_rejected_sign_in_is_remembered_until_the_account_signs_in_again() {
+        let fixture = Fixture::new();
+        let saved = fixture.add("signed-out", "initial");
+        fixture.add_other("password", "imap", "synthetic-password");
+        // The provider stops accepting the sign-in: the token expired and no
+        // refresh token is left, so the refresh fails without any request.
+        let dead = TokenSet {
+            access_token: "expired".into(),
+            refresh_token: None,
+            expires_at_ms: 0,
+        };
+        fixture
+            .vault
+            .write("signed-out", &serde_json::to_string(&dead).unwrap())
+            .unwrap();
+        fixture.service.token_cache.lock().unwrap().remove("signed-out");
+        let result = fixture.service.sync_account("signed-out").unwrap();
+        assert_eq!(result["needs_sign_in"], true);
+        assert_eq!(
+            result["sync_error"],
+            "Google signed this account out. Sign in again to get new mail."
+        );
+        let listed = |id: &str| {
+            fixture.service.list_accounts().unwrap().as_array().unwrap().iter()
+                .find(|row| row["id"] == id).unwrap()["needs_sign_in"].clone()
+        };
+        assert_eq!(listed("signed-out"), true);
+        assert_eq!(listed("password"), false);
+        let flagged = fixture.service.saved_config("signed-out").unwrap();
+        assert!(flagged.needs_sign_in);
+        assert_eq!(flagged.generation, saved.generation);
+
+        // Signing in again replaces the token in place and clears the flag.
+        fixture
+            .service
+            .commit_grant(&flagged, false, tokens("again"), |item| {
+                item.needs_sign_in = false
+            })
+            .unwrap();
+        let renewed = fixture.service.saved_config("signed-out").unwrap();
+        assert!(!renewed.needs_sign_in);
+        assert_ne!(renewed.generation, saved.generation);
+        assert!(renewed.google_photos_enabled && renewed.google_calendar_enabled);
+        let stored: TokenSet =
+            serde_json::from_str(&fixture.vault.read("signed-out", false).unwrap().unwrap())
+                .unwrap();
+        assert_eq!(stored.access_token, "synthetic-access-again");
+        assert_eq!(listed("signed-out"), false);
+        // A sync that still holds the old authorization cannot flag the new one.
+        assert!(fixture.service.set_needs_sign_in(&flagged, true).is_err());
+        assert!(!fixture.service.saved_config("signed-out").unwrap().needs_sign_in);
+        // Settings without the flag keep their old shape on disk.
+        let raw = fs::read_to_string(&fixture.service.config_path).unwrap();
+        assert!(!raw.contains("needs_sign_in"));
     }
     #[test]
     fn revision_change_invalidates_cached_tokens_and_fences_old_refresh() {

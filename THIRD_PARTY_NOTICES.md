@@ -14,8 +14,8 @@ an artifact-specific redistribution review, including any modifications to depen
 
 ## Source identity
 
-- `Cargo.lock`: `e91a2954c184a026c9a709d2ecb0a395aacb590a1217e2b1293da4dd9f479fa2`
-- `apps/linux/Cargo.lock`: `36133fb55b2f9b153444fd892516bf84362e62151e1069f6a42cbb98fa011ae7`
+- `Cargo.lock`: `d4e79de9f6d41c324edfa41b3cefa2e04e5259b83fd25811f119e52ceef81f70`
+- `apps/linux/Cargo.lock`: `cd64b5a27191258cb78b672d0352af1b2ca520d3edf78d3fb0934298e9c42050`
 - `apps/macos/Package.resolved`: `85314a4fe908f03a2e32abc40f0ea54fe1e12204c6e740c79922218f9cf82b3d`
 
 Regenerate with `python3 scripts/generate-third-party-notices.py`; check lock identities with `--check`.
@@ -247,7 +247,7 @@ POSSIBILITY OF SUCH DAMAGE.
 | [dtoa-short 0.3.5](https://crates.io/api/v1/crates/dtoa-short/0.3.5/download) | MPL-2.0 | [LICENSE](#notice-1f256ecad1928805) |
 | [dyn-clone 1.0.20](https://crates.io/api/v1/crates/dyn-clone/1.0.20/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-62c7a1e35f564068), [LICENSE-MIT](#notice-23f18e03dc49df91) |
 | [ego-tree 0.11.1](https://crates.io/api/v1/crates/ego-tree/0.11.1/download) | ISC | [LICENSE](#notice-ddea4e94a1c35ed9) |
-| [email-encoding 0.4.2](https://crates.io/api/v1/crates/email-encoding/0.4.2/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-c71d239df91726fc), [LICENSE-MIT](#notice-c5d18f2569938b6d) |
+| [email-encoding 0.4.3](https://crates.io/api/v1/crates/email-encoding/0.4.3/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-c71d239df91726fc), [LICENSE-MIT](#notice-ef695e24269388f8) |
 | [email_address 0.2.9](https://crates.io/api/v1/crates/email_address/0.2.9/download) | MIT | [LICENSE](#notice-39712155836e5c10) |
 | [encoding_rs 0.8.44](https://crates.io/api/v1/crates/encoding_rs/0.8.44/download) | (Apache-2.0 OR MIT) AND BSD-3-Clause | [COPYRIGHT](#notice-11789f45bb180841), [LICENSE-APACHE](#notice-cfc7749b96f63bd3), [LICENSE-MIT](#notice-3fa4ca83dcc92378), [LICENSE-WHATWG](#notice-838118388fe5c2e7) |
 | [endi 1.1.1](https://crates.io/api/v1/crates/endi/1.1.1/download) | MIT | [LICENSE-MIT](#notice-23f18e03dc49df91) |
@@ -339,7 +339,7 @@ POSSIBILITY OF SUCH DAMAGE.
 | [js-sys 0.3.106](https://crates.io/api/v1/crates/js-sys/0.3.106/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-a60eea8175145316), [LICENSE-MIT](#notice-378f5840b258e277) |
 | [keyring 3.6.3](https://crates.io/api/v1/crates/keyring/3.6.3/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-78ebc2ea2a1cec9c), [LICENSE-MIT](#notice-157cc607717b1b37) |
 | [lazy_static 1.5.1](https://crates.io/api/v1/crates/lazy_static/1.5.1/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-a60eea8175145316), [LICENSE-MIT](#notice-23f18e03dc49df91) |
-| [lettre 0.11.23](https://crates.io/api/v1/crates/lettre/0.11.23/download) | MIT | [LICENSE](#notice-9a51230200e4e3ea) |
+| [lettre 0.11.24](https://crates.io/api/v1/crates/lettre/0.11.24/download) | MIT | [LICENSE](#notice-9a51230200e4e3ea) |
 | [lexical-core 0.7.6](https://crates.io/api/v1/crates/lexical-core/0.7.6/download) | MIT/Apache-2.0 | [LICENSE-APACHE](#notice-8173d5c29b4f956d), [LICENSE-MIT](#notice-23f18e03dc49df91) |
 | [libc 0.2.191](https://crates.io/api/v1/crates/libc/0.2.191/download) | MIT OR Apache-2.0 | [LICENSE-APACHE](#notice-62c7a1e35f564068), [LICENSE-MIT](#notice-123a331b5dbf04c3) |
 | [libdbus-sys 0.2.7](https://crates.io/api/v1/crates/libdbus-sys/0.2.7/download) | Apache-2.0/MIT | [LICENSE-APACHE](#notice-453745410e3be8cf), [LICENSE-MIT](#notice-de3911c2d98c8bd2) |
@@ -13422,34 +13422,6 @@ licensed under the Apache License, Version 2.0 <LICENSE-APACHE> or
 <LICENSE-MIT> or <http://opensource.org/licenses/MIT>, at your option.
 ~~~~
 
-<a id="notice-c5d18f2569938b6d"></a>
-
-### Notice c5d18f2569938b6d
-
-~~~~
-MIT License
-
-Copyright (c) 2021-2024 Paolo Barbolini <paolo@paolo565.org>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-~~~~
-
 <a id="notice-c6596eb7be8581c1"></a>
 
 ### Notice c6596eb7be8581c1
@@ -15846,6 +15818,34 @@ DEALINGS IN THE SOFTWARE.
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+~~~~
+
+<a id="notice-ef695e24269388f8"></a>
+
+### Notice ef695e24269388f8
+
+~~~~
+MIT License
+
+Copyright (c) 2021-2026 Paolo Barbolini <paolo@paolobarbolini.it>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ~~~~
 
 <a id="notice-efcfee7981ff7243"></a>

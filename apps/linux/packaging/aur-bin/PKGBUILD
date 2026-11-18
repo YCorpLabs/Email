@@ -9,11 +9,11 @@
 # scripts/prepare-aur-package.sh fills in the checksums and writes .SRCINFO;
 # see docs/linux-aur.md.
 pkgname=email-ycorp-bin
-pkgver=0.1.0beta3
+pkgver=0.1.0beta4
 # The release tag; Arch versions cannot contain '-'.
-_tag=v0.1.0-beta.3
+_tag=v0.1.0-beta.4
 # The package version inside the .deb file names (apps/linux/Cargo.toml).
-_debver=0.1.0-beta.3
+_debver=0.1.0-beta.4
 _appid=com.ycorplabs.Mail
 pkgrel=1
 pkgdesc='Keyboard-first, local-first desktop email client (beta, prebuilt)'
@@ -35,8 +35,8 @@ source_x86_64=("$pkgname-$pkgver-amd64.deb::$url/releases/download/$_tag/email-l
 source_aarch64=("$pkgname-$pkgver-arm64.deb::$url/releases/download/$_tag/email-linux_${_debver}_arm64.deb")
 noextract=("$pkgname-$pkgver-amd64.deb" "$pkgname-$pkgver-arm64.deb")
 # Replaced by scripts/prepare-aur-package.sh for the published release.
-sha256sums_x86_64=('77248248de4f58e8e5acea2d97341f3b467c00aa3b128d971b0e17b02cf19e55')
-sha256sums_aarch64=('2711ba7c8899df67d4f04bcdbcf83959e92b2b3e8305199b070562352065b48b')
+sha256sums_x86_64=('5d154b4d4b09fc0af9eebbe4200ee9099be1cf4dad5728de24dba9f05be279bd')
+sha256sums_aarch64=('fcb46f0e574f61bea86b7795d9fbce935fd4983d8e9501b6cc4a175d50049635')
 
 prepare() {
   # makepkg links only this architecture's .deb into $srcdir.

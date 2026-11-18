@@ -1103,6 +1103,9 @@ mod tests {
         assert!(issued_credential(&write, true).is_ok());
         let read = json!({"accessToken":"safe-token","expiresAt":now()+60000,"tokenType":"Bearer","scope":DEVICE_SCOPE});
         assert!(issued_credential(&read, true).is_err());
+        // The settings connection never asks for email activity.
+        let earlier = json!({"accessToken":"safe-token","expiresAt":now()+60000,"tokenType":"Bearer","scope":"booking:read email:tracking booking:settings"});
+        assert!(issued_credential(&earlier, true).is_err());
     }
     #[test]
     fn preview_does_not_allow_credentials_calendar_connection_changes_or_arbitrary_patch_fields() {

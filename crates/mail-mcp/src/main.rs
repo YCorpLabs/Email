@@ -427,6 +427,24 @@ struct TrackingActivityInput {
     refresh: bool,
 }
 
+/// Tools that need the profile's Scheduling service. A build without one does
+/// not list them, as both shells hide Bookings, booking links and Recent opens;
+/// the service refuses the operations anyway.
+const SCHEDULING_TOOLS: &[&str] = &[
+    "booking_status",
+    "booking_setup_status",
+    "booking_setup_read",
+    "booking_setup_preview",
+    "booking_setup_start",
+    "booking_setup_poll",
+    "booking_setup_apply",
+    "booking_list",
+    "booking_link",
+    "booking_availability",
+    "booking_analytics",
+    "tracking_activity",
+];
+
 impl MailServer {
     fn new(store: MailStore, service: MailService, access: Access) -> Self {
         Self {
@@ -434,8 +452,18 @@ impl MailServer {
             service: Arc::new(service),
             access,
             client: Arc::new(Mutex::new(None)),
-            tool_router: Self::tool_router(),
+            tool_router: Self::profile_tool_router(mail_service::profile::SCHEDULING_ORIGIN.is_some()),
         }
+    }
+
+    fn profile_tool_router(scheduling: bool) -> ToolRouter<Self> {
+        let mut router = Self::tool_router();
+        if !scheduling {
+            for name in SCHEDULING_TOOLS {
+                router.remove_route(name);
+            }
+        }
+        router
     }
 
     fn read<T>(&self, f: impl FnOnce(&MailStore) -> mail_core::Result<T>) -> Result<Json<T>, String>
@@ -2602,6 +2630,29 @@ mod tests {
                 .authorize(&json!({"op":"tracking_activity"}))
                 .is_err()
         );
+    }
+    #[test]
+    fn scheduling_tools_are_listed_only_with_a_scheduling_service() {
+        let all = MailServer::tool_router();
+        for name in SCHEDULING_TOOLS {
+            assert!(all.has_route(name), "unknown scheduling tool {name}");
+        }
+        let with = MailServer::profile_tool_router(true);
+        let without = MailServer::profile_tool_router(false);
+        assert_eq!(with.list_all().len(), all.list_all().len());
+        assert_eq!(without.list_all().len(), all.list_all().len() - SCHEDULING_TOOLS.len());
+        for name in SCHEDULING_TOOLS {
+            assert!(with.has_route(name) && !without.has_route(name), "{name}");
+        }
+        for name in ["list_threads", "compose_draft", "list_agenda", "availability"] {
+            assert!(without.has_route(name), "{name}");
+        }
+        let f = Fixture::new(Access::default());
+        let listed = f.server.tool_router.list_all();
+        let scheduling = mail_service::profile::SCHEDULING_ORIGIN.is_some();
+        for name in SCHEDULING_TOOLS {
+            assert_eq!(listed.iter().any(|tool| tool.name == *name), scheduling, "{name}");
+        }
     }
     #[test]
     fn scheduling_settings_have_an_independent_explicit_grant_and_never_bypass_account_scope() {

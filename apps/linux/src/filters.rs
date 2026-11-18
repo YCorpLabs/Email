@@ -1536,6 +1536,7 @@ mod tests {
             received: String::new(),
             unread: true,
             labels: vec!["INBOX".into(), "Work".into()],
+            pinned: false,
             filter: Some(ThreadFilterTag {
                 id: "f".into(),
                 name: "Notifications".into(),

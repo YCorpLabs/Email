@@ -104,6 +104,28 @@ an unusually tall window. Draft list previews show To, then Cc, then Bcc with an
 explicit recipient label, including copy-only drafts. Reopened copy fields show
 “Hide Cc/Bcc” consistently.
 
+## Favorites star
+
+The star in a conversation row and in the reader is the conversation's
+Favorites flag (`is_pinned`), kept in this store. F, the row star and the
+reader star flip it with `set_thread_pinned` on both shells, and the Favorites
+tab lists flagged conversations (plus, as `is:starred` does, conversations
+with a provider `STARRED` label). Linux used to read and toggle a `STARRED`
+label instead, so conversations starred on the Mac, including the launch
+demo's, showed an empty star there and F could not unstar them.
+
+Verified 17 Nov 2026 with the neutral `unofficial` profile and disposable
+`EMAIL_DEMO=launch` stores. Linux, in the verify container under Xvfb with the
+running executable matching the built release binary: Ingrid Solberg's "Re:
+Launch plan: Fernhill 2.0" has a filled star in the row and the reader, the
+six Favorites all show filled stars as in the macOS capture, and F twice
+clears and then restores the flag in the database. The Linux test
+`favorites_star_is_the_pinned_flag_as_on_macos` covers rows, Favorites and F
+against a launch demo service. Unchanged on both shells: a conversation with
+only a provider `STARRED` label is listed in Favorites with an empty star.
+Remaining wording gap: the Linux palette and context menu say "Toggle
+favorite" where macOS says "Add to favorites" or "Remove from favorites".
+
 ## Send destination and Sent mailbox
 
 Mac Send/Schedule no longer unconditionally navigates to Outbox. Closing the

@@ -31,7 +31,14 @@ use mail_core::{
 use reqwest::blocking::{Client, RequestBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{io::Read, sync::Mutex, time::Duration};
+use std::{
+    io::Read,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 pub use oauth::{
     GOOGLE_REVOKE_ENDPOINT, authorize_google_calendar, authorize_google_photos,
@@ -86,6 +93,19 @@ pub enum CloudError {
     Message(#[from] lettre::error::Error),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+impl CloudError {
+    /// The provider no longer accepts the saved sign-in: the refresh token
+    /// expired or was revoked (Google answers `invalid_grant`, as Microsoft
+    /// does), or none was stored. Retrying cannot help; only signing in again.
+    pub fn needs_sign_in(&self) -> bool {
+        match self {
+            Self::OAuthToken { reason, .. } => reason == "invalid_grant",
+            Self::Response(message) => *message == oauth::MISSING_REFRESH_TOKEN,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +164,7 @@ pub struct CloudClient {
     tokens: Mutex<TokenSet>,
     http: Client,
     gmail_budget: std::sync::Arc<Mutex<quota::Budget>>,
+    signed_out: AtomicBool,
 }
 
 impl CloudClient {
@@ -161,6 +182,7 @@ impl CloudClient {
             config,
             tokens: Mutex::new(tokens),
             http,
+            signed_out: AtomicBool::new(false),
         })
     }
     pub fn gmail_recipient_headers(
@@ -189,10 +211,20 @@ impl CloudClient {
     pub fn tokens(&self) -> TokenSet {
         self.tokens.lock().expect("token mutex poisoned").clone()
     }
+    /// Whether a request on this client found the saved sign-in no longer
+    /// accepted ([`CloudError::needs_sign_in`]). The account then needs a new
+    /// sign-in before it can sync again.
+    pub fn signed_out(&self) -> bool {
+        self.signed_out.load(Ordering::Relaxed)
+    }
     fn access_token(&self) -> Result<String> {
         let mut tokens = self.tokens.lock().expect("token mutex poisoned");
         if tokens.expires_at_ms <= now_ms() + 60_000 {
-            *tokens = refresh(&self.config, &tokens)?;
+            *tokens = refresh(&self.config, &tokens).inspect_err(|error| {
+                if error.needs_sign_in() {
+                    self.signed_out.store(true, Ordering::Relaxed);
+                }
+            })?;
         }
         Ok(tokens.access_token.clone())
     }
@@ -732,5 +764,39 @@ mod tests {
             Value::Null
         );
         server.join().unwrap();
+        assert!(!client.signed_out());
+    }
+    #[test]
+    fn only_a_rejected_or_missing_refresh_token_needs_a_new_sign_in() {
+        let token = |status, reason: &str| CloudError::OAuthToken {
+            status,
+            reason: reason.into(),
+        };
+        assert!(token(400, "invalid_grant").needs_sign_in());
+        assert!(CloudError::Response(oauth::MISSING_REFRESH_TOKEN).needs_sign_in());
+        assert!(!token(400, "invalid_client").needs_sign_in());
+        assert!(!token(503, "unknown error").needs_sign_in());
+        assert!(!CloudError::RateLimited(30).needs_sign_in());
+        assert!(!CloudError::ApiStatus(401).needs_sign_in());
+    }
+    #[test]
+    fn an_expired_token_without_a_refresh_token_marks_the_client_signed_out() {
+        let client = CloudClient::new(
+            OAuthConfig {
+                provider: CloudProvider::Gmail,
+                client_id: "test".into(),
+                client_secret: None,
+            },
+            TokenSet {
+                access_token: "expired".into(),
+                refresh_token: None,
+                expires_at_ms: 0,
+            },
+        )
+        .unwrap();
+        // The refresh fails before any request leaves the machine.
+        let error = client.access_token().unwrap_err();
+        assert!(error.needs_sign_in());
+        assert!(client.signed_out());
     }
 }

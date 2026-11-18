@@ -104,6 +104,11 @@ struct SavedConfig {
     google_photos_enabled: bool,
     #[serde(default)]
     google_calendar_enabled: bool,
+    /// The provider rejected the saved sign-in during a sync (see
+    /// `CloudError::needs_sign_in`). Cleared by the next successful sync or by
+    /// `reauthorize_account`, which replaces the token in place.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    needs_sign_in: bool,
 }
 
 /// Account-setup presets that still use the generic IMAP path.
@@ -584,6 +589,11 @@ enum Request {
     RemoveAccount {
         account_id: String,
     },
+    /// Sign a Google or Microsoft account in again in the browser and replace
+    /// its saved token, keeping the account and its downloaded mail.
+    ReauthorizeAccount {
+        account_id: String,
+    },
     SyncAccount {
         account_id: String,
     },
@@ -746,6 +756,11 @@ fn google_sign_in_failure(error: mail_cloud::CloudError) -> String {
 fn is_gmail_imap_host(host: &str) -> bool {
     let host = host.trim().trim_end_matches('.');
     host.eq_ignore_ascii_case(GMAIL_IMAP_HOST) || host.eq_ignore_ascii_case("imap.googlemail.com")
+}
+/// The sync error for an account whose provider rejected the saved sign-in.
+fn signed_out_message(provider: &Provider) -> String {
+    let name = if *provider == Provider::Microsoft { "Microsoft" } else { "Google" };
+    format!("{name} signed this account out. Sign in again to get new mail.")
 }
 fn action_retry_after_ms(error: &str) -> u64 {
     error
@@ -1349,7 +1364,7 @@ impl MailService {
             Request::UndoTriage { operation_id } => {
                 self.value(self.store.undo_triage(&operation_id))
             }
-            Request::ListAccounts => self.value(self.store.list_accounts()),
+            Request::ListAccounts => self.list_accounts(),
             Request::ListSendAs { account_id } => {
                 let account = self.account(&account_id)?;
                 // A seeded demo account has no Gmail client to ask; like IMAP
@@ -1796,6 +1811,7 @@ impl MailService {
                 self.remove_account(&account_id)?;
                 Ok(Value::Null)
             }
+            Request::ReauthorizeAccount { account_id } => self.reauthorize_account(&account_id),
             Request::SyncAccount { account_id } => self.sync_account(&account_id),
             Request::SyncAll => {
                 let accounts = self.store.list_accounts().map_err(|e| e.to_string())?;
@@ -2104,6 +2120,7 @@ impl MailService {
             client_secret: None,
             google_photos_enabled: false,
             google_calendar_enabled: false,
+            needs_sign_in: false,
         };
         self.persist_account(&account,saved,&config.secret,None)?;
         Ok(json!(account))
@@ -2164,6 +2181,7 @@ impl MailService {
             client_secret,
             google_photos_enabled: false,
             google_calendar_enabled: false,
+            needs_sign_in: false,
         };
         let tokens=client.tokens();
         self.persist_account(&account,saved,&serde_json::to_string(&tokens).map_err(|e|e.to_string())?,Some(tokens))?;
@@ -2296,6 +2314,7 @@ impl MailService {
         }
         let saved = self.saved_config(id)?;
         let mut warnings = Vec::new();
+        let mut signed_out = false;
         // Read current mail before draining old changes. Pending intents remain
         // overlaid by mail-core during reconciliation, so this cannot undo local triage.
         let messages = match account.provider {
@@ -2304,13 +2323,26 @@ impl MailService {
                 .and_then(|client| self.store.run_sync(&client, id).map_err(|e| e.to_string())),
             Provider::Gmail | Provider::Microsoft => self.cloud_client(&saved).and_then(|client| {
                 let result = self.store.run_sync(&client.client, id).map_err(|e| e.to_string());
+                signed_out = client.signed_out();
                 if let Err(error) = self.save_cloud_tokens(&saved, &client) {
                     warnings.push(format!("refreshed credentials could not be saved: {error}"));
                 }
                 result
             }),
         };
-        let incoming_error = messages.as_ref().err().cloned();
+        // Remember a rejected sign-in so the apps can show it on the account;
+        // forget it once mail arrives again (signed in elsewhere, or a fluke).
+        let needs_sign_in = signed_out || (saved.needs_sign_in && messages.is_err());
+        if needs_sign_in != saved.needs_sign_in {
+            if let Err(error) = self.set_needs_sign_in(&saved, needs_sign_in) {
+                warnings.push(format!("account state could not be saved: {error}"));
+            }
+        }
+        let incoming_error = match &messages {
+            Err(_) if signed_out => Some(signed_out_message(&account.provider)),
+            Err(error) => Some(error.clone()),
+            Ok(_) => None,
+        };
         let report = self.flush_actions(&account, &saved)?;
         warnings.extend(report.warnings);
         if let Some(error) = &incoming_error {
@@ -2326,7 +2358,101 @@ impl MailService {
         if let Some(error) = incoming_error {
             result["sync_error"] = Value::String(error);
         }
+        if needs_sign_in {
+            result["needs_sign_in"] = Value::Bool(true);
+        }
         Ok(result)
+    }
+    /// `list_accounts`: the cached accounts, each with `needs_sign_in` from its
+    /// saved settings.
+    fn list_accounts(&self) -> Result<Value, String> {
+        let accounts = self.store.list_accounts().map_err(|e| e.to_string())?;
+        // The account list stays readable even if the settings file is not.
+        let signed_out: HashSet<String> = self
+            .load_configs()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|saved| saved.needs_sign_in)
+            .map(|saved| saved.account_id)
+            .collect();
+        let mut value = serde_json::to_value(accounts).map_err(|e| e.to_string())?;
+        for row in value.as_array_mut().into_iter().flatten() {
+            let needs = row["id"].as_str().is_some_and(|id| signed_out.contains(id));
+            row["needs_sign_in"] = Value::Bool(needs);
+        }
+        Ok(value)
+    }
+    /// Record whether this account's sign-in was rejected. A newer
+    /// authorization (another generation) is left alone.
+    fn set_needs_sign_in(&self, saved: &SavedConfig, needs_sign_in: bool) -> Result<(), String> {
+        let _lifecycle = self.lifecycle_lock()?;
+        let mut configs = self.configs.lock().map_err(|_| "config lock poisoned")?;
+        let mut next = self.verify_generation(saved)?;
+        let Some(item) = next
+            .iter_mut()
+            .find(|item| item.account_id == saved.account_id)
+        else {
+            return Ok(());
+        };
+        if item.needs_sign_in != needs_sign_in {
+            item.needs_sign_in = needs_sign_in;
+            self.save_configs(&next)?;
+        }
+        *configs = next;
+        Ok(())
+    }
+    /// `reauthorize_account`: a new browser sign-in for the same mailbox. The
+    /// account, its settings and its downloaded mail stay; only the saved token
+    /// is replaced, and only if the person signed in as this mailbox.
+    fn reauthorize_account(&self, account_id: &str) -> Result<Value, String> {
+        let account = self.account(account_id)?;
+        let saved = self.saved_config(account_id)?;
+        let provider = match saved.provider {
+            // Same gates as start_oauth (see docs/account-setup.md).
+            Provider::Gmail if !release::GOOGLE_OAUTH_PUBLIC => {
+                return Err("Google sign-in isn't available in this build. Remove the account and add it again with an app password.".into());
+            }
+            Provider::Gmail => CloudProvider::Gmail,
+            Provider::Microsoft if !release::MICROSOFT_ACCOUNTS => {
+                return Err("Outlook and Hotmail accounts aren't available in this release yet.".into());
+            }
+            Provider::Microsoft => CloudProvider::Microsoft,
+            _ => return Err("This account signs in with a password, not in the browser.".into()),
+        };
+        let config = OAuthConfig {
+            provider,
+            client_id: saved.client_id.clone().ok_or("OAuth client ID missing")?,
+            client_secret: saved.client_secret.clone(),
+        };
+        // Photo access shares the mail grant; ask for it again so it keeps working.
+        let tokens = if provider == CloudProvider::Gmail
+            && saved.google_photos_enabled
+            && release::GOOGLE_CONTACT_PHOTOS
+        {
+            authorize_google_photos(&config, &account.email)
+        } else {
+            authorize_interactive(&config, Some(&account.email))
+        }
+        .map_err(|error| match provider {
+            CloudProvider::Gmail => google_sign_in_failure(error),
+            CloudProvider::Microsoft => error.to_string(),
+        })?;
+        if tokens.refresh_token.is_none() {
+            return Err("The sign-in didn't include offline access. Please try again.".into());
+        }
+        let client = CloudClient::new(config, tokens).map_err(|e| e.to_string())?;
+        let (email, _) = client.identity().map_err(|e| e.to_string())?;
+        if mail_imap::mailbox_identity(&email) != mail_imap::mailbox_identity(&account.email) {
+            return Err(format!(
+                "You signed in as {}. Sign in as {} to reconnect this account.",
+                email.trim(),
+                account.email
+            ));
+        }
+        self.commit_grant(&saved, false, client.tokens(), |item| {
+            item.needs_sign_in = false
+        })?;
+        Ok(json!({"account_id": account.id, "needs_sign_in": false}))
     }
     /// A seeded demo account that was never given provider settings. It has
     /// no server or OAuth client behind it, so provider requests answer locally.

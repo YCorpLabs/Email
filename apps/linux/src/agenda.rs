@@ -3161,8 +3161,17 @@ pub(super) fn open(ui: &Rc<Ui>) {
     rail.append(&help);
     let refresh = icon_button("view-refresh-symbolic", "Refresh calendar");
     rail.append(&refresh);
+    // Bookings and links: only while Scheduling is connected.
     let bookings = gtk::Button::with_label("Bookings and links");
-    bookings.set_visible(booking::configured());
+    bookings.set_visible(booking::connected());
+    {
+        let weak = bookings.downgrade();
+        booking::on_change(move || {
+            let Some(button) = weak.upgrade() else { return false };
+            button.set_visible(booking::connected());
+            true
+        });
+    }
     {let ui = ui.clone(); bookings.connect_clicked(move |_|booking::open(&ui,None));}
     let free = gtk::Button::with_label("Find free time");
     free.add_css_class("flat");

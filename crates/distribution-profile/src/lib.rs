@@ -396,6 +396,9 @@ mod tests {
         // Off for official releases until Google verification passes.
         assert!(!official.flag("GOOGLE_OAUTH_PUBLIC"));
         assert!(catalog("development").flag("GOOGLE_OAUTH_PUBLIC"));
+        // Released builds leave Scheduling out until it launches; development keeps it.
+        assert!(official.get("SCHEDULING_ORIGIN").is_empty());
+        assert_eq!(catalog("development").get("SCHEDULING_ORIGIN"), "https://meet.ycorplabs.com");
         assert_eq!(
             official.get("UPDATE_FEED_URL"),
             "https://updates.ycorplabs.com/email/macos/appcast.xml"

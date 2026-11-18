@@ -65,8 +65,9 @@ The `.deb` files come from `scripts/package-linux-release.sh` with the
 `official` profile and the `distribution` channel, built in Ubuntu 24.04
 containers. That is the official identity: app ID and data directory
 `com.ycorplabs.Mail`, the production Google desktop client (Google sign-in stays
-off until Google's review passes), the support address and Scheduling. The
-binary links OpenSSL 3, which Arch ships as `openssl-3`.
+off until Google's review passes) and the support address. Scheduling stays
+off until it launches. The binary links OpenSSL 3, which Arch ships as
+`openssl-3`.
 
 The two packages use different app IDs, data directories and Secret Service
 collections. Switching between them means adding accounts again.

@@ -21,6 +21,35 @@ The verifier relocates the app outside the repository, verifies signatures, runs
 
 The distribution launcher accepts only its signed bundled libraries and checks they meet its own designated signing requirement. `CoreBridge` fails closed if a release library is missing; it does not search the environment or current directory. Public builds enable hardened runtime without disabling library validation. Locally signed alphas use the same explicit signature checks without claiming Developer ID-only hardened runtime compatibility.
 
+## DMG window
+
+`scripts/make-macos-dmg.sh` builds the DMG for `--local-alpha` and
+`--distribute`. It writes the Finder window layout (`.DS_Store`) directly with
+[dmgbuild](https://github.com/dmgbuild/dmgbuild), so it needs no Finder
+session or AppleScript. The window opens at a set size as an icon view without
+toolbar or sidebar: Email on the left, Applications on the right, and a plain light
+background with an arrow and "Drag Email to Applications"
+(`scripts/release/dmg-background.swift`, drawn at 1x and 2x). The volume icon
+is the app icon. A local alpha puts `LOCAL-ALPHA.txt` below the icons in a
+taller window. Finder shows the background unchanged in dark mode and draws
+the labels dark on it.
+
+dmgbuild and its two dependencies are pinned by version and SHA-256 in
+`scripts/release/dmgbuild-requirements.txt`. The first run installs them into
+`target/tools/`, which needs network access and Python 3.10 or later
+(`EMAIL_DMG_PYTHON` selects another interpreter). Before the packager signs,
+notarizes and staples the DMG, the script mounts it and checks the app's
+signature, the Applications link and the layout files. The Sparkle update zip
+does not change.
+
+To check a layout change without a release build, pass any built `Email.app`:
+
+```sh
+./scripts/make-macos-dmg.sh --app dist-release/local-alpha/Email.app \
+  --volume-name Email --output /tmp/Email-layout.dmg
+open /tmp/Email-layout.dmg
+```
+
 ## Production bundle ID
 
 Official production builds use bundle ID `com.ycorplabs.mail` from

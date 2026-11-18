@@ -176,7 +176,7 @@ check = r'''
         expect((agentRequests[0]["preview"] as? String ?? "").hasPrefix("To Maya Chen · Hi Maya, Could we move Friday's"), "list preview: recipient and the start of the body")
         let sentAt = Date(timeIntervalSince1970: ((agentRequests[0]["created_at_ms"] as? NSNumber)?.doubleValue ?? 0) / 1000)
         expect(texts(AgentRequestRows.cell(agentRequests[0])).contains(MailListTime.string(for: sentAt)), "request time as the inbox shows times")
-        expect(search.isHidden && searchFiltersButton.isHidden && syncStatus.stringValue == "3 waiting", "no search or filters, just the count")
+        expect(search.isHidden && searchFiltersButton.isHidden && agentRequestsStatus.stringValue == "3 waiting" && !agentRequestsStatus.isHidden && syncStatus.isHidden, "no search or filters, just the count")
         _ = key("/", code: 44)
         expect((firstResponder as? NSText)?.delegate !== search, "/ doesn't reach the hidden search")
         capture("01-requests-send", self)
@@ -192,6 +192,7 @@ check = r'''
         showInbox(scope: .all)
         settle()
         expect(!search.isHidden && !searchFiltersButton.isHidden && !search.isHiddenOrHasHiddenAncestor, "search and filters come back after leaving")
+        expect(agentRequestsStatus.isHidden && !syncStatus.isHidden && !syncStatus.stringValue.contains("waiting"), "the inbox subtitle drops the waiting count after leaving")
 
         openAgentAccess()
         wait("settings link to waiting requests") { shows("3 requests waiting", in: settings) && button("Review", in: settings) != nil }

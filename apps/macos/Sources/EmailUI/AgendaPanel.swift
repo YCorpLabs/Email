@@ -22,6 +22,8 @@ import AppKit
   private(set) var workspaceView: NSView?
   private weak var embeddedHost: NSWindow?
   private var onClose: (() -> Void)?
+  /// Bookings and links: in the rail only while Scheduling is connected.
+  private weak var bookingsButton: NSButton?
   private var interactionWindow: NSWindow? { embeddedHost ?? window }
   private let search = NSSearchField()
   private var selectedEvents: [[String:Any]] = []
@@ -143,6 +145,7 @@ import AppKit
   }
   required init?(coder: NSCoder) { fatalError() }
   @objc private func accountsDidChange() { resume() }
+  @objc private func schedulingDidChange() { bookingsButton?.isHidden = !SchedulingConnection.shared.isConnected }
   override func close() {
     searchPopover?.close()
     detailPopover?.close()
@@ -207,7 +210,12 @@ import AppKit
     legendScroll.heightAnchor.constraint(greaterThanOrEqualToConstant:70).isActive=true
     let railSpacer=NSView();railSpacer.setContentHuggingPriority(.defaultLow,for:.vertical);rail.addArrangedSubview(railSpacer);railSpacer.heightAnchor.constraint(equalToConstant:0).isActive=true
     let zone=label(TimeZone.current.identifier.replacingOccurrences(of:"_",with:" "));zone.font = .systemFont(ofSize:10);rail.addArrangedSubview(zone)
-    if DistributionProfile.current?.hasScheduling == true { rail.addArrangedSubview(action("Bookings and links", { [weak self] in guard let self else { return }; if let mail = self.interactionWindow as? MailWindow { mail.showBookingPanel() } else { BookingPanel.present(core: self.core) } })) }
+    if SchedulingConnection.shared.available {
+      let bookings=action("Bookings and links", { [weak self] in guard let self else { return }; if let mail = self.interactionWindow as? MailWindow { mail.showBookingPanel() } else if SchedulingConnection.shared.isConnected { BookingPanel.present(core: self.core) } })
+      bookings.isHidden = !SchedulingConnection.shared.isConnected
+      rail.addArrangedSubview(bookings);bookingsButton=bookings
+      NotificationCenter.default.addObserver(self,selector:#selector(schedulingDidChange),name:SchedulingConnection.changed,object:nil)
+    }
     let free=action("Find free time",{[weak self] in self?.availability()});free.toolTip="Find available 30-minute slots";rail.addArrangedSubview(free)
     let divider=NSBox();divider.boxType = .separator;outer.addArrangedSubview(divider);divider.widthAnchor.constraint(equalToConstant:1).isActive=true;divider.heightAnchor.constraint(equalTo:outer.heightAnchor).isActive=true
     let stack=NSStackView();stack.orientation = .vertical;stack.alignment = .leading;stack.spacing=0

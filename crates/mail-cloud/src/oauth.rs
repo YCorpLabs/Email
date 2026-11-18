@@ -296,10 +296,14 @@ fn authorize_interactive_scoped(
     Ok(token_set(response.json()?, None))
 }
 
+/// [`refresh`] without a stored refresh token; see [`CloudError::needs_sign_in`].
+pub(crate) const MISSING_REFRESH_TOKEN: &str = "refresh token is missing; reconnect account";
+
 pub fn refresh(config: &OAuthConfig, old: &TokenSet) -> Result<TokenSet> {
-    let token = old.refresh_token.as_deref().ok_or(CloudError::Response(
-        "refresh token is missing; reconnect account",
-    ))?;
+    let token = old
+        .refresh_token
+        .as_deref()
+        .ok_or(CloudError::Response(MISSING_REFRESH_TOKEN))?;
     let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
     let mut form = vec![
         ("client_id", config.client_id.as_str()),

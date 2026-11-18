@@ -1,6 +1,6 @@
 pkgbase = email-ycorp
 	pkgdesc = Keyboard-first, local-first desktop email client (beta, built from source)
-	pkgver = 0.1.0beta3
+	pkgver = 0.1.0beta4
 	pkgrel = 1
 	url = https://github.com/YCorpLabs/Email
 	arch = x86_64
@@ -21,7 +21,7 @@ pkgbase = email-ycorp
 	depends = webkitgtk-6.0
 	optdepends = gnome-keyring: Secret Service credential storage (or another Secret Service provider)
 	options = !lto
-	source = email-ycorp-0.1.0beta3.tar.gz::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.3/Email-0.1.0-beta.3.tar.gz
-	sha256sums = b5fa74274f8d0bfd4c60d05ca2dd913464286a32f957e19548d076d850b51804
+	source = email-ycorp-0.1.0beta4.tar.gz::https://github.com/YCorpLabs/Email/releases/download/v0.1.0-beta.4/Email-0.1.0-beta.4.tar.gz
+	sha256sums = 02f452ce30cb1f18193d7f5bda6645a8e23a5975370d8677ca8a751f975eda71
 
 pkgname = email-ycorp

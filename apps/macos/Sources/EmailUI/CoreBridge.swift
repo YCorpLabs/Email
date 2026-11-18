@@ -6,6 +6,9 @@ struct MailAccount: Sendable {
     let provider: String
     let email: String
     let displayName: String
+    /// The provider stopped accepting the saved sign-in; mail stops arriving
+    /// until the account signs in again (`reauthorize_account`).
+    var needsSignIn = false
 }
 
 struct RenderedMessage: Sendable {
@@ -333,7 +336,7 @@ final class CoreBridge: @unchecked Sendable {
         if isBooking && dedicatedBooking == nil { throw MailServiceError(message:"Scheduling connection unavailable; cached mail remains readable.") }
         // Account setup can wait on a browser or a slow mail server. Run it on its
         // own handle so the window and cached reads never queue behind it.
-        let isOAuth = operation == "start_oauth" || operation == "add_imap_account"
+        let isOAuth = operation == "start_oauth" || operation == "add_imap_account" || operation == "reauthorize_account"
         // Connecting an agent runs the claude or codex CLI, which can take a few
         // seconds; give it its own handle so cached reads never wait behind it.
         let isAgentClient = operation == "agent_clients" || operation == "connect_agent_client"
@@ -434,7 +437,8 @@ final class CoreBridge: @unchecked Sendable {
             guard let id = item["id"] as? String,
                   let provider = item["provider"] as? String,
                   let email = item["email"] as? String else { return nil }
-            return MailAccount(id: id, provider: provider, email: email, displayName: item["display_name"] as? String ?? email)
+            return MailAccount(id: id, provider: provider, email: email, displayName: item["display_name"] as? String ?? email,
+                               needsSignIn: item["needs_sign_in"] as? Bool == true)
         }
     }
 

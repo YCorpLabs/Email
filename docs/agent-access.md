@@ -20,8 +20,9 @@ macOS inbox shows times: today the time, older the date), a title ("Send:
 ‹subject›", "Archive 2 conversations", "Wants to use ‹account›") and one
 preview line ("To Maya Chen · Hi Maya, could we…", the senders, or "Agent
 access is off for this account"). The header says "3 waiting", or nothing
-when the list is empty. The search field and filter button are hidden in this
-view and come back when you leave it; / does nothing here, and Search mail or
+when the list is empty; leaving shows the list's own subtitle again (the mail
+status, such as "Updated just now", on macOS). The search field and filter
+button are hidden in this view and come back when you leave it; / does nothing here, and Search mail or
 Refine search from the command palette go back to the inbox first.
 
 **Reader.**
@@ -162,6 +163,15 @@ scripts; `EMAIL_AGENT_CLI_PATH` limited the search to their directory.
   for new requests, the database checked after each decision, and captures
   in dark and light checked by eye (including "3 waiting" with no search row,
   an empty header with nothing waiting, and the search row back in Drafts).
+- 17 Nov 2026, the subtitle after leaving: macOS kept "1 waiting" under the
+  inbox title after Agent requests. Agent requests now have their own
+  subtitle label, so the mail status is never overwritten. Checked off-screen
+  in the real AppKit window (cacheDisplay captures, the window transparent and
+  never key): "1 waiting" in Agent requests, "Updated just now" back in the
+  inbox. `run-launch-demo-checks.py` (run off-screen, all checks passed) and
+  `run-agent-access-checks.py` (updated, not run: it opens windows on screen)
+  now check it. Linux already reset the subtitle on every view change
+  ("Your mail, up to date"), confirmed under Xvfb on main and on the fix.
 - Not verified: a macOS notification (the harness isn't an app bundle, so it
   can't post one), clicking a notification (the Linux action was triggered
   directly), Wayland or GNOME, the AUR build, and a signed release bundle.

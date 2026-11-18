@@ -22,7 +22,7 @@ and Linux through `account_setup::build_features`.
 | Input | Values | Default | Effect |
 | --- | --- | --- | --- |
 | `EMAIL_RELEASE_CHANNEL` | development, local-alpha, fixture, distribution | development; the packagers set local-alpha, fixture or distribution | `distribution` sets `cfg(email_distribution)`: no Contacts scope request is compiled in and contact photos are hidden, so the first release does not need Google to approve the Contacts scopes; Outlook/Hotmail is hidden and refused until it has been tested. |
-| Profile `GOOGLE_OAUTH_PUBLIC` (`config/profiles`) | true, false | false in `official`; true in `development` and `unofficial` | "Google OAuth publicly available". When false, account setup offers no Google sign-in and `start_oauth` refuses Gmail. Accounts already connected through Google sign-in keep syncing, sending and connecting Calendar with their stored client, but cannot be re-authorized in that build; re-adding Gmail there uses an app password. A `distribution`-channel build with a non-distribution profile keeps it false. |
+| Profile `GOOGLE_OAUTH_PUBLIC` (`config/profiles`) | true, false | false in `official`; true in `development` and `unofficial` | "Google OAuth publicly available". When false, account setup offers no Google sign-in and `start_oauth` refuses Gmail. Accounts already connected through Google sign-in keep syncing, sending and connecting Calendar with their stored client, but cannot be re-authorized in that build (`reauthorize_account` refuses); re-adding Gmail there uses an app password. A `distribution`-channel build with a non-distribution profile keeps it false. |
 | `EMAIL_GOOGLE_OAUTH_PUBLIC` | true, false, unset | unset | Overrides the profile value for one build. |
 
 `scripts/package-macos-release.sh` and `scripts/linux-build-config.sh` export
@@ -207,6 +207,59 @@ When Google sign-in is offered but may not work for this person, a "Use Gmail
 (app password) instead" link appears: while the browser sign-in waits, after it
 fails, or when no Google client is configured. Google's denial and timeout
 errors name the app-password path.
+
+### Signed-out accounts
+
+When Google or Microsoft stops accepting an account's saved sign-in (the
+refresh token expired or was revoked, `invalid_grant`), retrying cannot help,
+so the apps show it on the account instead of as a sync failure:
+
+- Sidebar: the account's row shows a warning triangle in place of its unread
+  count, with "<address> is signed out. Click to sign in again." as its
+  tooltip and "<address>, signed out" for screen readers.
+- List: a notice above the conversations, "<address> is signed out", with
+  **Sign in again** under it. It shows in every view except another account's
+  inbox; with several signed-out accounts it reads "<address> and 1 more are
+  signed out". Two lines, so a long address is shortened in the middle and
+  never pushes the button out.
+- Status line: "Updated just now · 1 account signed out" on macOS, "1 account
+  signed out" under the title on Linux. A manual refresh (⌘R / Ctrl+R) opens no
+  alert for a signed-out account; other failures still do on macOS.
+- Manage accounts: "<address> (signed out)".
+- **Sign in again** calls `reauthorize_account`: the browser opens Google (or
+  Microsoft) with the address suggested, the button reads "Waiting for
+  browser…", and on success the token is replaced in place, the account syncs
+  and the mark goes away. Downloaded mail, settings, splits and agent access
+  stay. Signing in as another address fails with a message and changes
+  nothing.
+
+Development builds use the `email-desktop` Google project, which is in Testing,
+so Google expires their refresh tokens 7 days after sign-in; they reach this
+state weekly. Builds without public Google sign-in refuse `reauthorize_account`
+for Google, as they refuse `start_oauth`.
+
+### Verified (18 Nov 2026)
+
+- Engine: `cargo test --workspace --locked` passes, with a test that a dead
+  token marks the account in `sync_account` and `list_accounts`, that a new
+  grant clears it and keeps photo and Calendar settings, and that a sync
+  holding an older authorization cannot mark a newer one.
+- macOS: `apps/macos/Tests/run-signed-out-checks.py` (off-screen, light and
+  dark) passes against a `test-fixture` library. The demo's personal account
+  gets a saved token that has expired with no refresh token, so the real launch
+  sync finds it signed out without any network. Checked: the sidebar row,
+  the notice in All Inboxes and the account's inbox and not in the other
+  account's, ⌘R without an alert, the status line and its tooltip, a
+  1000 × 760 window, Manage accounts, and Sign in again opening Google sign-in
+  with the address as login hint (a fake `open` records it). Screenshots
+  checked by eye.
+- Linux: `apps/linux/qa/signed-out.sh` in the verify container under Xvfb,
+  light and dark, with a `qa-fixture` build; the running executable matched
+  the built one. The same states, with a fake `xdg-open`. The Linux shell
+  tests (70) pass. Screenshots checked by eye.
+- Not verified: a real `invalid_grant` from Google, the browser callback
+  finishing a sign-in again (it needs a real Google sign-in), Microsoft, and
+  Wayland.
 
 ## Shared service behavior (`mail-imap`, `mail-service`)
 

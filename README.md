@@ -136,10 +136,11 @@ update feed until you add your own.
   cursors use size limits and staged storage, so malformed or oversized mail
   cannot stall sync or exhaust memory.
 - **Other network requests:**
-  - Scheduling and booking links contact the Scheduling service named by the
-    build's profile; builds without one hide them. Per-draft open tracking
-    exists only in development-profile builds; official and unofficial builds
-    compile it out ([reader privacy](docs/reader-privacy.md));
+  - booking links appear only after you connect Scheduling in Manage
+    accounts. They use the Scheduling service named by the build's profile;
+    builds without one don't offer it. Per-draft open tracking exists only in
+    development-profile builds; official and unofficial builds compile it out
+    ([reader privacy](docs/reader-privacy.md));
   - Google contact photos are opt-in;
   - the macOS app looks up published BIMI logos for organization senders by
     DNS and HTTPS, whatever the remote-image setting;

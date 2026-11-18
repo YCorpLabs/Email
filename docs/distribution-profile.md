@@ -38,7 +38,7 @@ shell and the scripts always read the same file. Check a selection with
 | Linux dispatcher unit | `email-dispatch` | `com.ycorplabs.Mail.dispatch` | `invalid.email.Unofficial.dispatch` |
 | MCP registration name | `email` | `email` | `email-unofficial` |
 | Support and feedback | official addresses | official addresses | none |
-| Scheduling origin | official service | official service | none |
+| Scheduling origin | official service | none (until Scheduling launches) | none |
 | Update hosts | none | `ycorplabs.com`, `updates.ycorplabs.com` | none |
 | macOS update feed and key | none | `https://updates.ycorplabs.com/email/macos/appcast.xml` | none |
 | Linux APT repository | none | `https://updates.ycorplabs.com/email/apt`, key `20B0…ABDA` | none |
@@ -143,7 +143,11 @@ Unset values remove features rather than falling back:
 
 - no support addresses: the chooser explains that the build has none;
 - no Scheduling origin: Bookings, booking links, Track opens and Recent opens
-  are hidden in both shells, and the engine refuses Scheduling requests;
+  are hidden in both shells, the MCP server doesn't list its booking and
+  open-activity tools, and the engine refuses Scheduling requests. Official
+  builds ship this way until Scheduling launches. With an origin, booking
+  surfaces still wait until someone connects Scheduling in Manage accounts
+  ([Scheduling](scheduling.md));
 - no update hosts: the macOS updater stays disabled and packaging refuses a
   feed URL;
 - no `LINUX_APT_REPOSITORY`: the `.deb` adds no package repository. The
