@@ -246,7 +246,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private enum Folder { case inbox, drafts, outbox, agentRequests }
     private enum InboxScope: Equatable, Sendable { case all, unread, pinned, snoozed, followups, archived, sent, account(String), split(String), label(String) }
     private var folder: Folder = .inbox
-    private var inboxScope: InboxScope = .all
+    private var inboxScope: InboxScope = .all { didSet { if inboxScope != oldValue { updateSignedOutNotice() } } }
     private var threads: [MailThread] = []
     private var drafts: [MailDraft] = []
     private var outboxItems: [OutboxItem] = []
@@ -297,6 +297,13 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private let remoteImagesNoticeButton = NSButton(title: "Load images", target: nil, action: nil)
     private var readerBodyBelowHeader: NSLayoutConstraint?
     private var readerBodyBelowNotice: NSLayoutConstraint?
+    // Shown above the list while an account in view is signed out.
+    private let signedOutNotice = NSView()
+    private let signedOutNoticeText = NSTextField(labelWithString: "")
+    private let signedOutNoticeSuffix = NSTextField(labelWithString: "")
+    private let signedOutNoticeButton = NSButton(title: "Sign in again", target: nil, action: nil)
+    private var signedOutNoticeAccountID: String?
+    private var signingInAccountID: String?
     private let unsubscribeButton = NSButton(title: "Unsubscribe", target: nil, action: nil)
     private var unsubscribeURL: URL?
     private var currentHTML: String?
@@ -861,7 +868,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inbox.addSubview(agentRequestsStatus)
         inbox.addSubview(search)
         inbox.addSubview(searchFiltersButton)
-        let inboxControls = NSStackView(views: [scopeTabs, triageBar])
+        buildSignedOutNotice()
+        let inboxControls = NSStackView(views: [scopeTabs, triageBar, signedOutNotice])
         inboxControls.orientation = .vertical
         inboxControls.alignment = .leading
         inboxControls.spacing = 6
@@ -882,6 +890,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             searchFiltersButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), searchFiltersButton.centerYAnchor.constraint(equalTo: search.centerYAnchor), searchFiltersButton.widthAnchor.constraint(equalToConstant: 24), searchFiltersButton.heightAnchor.constraint(equalToConstant: 24),
             inboxControls.leadingAnchor.constraint(equalTo: search.leadingAnchor),
             inboxControls.trailingAnchor.constraint(lessThanOrEqualTo: search.trailingAnchor),
+            signedOutNotice.widthAnchor.constraint(equalTo: search.widthAnchor),
             belowSearch,
             inboxScroll.leadingAnchor.constraint(equalTo: inbox.leadingAnchor), inboxScroll.trailingAnchor.constraint(equalTo: inbox.trailingAnchor), inboxScroll.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 8), inboxScroll.bottomAnchor.constraint(equalTo: inbox.bottomAnchor),
             inboxEmpty.centerXAnchor.constraint(equalTo: inbox.centerXAnchor), inboxEmpty.topAnchor.constraint(equalTo: inboxControls.bottomAnchor, constant: 82), inboxEmpty.widthAnchor.constraint(lessThanOrEqualToConstant: 290)
@@ -1221,6 +1230,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         attachmentCard.layer?.borderColor = resolved(EmailTheme.line)
         remoteImagesNotice.layer?.backgroundColor = resolved(EmailTheme.inbox)
         remoteImagesNotice.layer?.borderColor = resolved(EmailTheme.line)
+        signedOutNotice.layer?.backgroundColor = resolved(EmailTheme.warning.withAlphaComponent(0.08))
+        signedOutNotice.layer?.borderColor = resolved(EmailTheme.warning.withAlphaComponent(0.3))
         emptyAction.layer?.backgroundColor = resolved(EmailTheme.accent)
         table.backgroundColor = EmailTheme.inbox
         inboxScroll.backgroundColor = EmailTheme.inbox
@@ -2162,8 +2173,16 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             sidebarAccounts.addArrangedSubview(heading("No accounts yet", size: 11, weight: .regular, color: EmailTheme.muted))
         }
         for (index, account) in knownAccounts.enumerated() {
-            let button = sidebarButton(account.email, symbol: "person.crop.circle", action: #selector(showAccountClicked(_:)), active: calendarWorkspace == nil && inboxScope == .account(account.id) && folder == .inbox)
+            let button = sidebarButton(account.email, symbol: account.needsSignIn ? "exclamationmark.triangle" : "person.crop.circle", action: #selector(showAccountClicked(_:)), active: calendarWorkspace == nil && inboxScope == .account(account.id) && folder == .inbox)
             button.tag = index
+            if account.needsSignIn {
+                // The mark replaces the unread count: new mail isn't arriving.
+                button.contentTintColor = EmailTheme.warning
+                button.toolTip = "\(account.email) is signed out. Click to sign in again."
+                button.setAccessibilityLabel("\(account.email), signed out")
+                sidebarAccounts.addArrangedSubview(button)
+                continue
+            }
             let count = unreadCounts[account.id] ?? 0
             if count > 0 {
                 button.title = ""
@@ -3001,7 +3020,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     func manageAccountsAlert() -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "Connected accounts"
-        alert.informativeText = knownAccounts.map { "\($0.email) (\($0.provider))" }.joined(separator: "\n")
+        alert.informativeText = knownAccounts.map { "\($0.email) (\($0.needsSignIn ? "signed out" : $0.provider))" }.joined(separator: "\n")
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Remove an account…")
         alert.addButton(withTitle: "Agent Access…")
@@ -3173,9 +3192,14 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                     let successful = rows.filter { $0["error"] == nil && ($0["data"] as? [String: Any])?["sync_error"] == nil }.compactMap { $0["account_id"] as? String }
                     await MailNotifications.shared.recordSync(core: core, successfulAccountIDs: successful)
                     let names = Dictionary(uniqueKeysWithValues: knownAccounts.map { ($0.id, $0.email) })
+                    // A signed-out account has its own notice above the list
+                    // and a mark in the sidebar, so it never opens an alert.
+                    let signedOut = rows.filter { ($0["data"] as? [String: Any])?["needs_sign_in"] as? Bool == true }
+                        .compactMap { $0["account_id"] as? String }
                     let failures = rows.compactMap { row -> String? in
                         guard let error = row["error"] as? String ?? (row["data"] as? [String: Any])?["sync_error"] as? String else { return nil }
                         let id = row["account_id"] as? String ?? "Account"
+                        guard !signedOut.contains(id) else { return nil }
                         return "\(names[id] ?? id): \(error)"
                     }
                     let warnings = rows.flatMap { row in
@@ -3184,8 +3208,12 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                     if !failures.isEmpty {
                         let throttled = failures.allSatisfy { $0.localizedCaseInsensitiveContains("rate limit") }
                         syncStatus.stringValue = throttled ? "Gmail is catching up; retrying shortly" : "Some accounts failed to sync"
-                        syncStatus.toolTip = failures.joined(separator: "\n")
+                        syncStatus.toolTip = (failures + signedOut.map { "\(names[$0] ?? $0) is signed out" }).joined(separator: "\n")
                         if showErrors && !throttled { showNotice(failures.joined(separator: "\n")) }
+                    } else if !signedOut.isEmpty {
+                        let count = signedOut.count == 1 ? "1 account signed out" : "\(signedOut.count) accounts signed out"
+                        syncStatus.stringValue = successful.isEmpty ? count : "Updated just now · \(count)"
+                        syncStatus.toolTip = signedOut.map { "\(names[$0] ?? $0) is signed out" }.joined(separator: "\n")
                     } else if !warnings.isEmpty {
                         syncStatus.stringValue = "Mail updated; a change is still pending"
                         syncStatus.toolTip = warnings.joined(separator: "\n")
@@ -4721,6 +4749,112 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         ])
     }
 
+    /// Two lines so the address never pushes the button out: the address
+    /// (shortened in the middle if it must be) and what happened, then the action.
+    private func buildSignedOutNotice() {
+        signedOutNotice.wantsLayer = true
+        signedOutNotice.layer?.cornerRadius = 8
+        signedOutNotice.layer?.borderWidth = 1
+        signedOutNotice.translatesAutoresizingMaskIntoConstraints = false
+        signedOutNotice.isHidden = true
+        signedOutNotice.setAccessibilityElement(true)
+        signedOutNotice.setAccessibilityRole(.group)
+        let icon = NSImageView(image: NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        icon.contentTintColor = EmailTheme.warning
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        for (label, weight) in [(signedOutNoticeText, NSFont.Weight.medium), (signedOutNoticeSuffix, .regular)] {
+            label.font = .systemFont(ofSize: 12, weight: weight)
+            label.textColor = EmailTheme.ink
+            label.maximumNumberOfLines = 1
+        }
+        signedOutNoticeText.lineBreakMode = .byTruncatingMiddle
+        signedOutNoticeText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        signedOutNoticeSuffix.setContentCompressionResistancePriority(.required, for: .horizontal)
+        signedOutNoticeSuffix.setContentHuggingPriority(.required, for: .horizontal)
+        let line = NSStackView(views: [signedOutNoticeText, signedOutNoticeSuffix])
+        line.orientation = .horizontal
+        line.alignment = .firstBaseline
+        line.spacing = 0
+        signedOutNoticeButton.isBordered = false
+        signedOutNoticeButton.font = .systemFont(ofSize: 12, weight: .semibold)
+        signedOutNoticeButton.contentTintColor = EmailTheme.accent
+        signedOutNoticeButton.target = self
+        signedOutNoticeButton.action = #selector(signInAgainClicked(_:))
+        signedOutNoticeButton.setContentHuggingPriority(.required, for: .horizontal)
+        let text = NSStackView(views: [line, signedOutNoticeButton])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 3
+        text.translatesAutoresizingMaskIntoConstraints = false
+        signedOutNotice.addSubview(icon)
+        signedOutNotice.addSubview(text)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: signedOutNotice.leadingAnchor, constant: 10),
+            icon.centerYAnchor.constraint(equalTo: line.centerYAnchor),
+            text.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: signedOutNotice.trailingAnchor, constant: -10),
+            line.trailingAnchor.constraint(lessThanOrEqualTo: signedOutNotice.trailingAnchor, constant: -10),
+            text.topAnchor.constraint(equalTo: signedOutNotice.topAnchor, constant: 8),
+            text.bottomAnchor.constraint(equalTo: signedOutNotice.bottomAnchor, constant: -7)
+        ])
+    }
+
+    /// The notice names the signed-out account in view: in an account's own
+    /// inbox only that account, elsewhere the first of them.
+    private func updateSignedOutNotice() {
+        var accounts = knownAccounts.filter(\.needsSignIn)
+        if case .account(let id) = inboxScope { accounts = accounts.filter { $0.id == id } }
+        guard let first = accounts.first else {
+            signedOutNoticeAccountID = nil
+            signedOutNotice.isHidden = true
+            return
+        }
+        signedOutNoticeAccountID = first.id
+        let others = accounts.count - 1
+        signedOutNoticeText.stringValue = first.email
+        signedOutNoticeSuffix.stringValue = others == 0 ? " is signed out" : " and \(others) more are signed out"
+        signedOutNotice.toolTip = "New mail won't arrive until you sign in again. Mail you already have stays here."
+        signedOutNotice.setAccessibilityLabel(first.email + signedOutNoticeSuffix.stringValue)
+        let waiting = signingInAccountID == first.id
+        signedOutNoticeButton.title = waiting ? "Waiting for browser…" : "Sign in again"
+        signedOutNoticeButton.isEnabled = !waiting
+        signedOutNoticeButton.setAccessibilityLabel("Sign in again as \(first.email)")
+        signedOutNotice.isHidden = false
+    }
+
+    /// Sign the account in again in the browser. The engine swaps the saved
+    /// token in place, so the account keeps its downloaded mail.
+    @objc private func signInAgainClicked(_ sender: NSButton) {
+        guard let core, signingInAccountID == nil, let id = signedOutNoticeAccountID,
+              let account = knownAccounts.first(where: { $0.id == id }) else { return }
+        signingInAccountID = id
+        updateSignedOutNotice()
+        syncStatus.stringValue = "Finish signing in to \(account.email) in your browser"
+        syncStatus.toolTip = nil
+        Task { @MainActor in
+            defer { signingInAccountID = nil; updateSignedOutNotice() }
+            do {
+                _ = try await core.callAsync(["op": "reauthorize_account", "account_id": id])
+                syncStatus.stringValue = "Signed in. Getting new mail…"
+                knownAccounts = await Task.detached { core.accountRecords() }.value
+                updateAccountChrome()
+                refreshSidebar()
+                if let result = try? await core.callAsync(["op": "sync_account", "account_id": id]) {
+                    scheduleQueuedActionRetry(result)
+                    let error = (result as? [String: Any])?["sync_error"] as? String
+                    syncStatus.stringValue = error == nil ? "Updated just now" : "Signed in · sync will retry"
+                    syncStatus.toolTip = error
+                }
+                refreshInbox()
+            } catch {
+                syncStatus.stringValue = "\(account.email) is still signed out"
+                syncStatus.toolTip = error.localizedDescription
+                showNotice(error.localizedDescription)
+            }
+        }
+    }
+
     /// A new-message composer fills the reader; a reply leaves the message visible.
     private var composeCoversReader: Bool { composePane != nil && replyBodyBottomConstraint == nil }
 
@@ -5280,6 +5414,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private func updateAccountChrome() {
         let empty = hasNoAccounts
         accountOnlySidebarViews.forEach { $0.isHidden = empty }
+        updateSignedOutNotice()
         calendarSidebarButton?.isHidden = !calendarAvailable
         updateAgentRequestsChrome()
         inboxPanel?.isHidden = empty && activityController == nil

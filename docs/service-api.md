@@ -4,7 +4,7 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 
 ## Read operations
 
-- `{"op":"list_accounts"}` → array of `{id, provider, email, display_name}`.
+- `{"op":"list_accounts"}` → array of `{id, provider, email, display_name, needs_sign_in}`. `needs_sign_in` is true while the provider rejects the account's saved sign-in (see synchronization results); the apps mark the account and offer `reauthorize_account`.
 - `{"op":"list_threads","account_id":null,"split_id":null,"unread_only":false,"limit":100,"offset":0}` → cached summaries with SQL paging and filters.
 - `{"op":"list_thread_messages","thread_id":"..."}` → complete cached conversation, oldest first.
 - `{"op":"search","query":"...","limit":100}` → cached summaries.
@@ -26,6 +26,7 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 - `{"op":"add_imap_account","provider":"icloud"|"imap","email":"...","display_name":"...","username":"...","imap_host":"...","imap_port":993,"smtp_host":"...","smtp_port":587,"password":"..."}` → account object. The password goes to the OS credential store; never SQLite/logs. The service tests credentials before saving the account. iCloud and `"preset":"gmail"` own their servers and usernames. For `imap` without a preset, leaving out both hosts makes the engine guess them from the address (`mail_imap::guess_servers`, no lookup).
   On failure the envelope adds `setup_error`: `{"code","message","action":{"label","url"}|null,"detail","servers"|null}`. `message` is one line for the person; `action` is an `https` link that fixes it; `detail` is what the server said (password redacted); `servers` is the guess when `code` is `servers_not_found`. Codes: `google_password`, `apple_password`, `wrong_password`, `imap_disabled`, `web_login`, `too_many_connections`, `unreachable`, `tls`, `mailbox`, `smtp`, `connect`, `servers_not_found`, `invalid` (checked before connecting).
 - `{"op":"start_oauth","provider":"gmail"|"microsoft","client_id":"...","login_hint"?:"..."}` → account object after system-browser OAuth with PKCE and a local loopback callback. This call blocks while the user authorizes; run it on a background thread. No address is needed: the account's address comes from the provider after sign-in. `login_hint` (Google only, optional) is an address the person already typed; Google then skips its account chooser. An implausible hint is dropped, and the account Google returns is used even if it differs from the hint.
+- `{"op":"reauthorize_account","account_id":"..."}` → `{account_id, needs_sign_in:false}` after a new system-browser sign-in for a Google or Microsoft account, with the account's address as `login_hint`. The account, its settings and its cached mail stay; only the saved token is replaced (a Gmail account with contact photos asks for that access again too). It fails without changing anything if the person signs in as another address. Blocks while the user authorizes; run it on a background thread. Refused for Google when the build has no public Google sign-in, as `start_oauth` is.
 - `{"op":"remove_account","account_id":"..."}` → null; removes local configuration, cache, and stored credential after explicit UI confirmation. For a Google sign-in account it first asks Google to revoke the grant. That step is best effort with a 4-second timeout; removal finishes even if it fails. This call can block on the network; run it on a background thread.
 
 ## Mail operations
@@ -129,6 +130,7 @@ does **not** mean every queued provider mutation has finished:
 - `actions_retry_after_ms` is a suggested delay before another pass when work remains or an incoming refresh failed. It is at least 5,000 ms and can increase for provider throttling/errors; it is not an internal timer or completion deadline.
 - `warnings` reports nonfatal conditions, including queued-action failures and refreshed-credential persistence failures.
 - `sync_error`, when present, is the incoming-refresh error. Cached mail remains readable, and the action flush may still have made progress. Inspect this field even when the JSON ABI envelope has `ok:true`.
+- `needs_sign_in:true` means the provider rejected the saved sign-in (the refresh token expired or was revoked; Google and Microsoft answer `invalid_grant`). `sync_error` then says so in one line ("Google signed this account out. Sign in again to get new mail."), and `list_accounts` reports the account with `needs_sign_in` until a later sync succeeds or `reauthorize_account` replaces the token. Retrying cannot fix it, so the apps show it on the account instead of as a sync failure.
 - `sync_in_progress:true` means another handle already holds this account's sync lease. This call did not perform another refresh/flush; it returns zero work counts, the current pending count and a 5,000 ms retry hint.
 
 For `sync_all`, a row with `data.sync_error` has `ok:false` while retaining its

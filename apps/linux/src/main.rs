@@ -131,6 +131,12 @@ button:focus-visible { outline: 1px solid @muted; outline-offset: -1px; }
 .remote-images-text { color: @muted; font-size: 12px; }
 .remote-images-load { background: transparent; color: @ink; font-size: 12px; font-weight: 600; padding: 2px 4px; min-height: 22px; }
 .remote-images-load:hover { background: @hover; }
+.signed-out-notice { background: alpha(@warning, 0.08); border: 1px solid alpha(@warning, 0.3); border-radius: 8px; padding: 7px 10px 6px 10px; }
+.signed-out-address { color: @ink; font-size: 12px; font-weight: 500; }
+.signed-out-text { color: @ink; font-size: 12px; }
+.signed-out-action { background: transparent; color: @ink; font-size: 12px; font-weight: 600; padding: 1px 4px; min-height: 20px; margin-left: -4px; }
+.signed-out-action:hover { background: @hover; }
+.warning-icon { color: @warning; }
 .remote-images-menu button { background: transparent; padding: 5px 10px; font-size: 12px; }
 .remote-images-menu button:hover { background: @hover; }
 /* Thread messages as the macOS message cards: sender left, date right. */
@@ -342,6 +348,17 @@ fn mail_icon(name: &str) -> gtk::DrawingArea {
                 path(&[(4.,20.),(4.,12.),(8.,12.),(8.,20.),(4.,20.)]);
                 path(&[(10.,20.),(10.,5.),(14.,5.),(14.,20.),(10.,20.)]);
                 path(&[(16.,20.),(16.,9.),(20.,9.),(20.,20.),(16.,20.)]);
+            }
+            "dialog-warning-symbolic" => {
+                // The Mac's exclamationmark.triangle: a signed-out account.
+                cr.move_to(12., 3.5);
+                cr.line_to(21.5, 20.);
+                cr.line_to(2.5, 20.);
+                cr.close_path();
+                let _ = cr.stroke();
+                path(&[(12., 9.5), (12., 14.)]);
+                cr.arc(12., 17., 0.9, 0.0, std::f64::consts::TAU);
+                let _ = cr.fill();
             }
             "alarm-symbolic" => {
                 circle(12., 12., 9.);
@@ -1112,6 +1129,15 @@ struct Ui {
     undo_button: gtk::Button,
     inbox_sync_running: Arc<AtomicBool>,
     queue_retry_at: Cell<u64>,
+    /// Accounts whose saved sign-in the provider rejected (`needs_sign_in`).
+    signed_out: RefCell<std::collections::HashSet<String>>,
+    /// The account waiting on a browser sign-in from the notice.
+    signing_in: RefCell<Option<String>>,
+    // Shown above the list while an account in view is signed out.
+    signed_out_notice: gtk::Box,
+    signed_out_address: gtk::Label,
+    signed_out_suffix: gtk::Label,
+    sign_in_again: gtk::Button,
 }
 // Release even if opening the service fails or the worker unwinds.
 struct InboxSyncGuard(Arc<AtomicBool>);
@@ -1239,9 +1265,11 @@ impl Ui {
         });
     }
     fn accounts(&self) -> Vec<Account> {
-        self.request(json!({"op":"list_accounts"}))
-            .and_then(|value| serde_json::from_value(value).map_err(|e| e.to_string()))
-            .unwrap_or_default()
+        let Ok(value) = self.request(json!({"op":"list_accounts"})) else {
+            return Vec::new();
+        };
+        *self.signed_out.borrow_mut() = parity::signed_out_accounts(&value);
+        serde_json::from_value(value).unwrap_or_default()
     }
     fn selected(&self) -> Option<usize> {
         self.list.selected_row()?.widget_name().parse().ok()
@@ -1354,6 +1382,88 @@ impl Ui {
         self.mail_stack
             .set_visible_child_name(if empty { "welcome" } else { "columns" });
     }
+    /// The notice names the signed-out account in view (macOS
+    /// `updateSignedOutNotice`): in an account's own inbox only that account,
+    /// elsewhere the first of them.
+    fn update_signed_out_notice(&self, accounts: &[Account]) {
+        let signed_out = self.signed_out.borrow();
+        let view = self.view.borrow();
+        let shown: Vec<&Account> = accounts
+            .iter()
+            .filter(|account| signed_out.contains(&account.id))
+            .filter(|account| !matches!(&*view, MailView::Account(id) if id != &account.id))
+            .collect();
+        // The line under the title (macOS: "Updated just now · 1 account
+        // signed out"); agent requests use it for their own count.
+        if !matches!(&*view, MailView::AgentRequests) {
+            self.inbox_hint.set_text(&match signed_out.len() {
+                0 => "Your mail, up to date".to_owned(),
+                1 => "1 account signed out".to_owned(),
+                count => format!("{count} accounts signed out"),
+            });
+        }
+        let Some(first) = shown.first() else {
+            self.signed_out_notice.set_visible(false);
+            return;
+        };
+        self.signed_out_notice.set_widget_name(&first.id);
+        self.signed_out_address.set_text(&first.email);
+        let suffix = match shown.len() - 1 {
+            0 => " is signed out".to_owned(),
+            others => format!(" and {others} more are signed out"),
+        };
+        self.signed_out_suffix.set_text(&suffix);
+        self.signed_out_notice
+            .update_property(&[gtk::accessible::Property::Label(&format!("{}{suffix}", first.email))]);
+        let waiting = self.signing_in.borrow().as_deref() == Some(first.id.as_str());
+        self.sign_in_again
+            .set_label(if waiting { "Waiting for browser…" } else { "Sign in again" });
+        self.sign_in_again.set_sensitive(!waiting);
+        self.sign_in_again
+            .update_property(&[gtk::accessible::Property::Label(&format!("Sign in again as {}", first.email))]);
+        self.signed_out_notice.set_visible(true);
+    }
+    /// Sign the account in the notice in again in the browser. The engine
+    /// swaps the saved token in place, so the account keeps its mail.
+    fn sign_in_again(self: &Rc<Self>) {
+        if self.signing_in.borrow().is_some() {
+            return;
+        }
+        let id = self.signed_out_notice.widget_name().to_string();
+        let Some(account) = self.accounts().into_iter().find(|a| a.id == id) else {
+            return;
+        };
+        *self.signing_in.borrow_mut() = Some(id.clone());
+        self.update_signed_out_notice(&self.accounts());
+        self.status
+            .set_text(&format!("Finish signing in to {} in your browser", account.email));
+        let ui = self.clone();
+        workflows::request_async(
+            self.database_path.clone(),
+            json!({"op":"reauthorize_account","account_id":id}),
+            move |result| {
+                ui.signing_in.borrow_mut().take();
+                match result {
+                    Ok(_) => {
+                        ui.status.set_text("Signed in. Getting new mail…");
+                        ui.refresh();
+                        ui.background(json!({"op":"sync_account","account_id":id}));
+                    }
+                    Err(error) => {
+                        ui.status
+                            .set_text(&format!("{} is still signed out", account.email));
+                        ui.update_signed_out_notice(&ui.accounts());
+                        gtk::AlertDialog::builder()
+                            .message("Email")
+                            .detail(&error)
+                            .buttons(["OK"])
+                            .build()
+                            .show(Some(&ui.window));
+                    }
+                }
+            },
+        );
+    }
     fn refresh_navigation(self: &Rc<Self>, accounts: &[Account]) {
         let counts = self.request(json!({"op":"unread_counts"})).unwrap_or_default();
         let (unread, followup_due, followup_active) = parity::navigation_counts(&counts);
@@ -1362,17 +1472,35 @@ impl Ui {
         }
         for account in accounts {
             let count = counts["accounts"][&account.id].as_u64().unwrap_or(0);
+            // A signed-out account shows a warning mark instead of its count.
+            let signed_out = self.signed_out.borrow().contains(&account.id);
             let button = navigation_button(
-                "avatar-default-symbolic",
+                if signed_out { "dialog-warning-symbolic" } else { "avatar-default-symbolic" },
                 &account.email,
-                &if count > 0 {
+                &if count > 0 && !signed_out {
                     count.to_string()
                 } else {
                     String::new()
                 },
             );
             button.add_css_class("side-item");
-            button.set_tooltip_text(Some(&account.email));
+            if signed_out {
+                button.add_css_class("signed-out");
+                // The drawn icon takes its own color, also on hover.
+                if let Some(icon) = button.child().and_then(|content| content.first_child()) {
+                    icon.add_css_class("warning-icon");
+                }
+                button.set_tooltip_text(Some(&format!(
+                    "{} is signed out. Click to sign in again.",
+                    account.email
+                )));
+                button.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "{}, signed out",
+                    account.email
+                ))]);
+            } else {
+                button.set_tooltip_text(Some(&account.email));
+            }
             let ui = self.clone();
             let id = account.id.clone();
             button.connect_clicked(move |_| ui.set_view(MailView::Account(id.clone())));
@@ -1512,6 +1640,7 @@ impl Ui {
         }
         self.refresh_navigation(&accounts);
         self.update_account_chrome(&accounts);
+        self.update_signed_out_notice(&accounts);
         for (i, button) in self.filter_buttons.iter().enumerate() {
             if i == self.inbox_filter.get() as usize {
                 button.add_css_class("active");
@@ -4272,17 +4401,7 @@ fn process_completed(ui: &Rc<Ui>, receiver: &Receiver<Result<Value, String>>) {
                     ui.refresh_calendar_accounts();
                     ui.background(json!({"op":"sync_account","account_id":account_id}));
                 } else if let Some(results) = value.as_array() {
-                    let failures = results
-                        .iter()
-                        .filter(|item| {
-                            item.get("error").is_some() || item["data"].get("sync_error").is_some()
-                        })
-                        .count();
-                    ui.status.set_text(if failures == 0 {
-                        "Sync complete."
-                    } else {
-                        "Some accounts could not sync. Check account settings."
-                    });
+                    ui.status.set_text(&parity::sync_summary(results));
                 } else {
                     ui.status.set_text("Done.");
                 }
@@ -4588,6 +4707,39 @@ fn build(app: &gtk::Application) {
         .collect();
     selection_bar.set_visible(false);
     header.append(&selection_bar);
+    // Two lines so the address never pushes the button out (macOS
+    // `buildSignedOutNotice`): the address and what happened, then the action.
+    let signed_out_notice = gtk::Box::new(Orientation::Horizontal, 8);
+    signed_out_notice.add_css_class("signed-out-notice");
+    signed_out_notice.set_margin_top(12);
+    signed_out_notice.set_tooltip_text(Some(
+        "New mail won't arrive until you sign in again. Mail you already have stays here.",
+    ));
+    let signed_out_icon = mail_icon("dialog-warning-symbolic");
+    signed_out_icon.add_css_class("warning-icon");
+    signed_out_icon.set_valign(gtk::Align::Start);
+    signed_out_icon.set_margin_top(1);
+    signed_out_notice.append(&signed_out_icon);
+    let signed_out_lines = gtk::Box::new(Orientation::Vertical, 2);
+    signed_out_lines.set_hexpand(true);
+    let signed_out_line = gtk::Box::new(Orientation::Horizontal, 0);
+    let signed_out_address = gtk::Label::new(None);
+    signed_out_address.add_css_class("signed-out-address");
+    signed_out_address.set_xalign(0.0);
+    signed_out_address.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+    let signed_out_suffix = gtk::Label::new(None);
+    signed_out_suffix.add_css_class("signed-out-text");
+    signed_out_line.append(&signed_out_address);
+    signed_out_line.append(&signed_out_suffix);
+    signed_out_lines.append(&signed_out_line);
+    let sign_in_again = gtk::Button::with_label("Sign in again");
+    sign_in_again.add_css_class("signed-out-action");
+    sign_in_again.set_halign(gtk::Align::Start);
+    sign_in_again.set_focus_on_click(false);
+    signed_out_lines.append(&sign_in_again);
+    signed_out_notice.append(&signed_out_lines);
+    signed_out_notice.set_visible(false);
+    header.append(&signed_out_notice);
     inbox.append(&header);
     let scroll = gtk::ScrolledWindow::new();
     scroll.set_vexpand(true);
@@ -5077,6 +5229,12 @@ fn build(app: &gtk::Application) {
         undo_button,
         inbox_sync_running: Arc::new(AtomicBool::new(false)),
         queue_retry_at: Cell::new(0),
+        signed_out: RefCell::new(std::collections::HashSet::new()),
+        signing_in: RefCell::new(None),
+        signed_out_notice,
+        signed_out_address,
+        signed_out_suffix,
+        sign_in_again,
     });
     for (i, button) in ui.selection_buttons.iter().enumerate() {
         let weak = Rc::downgrade(&ui);
@@ -5450,6 +5608,11 @@ fn build(app: &gtk::Application) {
     {
         let ui = ui.clone();
         load_remote_images.connect_clicked(move |_| ui.load_remote_images_for_message());
+    }
+    {
+        let ui = ui.clone();
+        let button = ui.sign_in_again.clone();
+        button.connect_clicked(move |_| ui.sign_in_again());
     }
     {
         let ui = ui.clone();
