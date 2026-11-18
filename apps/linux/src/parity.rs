@@ -1436,7 +1436,11 @@ impl Ui {
         box_.add_css_class("settings-card");
         for account in self.accounts() {
             let line = gtk::Box::new(Orientation::Horizontal, 12);
-            let label = plain_label(&account.email, "command-title");
+            let label = if self.signed_out.borrow().contains(&account.id) {
+                plain_label(&format!("{} (signed out)", account.email), "command-title")
+            } else {
+                plain_label(&account.email, "command-title")
+            };
             label.set_hexpand(true);
             line.append(&label);
             let remove = gtk::Button::with_label("Remove");
@@ -2692,6 +2696,43 @@ pub(super) fn pending_retry_delay(value: &Value) -> Option<u64> {
     )
 }
 
+/// The accounts `list_accounts` marks `needs_sign_in`.
+pub(super) fn signed_out_accounts(accounts: &Value) -> std::collections::HashSet<String> {
+    accounts
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|account| account["needs_sign_in"] == true)
+        .filter_map(|account| account["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The status line after `sync_all` (macOS `syncAll`). A signed-out account
+/// has its own notice and sidebar mark, so it counts apart from failures.
+pub(super) fn sync_summary(results: &[Value]) -> String {
+    let signed_out = results
+        .iter()
+        .filter(|item| item["data"]["needs_sign_in"] == true)
+        .count();
+    let failures = results
+        .iter()
+        .filter(|item| item["data"]["needs_sign_in"] != true)
+        .filter(|item| item.get("error").is_some() || item["data"].get("sync_error").is_some())
+        .count();
+    let synced = results.len() - signed_out - failures;
+    let signed_out = match signed_out {
+        0 => None,
+        1 => Some("1 account signed out".to_owned()),
+        count => Some(format!("{count} accounts signed out")),
+    };
+    match (failures, signed_out) {
+        (0, None) => "Sync complete.".into(),
+        (0, Some(count)) if synced == 0 => count,
+        (0, Some(count)) => format!("Sync complete · {count}"),
+        _ => "Some accounts could not sync. Check account settings.".into(),
+    }
+}
+
 /// Modified desktop/editor bindings must not fall through to destructive mail actions.
 pub(super) fn allows_mail_shortcuts(mods: gdk::ModifierType) -> bool {
     !mods.intersects(
@@ -2715,6 +2756,35 @@ pub(super) fn shortcut_key(key: gdk::Key, mods: gdk::ModifierType) -> gdk::Key {
 #[cfg(test)]
 mod workflow_tests {
     use super::*;
+    #[test]
+    fn signed_out_accounts_count_apart_from_sync_failures() {
+        let accounts = json!([
+            {"id": "a", "email": "a@example.com", "needs_sign_in": true},
+            {"id": "b", "email": "b@example.com", "needs_sign_in": false},
+            {"id": "c", "email": "c@example.com"}
+        ]);
+        assert_eq!(
+            signed_out_accounts(&accounts),
+            std::collections::HashSet::from(["a".to_owned()])
+        );
+        let ok = json!({"account_id": "b", "ok": true, "data": {"messages_added": 0}});
+        let signed_out = json!({"account_id": "a", "ok": false, "data": {"needs_sign_in": true,
+            "sync_error": "Google signed this account out. Sign in again to get new mail."}});
+        let failed = json!({"account_id": "c", "ok": false, "error": "offline"});
+        assert_eq!(sync_summary(&[ok.clone()]), "Sync complete.");
+        assert_eq!(
+            sync_summary(&[ok.clone(), signed_out.clone()]),
+            "Sync complete · 1 account signed out"
+        );
+        assert_eq!(
+            sync_summary(&[signed_out.clone(), signed_out.clone()]),
+            "2 accounts signed out"
+        );
+        assert_eq!(
+            sync_summary(&[ok, signed_out, failed]),
+            "Some accounts could not sync. Check account settings."
+        );
+    }
     #[test]
     fn from_identity_prefers_receiving_alias_then_provider_default() {
         let identities = std::collections::BTreeMap::from([
