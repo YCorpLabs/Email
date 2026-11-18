@@ -9,6 +9,9 @@ struct DistributionProfile: Sendable, Equatable {
     let supportAddress: String?
     let feedbackAddress: String?
     let schedulingOrigin: URL?
+    /// How Manage accounts names the Scheduling service; the engine decides
+    /// (`profile::scheduling_name`). Nil without a Scheduling service.
+    let schedulingName: String?
     /// Per-draft open tracking (Track opens), compiled in from the profile's
     /// `OPEN_TRACKING`. Never true without a Scheduling service.
     let openTracking: Bool
@@ -37,6 +40,8 @@ struct DistributionProfile: Sendable, Equatable {
             feedbackAddress = nil
         }
         schedulingOrigin = Self.origin(object["scheduling_origin"])
+        let name = (object["scheduling_name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        schedulingName = schedulingOrigin == nil ? nil : (name.isEmpty || name.count > 64 ? "Scheduling" : name)
         openTracking = object["open_tracking"] as? Bool == true && schedulingOrigin != nil
         let guide = (object["setup_guide_url"] as? String).flatMap(URLComponents.init(string:))
         setupGuide = guide?.scheme == "https" && guide?.host != nil && supportAddress != nil ? guide?.url : nil

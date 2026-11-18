@@ -195,8 +195,11 @@ check = r'''
         pump(0.5)
         expect(composePane!.trackingOptionShown == openTracking && composePane!.offersTracking == openTracking, "Track opens appears only with the development profile")
         expect(paletteItems().contains { $0.target == .toggleTracking } == openTracking, "palette tracking toggle appears only with the development profile")
-        expect(composePane!.bookingButtonShown == scheduling, "Booking link appears only with a Scheduling service")
-        expect(paletteItems().contains { $0.target == .insertBooking } == scheduling && paletteItems().contains { $0.target == .bookings } == scheduling, "booking palette commands appear only with a Scheduling service")
+        // Booking surfaces wait for a Scheduling connection, which a fresh store
+        // never has; only the connect command follows the service.
+        expect(!composePane!.bookingButtonShown, "Booking link waits for a Scheduling connection")
+        expect(!paletteItems().contains { $0.target == .insertBooking || $0.target == .bookings }, "booking palette commands wait for a Scheduling connection")
+        expect(paletteItems().contains { $0.target == .schedulingAccount } == (scheduling && !knownAccounts.isEmpty), "Connect Scheduling… appears only with a Scheduling service")
         snapshot("5-composer")
         composePane!.paletteDiscard()
         wait("untouched composer closes") { composePane == nil }

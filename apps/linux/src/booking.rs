@@ -1,4 +1,6 @@
-//! Native scheduling surface backed by the same Rust service as macOS.
+//! Native scheduling surface backed by the same Rust service as macOS: the
+//! Scheduling connection (Manage accounts) and the Bookings and meeting links
+//! window, which exists only while connected.
 use super::*;
 struct Panel {
     ui: Rc<Ui>,
@@ -8,7 +10,6 @@ struct Panel {
     refresh: gtk::Button,
     footer: gtk::Box,
     body: Option<gtk::TextView>,
-    pending: Cell<bool>,
     generation: Cell<u64>,
     connected: Cell<bool>,
 }
@@ -17,6 +18,270 @@ struct Panel {
 pub(super) fn configured() -> bool {
     mail_service::profile::SCHEDULING_ORIGIN.is_some()
 }
+/// The Scheduling connection, shared by every booking surface, as on macOS
+/// (SchedulingConnection). Nothing about Scheduling shows until someone
+/// connects it in Manage accounts or with Connect Scheduling… in the command
+/// palette. Then Booking link, Calendar's Bookings and links and the booking
+/// commands appear; Disconnect hides them again.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Connection {
+    Disconnected,
+    /// Waiting for approval in the browser, with the code it may ask for.
+    Waiting { code: String },
+    /// The Scheduling account's address or name, when the service gave one.
+    Connected { account: Option<String> },
+}
+
+struct Link {
+    state: Connection,
+    /// The last failure, shown in Manage accounts until the next action.
+    problem: Option<String>,
+    /// Bumped by every action, so a late answer to an older one is ignored.
+    generation: u64,
+    deadline: i64,
+    poll_failures: u32,
+    listeners: Vec<Box<dyn Fn() -> bool>>,
+}
+
+thread_local! {
+    static LINK: RefCell<Link> = RefCell::new(Link {
+        state: Connection::Disconnected,
+        problem: None,
+        generation: 0,
+        deadline: 0,
+        poll_failures: 0,
+        listeners: Vec::new(),
+    });
+}
+
+/// How Manage accounts names the service (`profile::scheduling_name`).
+pub(super) fn name() -> &'static str {
+    mail_service::profile::scheduling_name().unwrap_or("Scheduling")
+}
+pub(super) fn connection() -> Connection {
+    LINK.with(|link| link.borrow().state.clone())
+}
+pub(super) fn problem() -> Option<String> {
+    LINK.with(|link| link.borrow().problem.clone())
+}
+/// Booking surfaces show only while connected.
+pub(super) fn connected() -> bool {
+    configured() && matches!(connection(), Connection::Connected { .. })
+}
+/// Run `listener` after every change while it returns true; return false once
+/// its widgets are gone.
+pub(super) fn on_change(listener: impl Fn() -> bool + 'static) {
+    LINK.with(|link| link.borrow_mut().listeners.push(Box::new(listener)));
+}
+fn notify() {
+    let listeners = LINK.with(|link| std::mem::take(&mut link.borrow_mut().listeners));
+    let kept: Vec<_> = listeners.into_iter().filter(|listener| listener()).collect();
+    LINK.with(|link| {
+        let mut link = link.borrow_mut();
+        let added = std::mem::take(&mut link.listeners);
+        link.listeners = kept;
+        link.listeners.extend(added);
+    });
+}
+fn update(state: Option<Connection>, problem: Option<Option<String>>) {
+    let changed = LINK.with(|link| {
+        let mut link = link.borrow_mut();
+        let mut changed = false;
+        if let Some(state) = state {
+            changed |= link.state != state;
+            link.state = state;
+        }
+        if let Some(problem) = problem {
+            changed |= link.problem != problem;
+            link.problem = problem;
+        }
+        changed
+    });
+    if changed {
+        notify();
+    }
+}
+fn next_generation() -> u64 {
+    LINK.with(|link| {
+        let mut link = link.borrow_mut();
+        link.generation += 1;
+        link.generation
+    })
+}
+fn current(generation: u64) -> bool {
+    LINK.with(|link| link.borrow().generation == generation)
+}
+fn account(host: &Value) -> Option<String> {
+    [&host["email"], &host["name"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+/// Load the saved connection at launch.
+pub(super) fn load_connection(ui: &Rc<Ui>) {
+    if !configured() {
+        return;
+    }
+    #[cfg(feature = "qa-fixture")]
+    if let Some(state) = qa_connection() {
+        update(Some(state), None);
+        return;
+    }
+    refresh_connection(ui);
+}
+/// Re-read the saved connection, for example after the service rejected it.
+pub(super) fn refresh_connection(ui: &Rc<Ui>) {
+    if !configured() || matches!(connection(), Connection::Waiting { .. }) {
+        return;
+    }
+    let generation = LINK.with(|link| link.borrow().generation);
+    workflows::request_async(ui.database_path.clone(), json!({"op":"booking_status"}), move |result| {
+        let Ok(status) = result else { return };
+        if !current(generation) || matches!(connection(), Connection::Waiting { .. }) {
+            return;
+        }
+        update(
+            Some(if status["connected"].as_bool() == Some(true) {
+                Connection::Connected { account: account(&status["host"]) }
+            } else {
+                Connection::Disconnected
+            }),
+            None,
+        );
+    });
+}
+/// Start a device connection: open the browser and wait for approval.
+pub(super) fn connect(ui: &Rc<Ui>) {
+    if !configured() {
+        return;
+    }
+    let generation = next_generation();
+    update(None, Some(None));
+    let weak = Rc::downgrade(ui);
+    workflows::request_async(
+        ui.database_path.clone(),
+        json!({"op":"booking_connect_start","name":"Email on Linux"}),
+        move |result| {
+            if !current(generation) {
+                return;
+            }
+            let data = match result {
+                Ok(data) => data,
+                Err(error) => return update(None, Some(Some(error))),
+            };
+            let (Some(code), Some(raw)) = (data["user_code"].as_str(), data["verification_url"].as_str()) else {
+                return update(None, Some(Some("Scheduling returned an invalid connection.".into())));
+            };
+            if !Url::parse(raw).is_ok_and(|url| is_scheduling_url(&url)) {
+                return update(None, Some(Some("Scheduling returned an address Email doesn't trust.".into())));
+            }
+            let expires = data["expires_in"].as_i64().unwrap_or(600).clamp(1, 600);
+            let interval = data["interval"].as_u64().unwrap_or(5).clamp(5, 60) as u32;
+            LINK.with(|link| {
+                let mut link = link.borrow_mut();
+                link.deadline = glib::monotonic_time() + expires * 1_000_000;
+                link.poll_failures = 0;
+            });
+            update(Some(Connection::Waiting { code: code.to_owned() }), None);
+            open_url(raw);
+            glib::timeout_add_seconds_local(interval, move || {
+                let Some(ui) = weak.upgrade() else { return glib::ControlFlow::Break };
+                if !current(generation) || !matches!(connection(), Connection::Waiting { .. }) {
+                    return glib::ControlFlow::Break;
+                }
+                if glib::monotonic_time() >= LINK.with(|link| link.borrow().deadline) {
+                    update(
+                        Some(Connection::Disconnected),
+                        Some(Some("The connection expired. Connect to try again.".into())),
+                    );
+                    return glib::ControlFlow::Break;
+                }
+                check_approval(&ui, generation);
+                glib::ControlFlow::Continue
+            });
+        },
+    );
+}
+fn check_approval(ui: &Rc<Ui>, generation: u64) {
+    let weak = Rc::downgrade(ui);
+    workflows::request_async(ui.database_path.clone(), json!({"op":"booking_connect_poll"}), move |result| {
+        if !current(generation) || !matches!(connection(), Connection::Waiting { .. }) {
+            return;
+        }
+        match result {
+            Ok(data) => {
+                LINK.with(|link| link.borrow_mut().poll_failures = 0);
+                if data["connected"].as_bool() == Some(true) {
+                    next_generation();
+                    update(Some(Connection::Connected { account: account(&data["host"]) }), Some(None));
+                    if let Some(ui) = weak.upgrade() {
+                        ui.status.set_text("Scheduling connected");
+                    }
+                }
+            }
+            Err(error) => {
+                // A brief network failure shouldn't end the wait; repeated ones do.
+                let failures = LINK.with(|link| {
+                    let mut link = link.borrow_mut();
+                    link.poll_failures += 1;
+                    link.poll_failures
+                });
+                if failures >= 3 {
+                    next_generation();
+                    update(Some(Connection::Disconnected), Some(Some(error)));
+                }
+            }
+        }
+    });
+}
+/// Stop waiting for the browser.
+pub(super) fn cancel() {
+    next_generation();
+    update(Some(Connection::Disconnected), Some(None));
+}
+/// Revoke this device's connection, without asking: connecting again is one
+/// browser approval away.
+pub(super) fn disconnect(ui: &Rc<Ui>) {
+    let generation = next_generation();
+    workflows::request_async(ui.database_path.clone(), json!({"op":"booking_disconnect"}), move |result| {
+        if !current(generation) {
+            return;
+        }
+        match result {
+            Ok(_) => update(Some(Connection::Disconnected), Some(None)),
+            Err(error) => update(None, Some(Some(error))),
+        }
+    });
+}
+/// QA builds only: start in a given state without a Scheduling service, for
+/// the container captures (`EMAIL_QA_SCHEDULING=disconnected|waiting|connected`).
+#[cfg(feature = "qa-fixture")]
+fn qa_connection() -> Option<Connection> {
+    match std::env::var("EMAIL_QA_SCHEDULING").ok()?.as_str() {
+        "waiting" => Some(Connection::Waiting { code: "WDJB-MJHT".into() }),
+        "connected" => Some(Connection::Connected { account: Some("alex@fernhill.example".into()) }),
+        "disconnected" => Some(Connection::Disconnected),
+        _ => None,
+    }
+}
+
+/// The Scheduling row in Manage accounts: the detail lines under the name, the
+/// button and whether Manage online shows. Shared with the parity tests.
+pub(super) fn account_row(state: &Connection) -> (Vec<String>, &'static str, bool) {
+    match state {
+        Connection::Disconnected => (vec!["Not connected".into()], "Connect", false),
+        Connection::Waiting { code } => (vec![format!("Waiting for your browser · Code if asked: {code}")], "Cancel", false),
+        Connection::Connected { account } => {
+            let mut lines: Vec<String> = account.iter().cloned().collect();
+            lines.push("Connected on this computer".into());
+            (lines, "Disconnect", true)
+        }
+    }
+}
+
 fn scheduling_url(path: &str, fragment: Option<&str>) -> Option<Url> {
     let mut url = Url::parse(mail_service::profile::SCHEDULING_ORIGIN?).ok()?;
     url.set_path(path);
@@ -35,14 +300,14 @@ fn is_scheduling_url(url: &Url) -> bool {
         && url.host_str().map(str::to_ascii_lowercase) == origin.host_str().map(str::to_owned)
 }
 pub(super) fn open(ui: &Rc<Ui>, body: Option<gtk::TextView>) {
-    if !configured() {
+    if !connected() {
         return;
     }
     let window = gtk::Window::builder()
         .title(if body.is_some() {
             "Insert booking link"
         } else {
-            "Scheduling"
+            "Bookings and meeting links"
         })
         .transient_for(&ui.window)
         .default_width(480)
@@ -67,7 +332,7 @@ pub(super) fn open(ui: &Rc<Ui>, body: Option<gtk::TextView>) {
         if body.is_some() {
             "Booking links"
         } else {
-            "Scheduling"
+            "Bookings and meeting links"
         },
         true,
     );
@@ -94,8 +359,6 @@ pub(super) fn open(ui: &Rc<Ui>, body: Option<gtk::TextView>) {
         manage.connect_clicked(move |_| open_url(studio.as_str()));
         footer.append(&manage);
     }
-    let disconnect = gtk::Button::with_label("Disconnect this device");
-    footer.append(&disconnect);
     footer.set_visible(false);
     root.append(&footer);
     window.set_child(Some(&root));
@@ -107,7 +370,6 @@ pub(super) fn open(ui: &Rc<Ui>, body: Option<gtk::TextView>) {
         refresh: refresh.clone(),
         footer: footer.clone(),
         body,
-        pending: Cell::new(false),
         generation: Cell::new(0),
         connected: Cell::new(false),
     });
@@ -117,16 +379,7 @@ pub(super) fn open(ui: &Rc<Ui>, body: Option<gtk::TextView>) {
     }
     {
         let p = panel.clone();
-        disconnect.connect_clicked(move |_| {
-            p.pending.set(false);
-            let pp = p.clone();
-            p.request(json!({"op":"booking_disconnect"}), move |_| pp.load(false));
-        });
-    }
-    {
-        let p = panel.clone();
         window.connect_close_request(move |_| {
-            p.pending.set(false);
             p.generation.set(p.generation.get() + 1);
             glib::Propagation::Proceed
         });
@@ -187,8 +440,6 @@ impl Panel {
     fn request(self: &Rc<Self>, payload: Value, done: impl FnOnce(Value) + 'static) {
         let weak = Rc::downgrade(self);
         let serial = self.generation.get();
-        let polling = payload["op"].as_str() == Some("booking_connect_poll");
-        let connecting = payload["op"].as_str() == Some("booking_connect_start");
         workflows::request_async(self.ui.database_path.clone(), payload, move |result| {
             let Some(p) = weak.upgrade() else { return };
             if p.generation.get() != serial {
@@ -197,22 +448,14 @@ impl Panel {
             match result {
                 Ok(data) => done(data),
                 Err(e) => {
-                    if polling {
-                        p.pending.set(false);
-                    }
                     p.notice.set_text(&e);
-                    if connecting {
-                        let retry = gtk::Button::with_label("Try connecting again");
-                        let panel = p.clone();
-                        retry.connect_clicked(move |_| panel.connect());
-                        p.rows.append(&retry);
-                    }
+                    // A revoked connection hides the booking surfaces everywhere.
+                    refresh_connection(&p.ui);
                 }
             }
         });
     }
     fn load(self: &Rc<Self>, refresh: bool) {
-        self.pending.set(false);
         self.generation.set(self.generation.get() + 1);
         self.notice.set_text(if refresh {
             "Refreshing…"
@@ -222,17 +465,11 @@ impl Panel {
         let p = self.clone();
         self.request(json!({"op":"booking_status"}), move |status| {
             if status["connected"].as_bool() != Some(true) {
+                // Disconnected elsewhere since this opened.
                 p.connected_layout(false);
                 p.clear();
-                p.notice.set_text("Your meeting links, right where you write.");
-                p.rows.append(&label(
-                    "Connect to copy meeting links, suggest times and see upcoming bookings. Bookings keep working when Email is closed.",
-                    false,
-                ));
-                let connect = gtk::Button::with_label("Connect scheduling");
-                let pp = p.clone();
-                connect.connect_clicked(move |_| pp.connect());
-                p.rows.append(&connect);
+                p.notice.set_text("Scheduling isn't connected. Connect it in Manage accounts.");
+                refresh_connection(&p.ui);
             } else {
                 let pp = p.clone();
                 p.request(
@@ -504,64 +741,6 @@ impl Panel {
                 let panel = p.clone();
                 back.connect_clicked(move |_| panel.load(false));
                 p.rows.append(&back);
-            },
-        );
-    }
-    fn connect(self: &Rc<Self>) {
-        self.connected_layout(false);
-        self.clear();
-        self.notice.set_text("Opening your browser…");
-        self.rows
-            .append(&label("Preparing a secure connection", true));
-        self.pending.set(false);
-        self.generation.set(self.generation.get() + 1);
-        let p = self.clone();
-        self.request(
-            json!({"op":"booking_connect_start","name":"Email on Linux"}),
-            move |data| {
-                let (Some(code), Some(raw)) = (
-                    data["user_code"].as_str(),
-                    data["verification_url"].as_str(),
-                ) else {
-                    return;
-                };
-                let Ok(url) = Url::parse(raw) else { return };
-                if !is_scheduling_url(&url) {
-                    return;
-                }
-                p.clear();
-                p.rows.append(&label("Approve the connection in your browser",true));
-                // The hosted service sets the grant scope, which still includes
-                // optional email activity; say so in every build.
-                p.rows.append(&label("Review scheduling and optional email-open tracking access. Return here after approving.",false));
-                let b = gtk::Button::with_label("Open browser again");
-                let raw = raw.to_owned();
-                let raw2 = raw.clone();
-                b.connect_clicked(move |_| open_url(&raw2));
-                p.rows.append(&b);
-                let fallback=gtk::Expander::builder().label("Need a manual code?").build();
-                let code=label(code,true);code.set_xalign(0.5);fallback.set_child(Some(&code));p.rows.append(&fallback);
-                let restart=gtk::Button::with_label("Start over");let panel=p.clone();restart.connect_clicked(move |_|panel.connect());p.rows.append(&restart);
-                p.notice.set_text("Waiting for browser approval…");
-                open_url(&raw);
-                p.pending.set(true);
-                let weak = Rc::downgrade(&p);
-                glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
-                    let Some(p) = weak.upgrade() else {
-                        return glib::ControlFlow::Break;
-                    };
-                    if !p.pending.get() {
-                        return glib::ControlFlow::Break;
-                    }
-                    let pp = p.clone();
-                    p.request(json!({"op":"booking_connect_poll"}), move |data| {
-                        if data["connected"].as_bool() == Some(true) {
-                            pp.pending.set(false);
-                            pp.load(true);
-                        }
-                    });
-                    glib::ControlFlow::Continue
-                });
             },
         );
     }

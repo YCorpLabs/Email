@@ -231,7 +231,7 @@ preserves conversation membership; subject text alone never selects a thread.
 ### Hosted scheduling and email activity
 
 - `booking_status` returns connection status and cached host identity without a provider refresh.
-- `booking_connect_start {name?}` returns a short-lived browser verification URL and a fallback user code. The URL must match the configured HTTPS origin, `/device` path and exact `#code=` fragment. The fragment is cleared by the browser page immediately.
+- `booking_connect_start {name?}` requests the `booking:read` scope and returns a short-lived browser verification URL and a fallback user code. The poll refuses a grant whose scope differs from the requested one. The URL must match the configured HTTPS origin, `/device` path and exact `#code=` fragment. The fragment is cleared by the browser page immediately.
 - `booking_connect_poll` completes a PKCE-bound, explicitly approved request; `booking_disconnect` revokes this device.
 - `booking_list {refresh:false}` returns host, published meeting types, bookings, analytics and cache metadata. `booking_analytics {refresh:false}` reads aggregate booking analytics.
 - `booking_link {meeting_type_id}` returns an email-attributed published booking URL. `booking_availability {meeting_type_id}` checks fresh availability and returns suggested slots with booking URLs.

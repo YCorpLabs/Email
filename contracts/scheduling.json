@@ -15,6 +15,16 @@
     "retention_days": 90
   },
   "desktop_auth": "revocable PKCE device grant",
+  "desktop_scopes": {
+    "request_field": "scope",
+    "connection": "booking:read",
+    "settings": "booking:read booking:settings",
+    "issued": "exactly the requested scope",
+    "earlier_grants": [
+      "booking:read email:tracking",
+      "booking:read email:tracking booking:settings"
+    ]
+  },
   "public_profile_images": {
     "fields": [
       "avatarImage",

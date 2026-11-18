@@ -1,6 +1,9 @@
 import AppKit
 
-/// Read-only desktop access to the hosted scheduler. Calendar grants remain on the server.
+/// Read-only desktop access to the hosted scheduler: meeting links, upcoming
+/// bookings and analytics. Calendar grants remain on the server. Connecting and
+/// disconnecting live in Manage accounts (SchedulingConnection); every way in
+/// here exists only while connected.
 @MainActor final class BookingPanel: NSWindowController, NSWindowDelegate {
     private static var active: BookingPanel?
     static func present(core: CoreBridge, insert: ((String) -> Void)? = nil, emailGuest: ((String, String?) -> Void)? = nil, findMail: ((String) -> Void)? = nil) {
@@ -16,10 +19,7 @@ import AppKit
     private let findMail: ((String) -> Void)?
     private let rows = NSStackView()
     private let notice = NSTextField(wrappingLabelWithString: "")
-    private var poll: Timer?
     private var generation = 0
-    private var pending = false
-    private var pollDeadline = Date.distantPast
     private let footer = NSStackView()
     private var refreshButton: NSButton?
     private var titleLabel: NSTextField?
@@ -27,7 +27,7 @@ import AppKit
     init(core: CoreBridge, insert: ((String) -> Void)?, emailGuest: ((String, String?) -> Void)?, findMail: ((String) -> Void)?) {
         self.core = core; self.insert = insert; self.emailGuest = emailGuest; self.findMail = findMail
         let window = BookingWindow(contentRect: NSRect(x: 0,y: 0,width: 500,height: 320), styleMask: [.titled,.closable,.resizable], backing: .buffered, defer: false)
-        window.title = insert == nil ? "Scheduling" : "Insert booking link"
+        window.title = insert == nil ? "Bookings and meeting links" : "Insert booking link"
         window.minSize = NSSize(width: 460,height: 280)
         super.init(window: window)
         window.delegate = self
@@ -35,7 +35,7 @@ import AppKit
         let content = NSView(); window.contentView = content; content.addSubview(root)
         NSLayoutConstraint.activate([root.leadingAnchor.constraint(equalTo: content.leadingAnchor,constant:24),root.trailingAnchor.constraint(equalTo: content.trailingAnchor,constant:-24),root.topAnchor.constraint(equalTo: content.topAnchor,constant:20),root.bottomAnchor.constraint(equalTo: content.bottomAnchor,constant:-20)])
         let header = NSStackView(); header.spacing = 10
-        let title = text(insert == nil ? "Scheduling" : "Booking links",size:22,strong:true); header.addArrangedSubview(title); titleLabel = title
+        let title = text(insert == nil ? "Bookings and meeting links" : "Booking links",size:22,strong:true); header.addArrangedSubview(title); titleLabel = title
         let space = NSView(); space.setContentHuggingPriority(.defaultLow,for:.horizontal); header.addArrangedSubview(space)
         let refresh = button("Refresh") { [weak self] in self?.load(refresh:true) }; refreshButton = refresh; header.addArrangedSubview(refresh)
         root.addArrangedSubview(header); header.widthAnchor.constraint(equalTo: root.widthAnchor).isActive = true
@@ -47,13 +47,12 @@ import AppKit
         root.addArrangedSubview(scroll); scroll.widthAnchor.constraint(equalTo:root.widthAnchor).isActive = true; scroll.heightAnchor.constraint(greaterThanOrEqualToConstant:100).isActive = true
         footer.spacing = 14
         if let studio = DistributionProfile.current?.schedulingURL(path: "/studio") { footer.addArrangedSubview(button("Manage online ↗") { NSWorkspace.shared.open(studio) }) }
-        footer.addArrangedSubview(button("Disconnect this device") { [weak self] in self?.disconnect() })
         root.addArrangedSubview(footer)
         window.center(); load(refresh:false)
     }
     required init?(coder:NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func close() { generation += 1; pending = false; poll?.invalidate(); poll = nil; super.close() }
-    func windowWillClose(_ notification: Notification) { generation += 1; pending = false; poll?.invalidate(); poll = nil }
+    override func close() { generation += 1; super.close() }
+    func windowWillClose(_ notification: Notification) { generation += 1 }
     private func text(_ value:String,size:CGFloat = 13,strong:Bool = false) -> NSTextField {
         let label = NSTextField(wrappingLabelWithString:value); label.font = .systemFont(ofSize:size,weight:strong ? .semibold : .regular); label.isSelectable = true; return label
     }
@@ -64,15 +63,20 @@ import AppKit
         Task { [weak self] in
             guard let self else { return }
             do { let value = try await core.callAsync(payload) as? [String:Any] ?? [:]; guard serial == generation else { return }; done(value) }
-            catch { guard serial == generation else { return }; notice.stringValue = error.localizedDescription }
+            catch {
+                guard serial == generation else { return }; notice.stringValue = error.localizedDescription
+                // A revoked connection hides the booking surfaces everywhere.
+                await SchedulingConnection.shared.refresh()
+            }
         }
     }
-    private func layoutConnection(_ connecting: Bool) {
-        footer.isHidden = connecting; refreshButton?.isHidden = connecting
-        guard connectionLayout != connecting else { return }; connectionLayout = connecting
-        window?.minSize = NSSize(width:460,height:connecting ? 280 : 380)
+    /// The compact layout without a connection, the full one with bookings.
+    private func layoutConnection(_ empty: Bool) {
+        footer.isHidden = empty; refreshButton?.isHidden = empty
+        guard connectionLayout != empty else { return }; connectionLayout = empty
+        window?.minSize = NSSize(width:460,height:empty ? 280 : 380)
         guard let window else { return }
-        let contentSize = NSSize(width:connecting ? 500 : 570,height:connecting ? 320 : 450)
+        let contentSize = NSSize(width:empty ? 500 : 570,height:empty ? 320 : 450)
         var frame = window.frameRect(forContentRect:NSRect(origin:.zero,size:contentSize))
         frame.origin = NSPoint(x:window.frame.midX-frame.width/2,y:window.frame.maxY-frame.height)
         window.setFrame(frame,display:true,animate:false)
@@ -82,17 +86,17 @@ import AppKit
         request(["op":"booking_status"]) { [weak self] status in
             guard let self else { return }
             if status["connected"] as? Bool != true {
-                clear(); layoutConnection(true); titleLabel?.stringValue = "Connect scheduling"
-                notice.stringValue = "Your booking links and meetings, right here in Email."
-                rows.addArrangedSubview(text("Continue in your browser to connect your account. You’ll return here automatically."))
-                let connectButton = button("Continue in browser") { [weak self] in self?.connect() }
-                connectButton.keyEquivalent = "\r"; rows.addArrangedSubview(connectButton); return
+                // Disconnected elsewhere since this opened.
+                clear(); layoutConnection(true)
+                notice.stringValue = "Scheduling isn't connected. Connect it in Manage accounts."
+                Task { await SchedulingConnection.shared.refresh() }
+                return
             }
             request(["op":"booking_list","refresh":refresh]) { [weak self] value in self?.render(value); if !refresh { self?.load(refresh:true) } }
         }
     }
     private func render(_ value:[String:Any]) {
-        clear(); layoutConnection(false); titleLabel?.stringValue = insert == nil ? "Scheduling" : "Booking links"
+        clear(); layoutConnection(false); titleLabel?.stringValue = insert == nil ? "Bookings and meeting links" : "Booking links"
         let host = value["host"] as? [String:Any] ?? [:]
         notice.stringValue = [host["email"] as? String ?? "Scheduling connected",value["cached"] as? Bool == true ? "Saved on this device" : "Up to date"].joined(separator:" · ")
         rows.addArrangedSubview(text("Meeting links",size:14,strong:true))
@@ -158,31 +162,6 @@ import AppKit
             rows.addArrangedSubview(button("Back to meeting links") { [weak self] in self?.load(refresh:false) })
         }
     }
-    private func connect() {
-        generation += 1; pending = false; poll?.invalidate(); poll = nil
-        notice.stringValue = "Opening your browser…"
-        request(["op":"booking_connect_start","name":"Email on \(Host.current().localizedName ?? "Mac")"]) { [weak self] data in
-            guard let self, let code = data["user_code"] as? String,let raw = data["verification_url"] as? String,let url = URL(string:raw),DistributionProfile.current?.isSchedulingURL(url) == true else { return }
-            clear(); layoutConnection(true); titleLabel?.stringValue = "Finish connecting in your browser"
-            notice.stringValue = "Waiting for approval…"
-            let progress = NSProgressIndicator(); progress.style = .spinning; progress.controlSize = .small; progress.startAnimation(nil)
-            let waiting = NSStackView(views:[progress,text("Email will connect automatically once you approve.")]); waiting.spacing = 10; rows.addArrangedSubview(waiting)
-            rows.addArrangedSubview(button("Reopen browser") { NSWorkspace.shared.open(url) })
-            let fallback = NSStackView(); fallback.orientation = .vertical; fallback.alignment = .leading; fallback.spacing = 6; fallback.isHidden = true
-            fallback.addArrangedSubview(text("If the browser asks for a code",size:11)); fallback.addArrangedSubview(text(code,size:16,strong:true))
-            rows.addArrangedSubview(button("Connection help") { fallback.isHidden.toggle() }); rows.addArrangedSubview(fallback)
-            pending = true; pollDeadline = Date().addingTimeInterval(data["expires_in"] as? Double ?? 600); NSWorkspace.shared.open(url); poll?.invalidate()
-            poll = Timer.scheduledTimer(withTimeInterval:5,repeats:true) { [weak self] _ in Task { @MainActor in self?.checkConnection() } }
-        }
-    }
-    private func checkConnection() {
-        guard pending else { return }
-        guard Date() < pollDeadline else { pending = false; poll?.invalidate(); poll = nil; load(refresh:false); notice.stringValue = "Connection expired. Continue in browser to try again."; return }
-        request(["op":"booking_connect_poll"]) { [weak self] result in
-            guard let self else { return }; if result["connected"] as? Bool == true { pending = false; poll?.invalidate(); poll = nil; NSApp.activate(ignoringOtherApps:true); window?.makeKeyAndOrderFront(nil); load(refresh:true) }
-        }
-    }
-    private func disconnect() { pending = false; poll?.invalidate(); request(["op":"booking_disconnect"]) { [weak self] _ in self?.load(refresh:false) } }
 }
 
 @MainActor private final class BookingAction: NSButton {
