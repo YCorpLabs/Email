@@ -216,6 +216,9 @@ struct MailThread: Sendable {
     let labels: [String]
     var pinned: Bool
     let snoozedUntil: Date?
+    /// The filter this conversation was sorted into (docs/filters.md).
+    var filter: ThreadFilter?
+    var isInbox = true
 
     init(id: String? = nil, accountID: String? = nil, account: String, sender: String, subject: String, preview: String, time: String, unread: Bool, html: String, labels: [String] = [], pinned: Bool = false, snoozedUntil: Date? = nil) {
         self.id = id
@@ -244,7 +247,7 @@ let fixtureThreads: [MailThread] = [
 @MainActor
 final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
     private enum Folder { case inbox, drafts, outbox, agentRequests }
-    private enum InboxScope: Equatable, Sendable { case all, unread, pinned, snoozed, followups, archived, sent, account(String), split(String), label(String) }
+    private enum InboxScope: Equatable, Sendable { case all, unread, pinned, snoozed, followups, archived, sent, account(String), split(String), label(String), filter(String) }
     private var folder: Folder = .inbox
     private var inboxScope: InboxScope = .all
     private var threads: [MailThread] = []
@@ -400,6 +403,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case toggleImages, contact, appearance(Int), notifications, testNotifications, notificationPreviews
         case sendDraft, saveDraft, scheduleDraft, attachFile, chooseFrom, focusRecipient, focusCc, focusBcc, focusBody
         case agentAccess, agentRequests
+        case moveToFilter(String?), goToFilter(String), filterSettings, newFilter, setUpFilters
         case snippets, saveSnippet, insertSnippet(String), about, support, feedback, invitations, followup, followups, signature, bookings, insertBooking, trackingActivity, toggleTracking
         case calendarSearch, calendarCreate, calendarRefresh, calendarView(Int), calendarMove(Int), calendarToday, calendarJump, calendarHelp, calendarDate(Date)
 
@@ -454,6 +458,21 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     private var awaitingGoTo = false
     private var goToBadges: [ShortcutBadge] = []
     private var mailboxCountBadges: [NSTextField] = []
+    /// Filters (docs/filters.md): the service's state, the sidebar section,
+    /// the reader strip and the model download and sorting tasks.
+    private var filterStatus: FilterStatus?
+    private let sidebarFilters = NSStackView()
+    private var filterStatusInFlight = false
+    private var filterDownloadTask: Task<Void, Never>?
+    private var filterPollTimer: Timer?
+    private var sortTask: Task<Void, Never>?
+    private var sortAgain = false
+    private let filterReaderBar = FilterReaderBar()
+    private var filterBarHeight: NSLayoutConstraint?
+    private let filterEditButton = NSButton(title: "Edit", target: nil, action: nil)
+    private var filterSettings: FilterSettingsSheet?
+    private var currentFilterID: String? { if case .filter(let id) = inboxScope, folder == .inbox { id } else { nil } }
+    private var currentFilter: MailFilterInfo? { currentFilterID.flatMap { id in filterStatus?.filters.first { $0.id == id } } }
 
     init() {
         let bridge = CoreBridge()
@@ -695,6 +714,18 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         railStack.addArrangedSubview(outboxFolder)
         railStack.addArrangedSubview(agentRequestsFolder)
         railStack.setCustomSpacing(19, after: railStack.arrangedSubviews.last!)
+        let filtersHeading = heading("FILTERS", size: 10, weight: .semibold, color: EmailTheme.muted)
+        let filtersMenu = NSMenu()
+        let filterSettingsItem = NSMenuItem(title: "Filter settings…", action: #selector(filterSettingsClicked), keyEquivalent: "")
+        filterSettingsItem.target = self
+        filtersMenu.addItem(filterSettingsItem)
+        filtersHeading.menu = filtersMenu
+        railStack.addArrangedSubview(filtersHeading)
+        sidebarFilters.orientation = .vertical
+        sidebarFilters.alignment = .leading
+        sidebarFilters.spacing = 3
+        railStack.addArrangedSubview(sidebarFilters)
+        railStack.setCustomSpacing(19, after: sidebarFilters)
         let splitsHeading = heading("SPLITS", size: 10, weight: .semibold, color: EmailTheme.muted)
         railStack.addArrangedSubview(splitsHeading)
         sidebarSplits.orientation = .vertical
@@ -724,7 +755,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         // Without an account only Add account, Support & feedback and Commands
         // do something; the rest returns with the first account.
         accountOnlySidebarViews = [composeButton, workspaceHeading, allInboxes, archiveFolder, snoozedFolder, followupsFolder,
-                                   draftFolder, sentFolder, outboxFolder, splitsHeading, sidebarSplits, newSplit,
+                                   draftFolder, sentFolder, outboxFolder, filtersHeading, sidebarFilters, splitsHeading, sidebarSplits, newSplit,
                                    accountsHeading, sidebarAccounts, manageAccounts, agentButton]
         root.addArrangedSubview(rail)
 
@@ -837,6 +868,14 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         inboxEmpty.translatesAutoresizingMaskIntoConstraints = false
         inbox.addSubview(inboxTitle)
         inbox.addSubview(syncButton)
+        filterEditButton.target = self
+        filterEditButton.action = #selector(editCurrentFilterClicked)
+        filterEditButton.isBordered = false
+        filterEditButton.attributedTitle = NSAttributedString(string: "Edit", attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: EmailTheme.accent])
+        filterEditButton.toolTip = "Edit this filter"
+        filterEditButton.isHidden = true
+        filterEditButton.translatesAutoresizingMaskIntoConstraints = false
+        inbox.addSubview(filterEditButton)
         inbox.addSubview(syncStatus)
         inbox.addSubview(search)
         inbox.addSubview(searchFiltersButton)
@@ -855,6 +894,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         NSLayoutConstraint.activate([
             inboxTitle.leadingAnchor.constraint(equalTo: inbox.leadingAnchor, constant: 20), inboxTitle.topAnchor.constraint(equalTo: inbox.topAnchor, constant: 20),
             syncButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), syncButton.centerYAnchor.constraint(equalTo: inboxTitle.centerYAnchor),
+            filterEditButton.trailingAnchor.constraint(equalTo: syncButton.leadingAnchor, constant: -12), filterEditButton.centerYAnchor.constraint(equalTo: inboxTitle.centerYAnchor),
+            inboxTitle.trailingAnchor.constraint(lessThanOrEqualTo: filterEditButton.leadingAnchor, constant: -8),
             syncStatus.leadingAnchor.constraint(equalTo: inboxTitle.leadingAnchor), syncStatus.topAnchor.constraint(equalTo: inboxTitle.bottomAnchor, constant: 4),
             search.leadingAnchor.constraint(equalTo: inbox.leadingAnchor, constant: 18), search.trailingAnchor.constraint(equalTo: searchFiltersButton.leadingAnchor, constant: -6), search.topAnchor.constraint(equalTo: syncStatus.bottomAnchor, constant: 12),
             searchFiltersButton.trailingAnchor.constraint(equalTo: inbox.trailingAnchor, constant: -18), searchFiltersButton.centerYAnchor.constraint(equalTo: search.centerYAnchor), searchFiltersButton.widthAnchor.constraint(equalToConstant: 24), searchFiltersButton.heightAnchor.constraint(equalToConstant: 24),
@@ -1038,6 +1079,18 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             attachmentSave.trailingAnchor.constraint(equalTo: attachmentCard.trailingAnchor, constant: -16),
             attachmentSave.centerYAnchor.constraint(equalTo: attachmentCard.centerYAnchor)
         ])
+        filterReaderBar.isHidden = true
+        filterReaderBar.translatesAutoresizingMaskIntoConstraints = false
+        filterReaderBar.onMove = { [weak self] filterID in self?.moveSelectionToFilter(filterID) }
+        reader.addSubview(filterReaderBar)
+        let filterBarHeight = filterReaderBar.heightAnchor.constraint(equalToConstant: 0)
+        self.filterBarHeight = filterBarHeight
+        NSLayoutConstraint.activate([
+            filterReaderBar.leadingAnchor.constraint(equalTo: reader.leadingAnchor),
+            filterReaderBar.trailingAnchor.constraint(equalTo: reader.trailingAnchor),
+            filterReaderBar.topAnchor.constraint(equalTo: reader.topAnchor),
+            filterBarHeight,
+        ])
         reader.addSubview(subject)
         reader.addSubview(sender)
         reader.addSubview(account)
@@ -1105,7 +1158,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         readerBodyBelowHeader = bodyBelowHeader
         readerBodyBelowNotice = readerBody.topAnchor.constraint(equalTo: remoteImagesNotice.bottomAnchor, constant: 10)
         NSLayoutConstraint.activate([
-            subject.leadingAnchor.constraint(equalTo: reader.leadingAnchor, constant: 28), subject.trailingAnchor.constraint(equalTo: reader.trailingAnchor, constant: -28), subject.topAnchor.constraint(equalTo: reader.topAnchor, constant: 26),
+            subject.leadingAnchor.constraint(equalTo: reader.leadingAnchor, constant: 28), subject.trailingAnchor.constraint(equalTo: reader.trailingAnchor, constant: -28), subject.topAnchor.constraint(equalTo: filterReaderBar.bottomAnchor, constant: 26),
             sender.leadingAnchor.constraint(equalTo: subject.leadingAnchor), sender.trailingAnchor.constraint(lessThanOrEqualTo: subject.trailingAnchor), sender.topAnchor.constraint(equalTo: subject.bottomAnchor, constant: 14),
             account.leadingAnchor.constraint(equalTo: subject.leadingAnchor), account.trailingAnchor.constraint(lessThanOrEqualTo: readerActions.leadingAnchor, constant: -12), account.topAnchor.constraint(equalTo: sender.bottomAnchor, constant: 4),
             readerActions.trailingAnchor.constraint(equalTo: subject.trailingAnchor), readerActions.centerYAnchor.constraint(equalTo: account.centerYAnchor), readerActions.heightAnchor.constraint(equalToConstant: 26),
@@ -1363,6 +1416,16 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                     items.append(paletteItem(.unsubscribe, "Unsubscribe", "ACTIONS", shortcut: "⌘U", aliases: ["mailing list", "newsletter"]))
                 }
                 items.append(paletteItem(.contact, contactPane.isHidden ? "Show contact" : "Hide contact", "ACTIONS", shortcut: "0", aliases: ["sender", "person"]))
+                if let status = filterStatus, status.enabled || thread.filter != nil {
+                    if let filter = thread.filter {
+                        items.append(paletteItem(.moveToFilter(nil), thread.isInbox ? "Remove from \(filter.name)" : "Move to inbox",
+                                                 currentFilterID != nil ? "SUGGESTED" : "ACTIONS", detail: "Later mail from this sender stays in the inbox",
+                                                 aliases: ["not \(filter.name)", "filter", "unfilter", "inbox"]))
+                    }
+                    for filter in status.filters where filter.id != thread.filter?.id {
+                        items.append(paletteItem(.moveToFilter(filter.id), "Move to \(filter.name)", "ACTIONS", detail: filter.action.title, aliases: ["filter", "sort", "move to filter"]))
+                    }
+                }
             }
             items.append(paletteItem(.search, "Search mail", selected ? "ACTIONS" : "SUGGESTED", shortcut: "/", aliases: ["find", "lookup"]))
             items.append(paletteItem(.compose, "New message", selected ? "ACTIONS" : "SUGGESTED", shortcut: "C", aliases: ["compose", "write email", "draft"]))
@@ -1380,6 +1443,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             for split in splits {
                 items.append(paletteItem(.split(split.id), "Go to \(split.name)", "GO TO", detail: "Split inbox", aliases: [split.query]))
             }
+            for filter in filterStatus?.filters ?? [] {
+                items.append(paletteItem(.goToFilter(filter.id), "Go to \(filter.name)", "GO TO", detail: "Filter", aliases: ["filter"]))
+            }
             for account in knownAccounts {
                 items.append(paletteItem(.account(account.id), "Go to \(account.email)", "GO TO", detail: "Account inbox", aliases: [account.displayName]))
             }
@@ -1389,6 +1455,14 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.browseLabels, "Browse labels", "GO TO", aliases: ["go to label", "folders"]))
             items.append(paletteItem(.switchAccount, "Switch account", "GO TO", aliases: ["accounts", "change account"]))
             items.append(paletteItem(.newSplit, "New split inbox", "SETTINGS", aliases: ["create split", "saved search"]))
+            if let status = filterStatus, !knownAccounts.isEmpty {
+                if !status.enabled && status.filters.isEmpty {
+                    items.append(paletteItem(.setUpFilters, "Set up filters", "SETTINGS", detail: "Sort mail automatically on this Mac", aliases: ["filters", "sort mail", "cold outreach", "promotions", "newsletters", "ai"]))
+                } else if status.filters.count < 8 {
+                    items.append(paletteItem(.newFilter, "New filter", "SETTINGS", aliases: ["create filter", "sort mail"]))
+                }
+                items.append(paletteItem(.filterSettings, "Filter settings", "SETTINGS", aliases: ["filters", "sorting", "model", "ai", "sort mail"]))
+            }
             items.append(paletteItem(.addAccount, "Add account", "SETTINGS", aliases: ["connect email", "sign in"]))
             items.append(paletteItem(.notifications, MailNotifications.shared.enabled ? "Disable notifications" : "Enable notifications", "SETTINGS", aliases: ["alerts", "banners", "notifications"]))
             items.append(paletteItem(.testNotifications, "Send test notification", "SETTINGS", aliases: ["test alerts", "test banner", "notifications"]))
@@ -1816,9 +1890,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .saveSnippet: composePane?.saveBodyAsSnippet()
         case .insertSnippet(let text): composePane?.insertSnippet(text)
         // Agent requests have no search field; searching goes back to the inbox.
-        case .search: if folder == .agentRequests { showInbox(scope: .all) }; search.becomeFirstResponder()
+        case .search: if folder == .agentRequests || currentFilterID != nil { showInbox(scope: .all) }; search.becomeFirstResponder()
         case .searchHelp: showNotice(Self.searchSyntaxHelp)
-        case .searchFilters: if folder == .agentRequests { showInbox(scope: .all) }; openSearchFilters()
+        case .searchFilters: if folder == .agentRequests || currentFilterID != nil { showInbox(scope: .all) }; openSearchFilters()
         case .invitations: showCalendarWorkspace()
         case .followup: openWorkflow(calendar: false)
         case .followups: showInbox(scope: .followups)
@@ -1854,6 +1928,11 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .manageAccounts: manageAccounts()
         case .agentAccess: openAgentAccess()
         case .agentRequests: showAgentRequests()
+        case .moveToFilter(let id): moveSelectionToFilter(id)
+        case .goToFilter(let id): showInbox(scope: .filter(id))
+        case .filterSettings: openFilterSettings()
+        case .newFilter: editFilter(nil)
+        case .setUpFilters: openFilterSetup()
         case .shortcuts: showNotice("g then i/u/f/a/s/d/o: Inbox, Unread, Favorites, Archive, Snoozed, Drafts, Outbox\nj / k: next / previous email · Ctrl-D / Ctrl-U: half-page down / up\n/: search · Esc: leave search · e: archive · !: spam · m/u: read/unread\nf: favorite · r/⇧r: reply/reply all · c: compose · l: labels · s: snooze\nx: select · ⇧J/⇧K: extend selection · ⌘A: select loaded results\nz: undo archive/move · ⌘K: commands · ⌘R: sync · ⌘U: unsubscribe\nIn Drafts: ↵ edit · ⌫ or # discard · z: undo discard")
         case .unsubscribe: unsubscribeSelection()
         case .inbox: showInbox(scope: .all)
@@ -2096,6 +2175,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     }
 
     private func refreshSidebar() {
+        refreshFilterSidebar()
         splits = core?.splits() ?? []
         sidebarSplits.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for (index, split) in splits.enumerated() {
@@ -2172,7 +2252,12 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                         let pinned = scope == .pinned
                         let accounts = try core.accountRecordsChecked()
                         let label: String? = if case .label(let name) = scope { name } else { nil }
-                        let rows = try core.threadsChecked(query: query.isEmpty ? nil : query, limit: requestedLimit, accountID: accountID, splitID: splitID, unreadOnly: unreadOnly, snoozed: snoozed, pinned: pinned, followups: scope == .followups, label: label, archived: scope == .archived, sent: scope == .sent)
+                        let rows: [MailThread]
+                        if case .filter(let filterID) = scope {
+                            rows = try core.filterThreadsChecked(filterID: filterID, limit: max(200, requestedLimit))
+                        } else {
+                            rows = try core.threadsChecked(query: query.isEmpty ? nil : query, limit: requestedLimit, accountID: accountID, splitID: splitID, unreadOnly: unreadOnly, snoozed: snoozed, pinned: pinned, followups: scope == .followups, label: label, archived: scope == .archived, sent: scope == .sent)
+                        }
                         let raw = core.call(["op": "unread_counts"]) as? [String: Any] ?? [:]
                         var counts = (raw["accounts"] as? [String: Int]) ?? [:]
                         counts["__total"] = raw["total"] as? Int ?? 0
@@ -2206,6 +2291,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                         return thread
                     }
                     applyInboxSnapshot(selectedID: selectedID)
+                    refreshFilters()
                     if !query.isEmpty { syncStatus.stringValue = "\(threads.count.formatted()) downloaded conversations · Esc clears search"; syncStatus.toolTip = Self.searchSyntaxHelp }
                     else if syncStatus.stringValue.hasPrefix("Search:") || syncStatus.stringValue.hasPrefix("Searching") { syncStatus.stringValue = "Downloaded mail"; syncStatus.toolTip = nil }
                     if let pendingID = pendingContactThreadID {
@@ -2246,6 +2332,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         suppressSelectionChanges = false
         if threads.isEmpty { clearReader() }
         else if displayedThreadID == nil || threads[selection].id != displayedThreadID { show(threads[selection]) }
+        else { updateFilterBar(threads[selection]) }
     }
 
     @objc private func addAccountClicked() { addAccount() }
@@ -2448,6 +2535,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         }
         closeCalendarWorkspace()
         clearGoTo()
+        let leavingFilter = currentFilterID != nil
         folder = .inbox
         inboxScope = scope
         inboxTitle?.stringValue = switch scope {
@@ -2461,7 +2549,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .account(let id): knownAccounts.first(where: { $0.id == id })?.email ?? "Account"
         case .split(let id): splits.first(where: { $0.id == id })?.name ?? "Split"
         case .label(let name): "#\(name)"
+        case .filter(let id): filterStatus?.filters.first(where: { $0.id == id })?.name ?? "Filter"
         }
+        if case .filter = scope { updateFilterSubtitle() }
+        else if leavingFilter { syncStatus.stringValue = ""; syncStatus.toolTip = nil }
         search.placeholderString = "Search all mail  /"
         search.stringValue = ""
         canLoadOlder = true
@@ -2557,6 +2648,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         agentRequestsPill.text = total > 99 ? "99+" : String(total)
         agentRequestsPill.isHidden = total == 0
         agentRequestsSidebarButton?.isHidden = hasNoAccounts || !(agentAccessOn || total > 0 || folder == .agentRequests)
+        // A hidden row loses its spacing; keep the gap before FILTERS either way.
+        if let outbox = outboxSidebarButton, let stack = outbox.superview as? NSStackView {
+            stack.setCustomSpacing(agentRequestsSidebarButton?.isHidden == false ? stack.spacing : 19, after: outbox)
+        }
         let attention = total > 0 ? "\(total) waiting" : "nothing waiting"
         agentRequestsSidebarButton?.setAccessibilityLabel("Agent requests, \(attention)")
     }
@@ -2728,7 +2823,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
     @objc private func showDraftsClicked() { showDrafts() }
 
     @objc private func inboxDidScroll(_ notification: Notification) {
-        guard folder == .inbox, inboxScope != .snoozed, inboxScope != .followups, search.stringValue.isEmpty, !isLoadingOlder, canLoadOlder, !knownAccounts.isEmpty, !threads.isEmpty else { return }
+        guard folder == .inbox, currentFilterID == nil, inboxScope != .snoozed, inboxScope != .followups, search.stringValue.isEmpty, !isLoadingOlder, canLoadOlder, !knownAccounts.isEmpty, !threads.isEmpty else { return }
         let visible = inboxScroll.documentVisibleRect
         guard visible.maxY >= table.bounds.height - table.rowHeight * 4 else { return }
         loadOlderMail()
@@ -3115,6 +3210,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 let result = try await core.callAsync(["op": "sync_all"])
                 scheduleQueuedActionRetry(result)
                 refreshInbox()
+                // Sort new mail first, so a notification never announces
+                // mail a filter takes out of the inbox.
+                await sortBeforeNotifying()
                 if let rows = result as? [[String: Any]] {
                     let successful = rows.filter { $0["error"] == nil && ($0["data"] as? [String: Any])?["sync_error"] == nil }.compactMap { $0["account_id"] as? String }
                     await MailNotifications.shared.recordSync(core: core, successfulAccountIDs: successful)
@@ -3138,6 +3236,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                     } else {
                         syncStatus.stringValue = "Updated just now"
                         syncStatus.toolTip = nil
+                        updateFilterSubtitle()
                     }
                 } else {
                     syncStatus.stringValue = "Updated just now"
@@ -3711,7 +3810,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         archiveButton.toolTip = inboxScope == .archived ? "Move to Inbox (⇧E)" : "Archive (E)"
         archiveButton.setAccessibilityLabel(inboxScope == .archived ? "Move to Inbox" : "Archive")
         updateReaderShortcuts()
-        let showScopeTabs = folder == .inbox
+        let filterView = currentFilterID != nil
+        let showScopeTabs = folder == .inbox && !filterView
         scopeTabs.isHidden = !showScopeTabs
         scopeTabButtons.forEach { $0.isHidden = !showScopeTabs }
         for (index, button) in scopeTabButtons.enumerated() {
@@ -3755,7 +3855,8 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         }
         agentRequestReader.isHidden = !requestsActive
         // No search or filters in Agent requests; they come back on leaving.
-        let searchHidden = folder == .agentRequests
+        let searchHidden = folder == .agentRequests || filterView
+        filterEditButton.isHidden = !filterView
         search.isHidden = searchHidden
         searchFiltersButton.isHidden = searchHidden
         controlsBelowStatus?.isActive = false
@@ -3811,7 +3912,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case .drafts: search.stringValue.isEmpty ? "No drafts yet." : "No drafts match your search."
         case .outbox: search.stringValue.isEmpty ? "Nothing scheduled to send." : "No outgoing messages match."
         case .agentRequests: "Nothing waiting."
-        case .inbox: search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : "No messages in this view.") : "No messages match your search."
+        case .inbox: currentFilterID != nil ? "Nothing here yet." : (search.stringValue.isEmpty ? (inboxScope == .pinned ? "No favorites yet." : "No messages in this view.") : "No messages match your search.")
         }
     }
 
@@ -3919,8 +4020,18 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         cell.addSubview(unreadDot)
         let sender = listLabel(displayName(thread.sender), size: 12, weight: thread.unread ? .semibold : .regular)
         let subject = listLabel(thread.subject, size: 12, weight: thread.unread ? .semibold : .regular)
-        let tags = thread.labels.isEmpty ? "" : thread.labels.prefix(2).map { "#\($0)" }.joined(separator: " ") + " · "
-        let preview = listLabel(tags + thread.preview, size: 11, weight: .regular, color: EmailTheme.muted)
+        let previewText: String
+        if currentFilterID != nil {
+            // A filter's own view: why it is here, in the model's words.
+            previewText = thread.filter.map { $0.reason.isEmpty ? thread.preview : $0.reason } ?? thread.preview
+        } else {
+            // Keep-in-inbox filters tag the row like a label.
+            let filterTag = thread.filter.flatMap { $0.action == .inbox ? [$0.name] : nil } ?? []
+            let labels = thread.labels.filter { label in !filterTag.contains { $0.caseInsensitiveCompare(label) == .orderedSame } }
+            let names = Array((filterTag + labels).prefix(2))
+            previewText = (names.isEmpty ? "" : names.map { "#\($0)" }.joined(separator: " ") + " · ") + thread.preview
+        }
+        let preview = listLabel(previewText, size: 11, weight: .regular, color: EmailTheme.muted)
         let time = listLabel(thread.time, size: 10, weight: .regular, color: EmailTheme.muted)
         let favorite = NSButton(title: "", target: self, action: #selector(toggleFavoriteFromRow(_:)))
         favorite.tag = row
@@ -4113,6 +4224,11 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             emptyTitle.stringValue = "No sent mail cached yet"
             emptyDetail.stringValue = "Messages sent from Email appear here after delivery. Only locally available sent mail is shown."
         }
+        if currentFilterID != nil {
+            emptyTitle.stringValue = "Nothing here yet"
+            emptyDetail.stringValue = ""
+        }
+        updateFilterBar(nil)
         emptyAction.isHidden = folder != .inbox || !knownAccounts.isEmpty || searching
         bodyScroll.isHidden = true
         webView?.isHidden = true
@@ -4164,6 +4280,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         snoozeButton.toolTip = thread.snoozedUntil == nil ? "Snooze (S)" : "Unsnooze (S)"
         snoozeButton.setAccessibilityLabel(thread.snoozedUntil == nil ? "Snooze" : "Unsnooze")
         readerBody.isHidden = false
+        updateFilterBar(thread)
         recipientHeaderScript = nil
         let generation = messageLoadGeneration
         let subjectText = thread.subject.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5170,7 +5287,9 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         case "k":
             if event.modifierFlags.contains(.shift) { extendMarkedSelection(-1) } else { select(selection - 1) }
             return true
-        case "/" where folder != .agentRequests: search.becomeFirstResponder(); return true
+        case "/" where folder != .agentRequests:
+            if currentFilterID != nil { showInbox(scope: .all) }
+            search.becomeFirstResponder(); return true
         case "e" where folder == .inbox: archiveSelection(allowRestore: event.modifierFlags.contains(.shift)); return true
         case "m" where folder == .inbox: setRead(true); return true
         case "u" where folder == .inbox: setRead(false); return true
@@ -5308,6 +5427,394 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         alert.messageText = "Email"
         alert.informativeText = message
         alert.runModal()
+    }
+}
+
+
+// MARK: - Filters (docs/filters.md)
+
+/// Resumes one waiter once, whichever finishes first.
+@MainActor
+private final class FilterWaitGate {
+    var continuation: CheckedContinuation<Void, Never>?
+    func resume() { continuation?.resume(); continuation = nil }
+}
+
+extension MailWindow {
+    /// The FILTERS section: Set up filters, or the filters with a status row
+    /// while the model is missing or downloading, then New filter.
+    private func refreshFilterSidebar() {
+        sidebarFilters.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        guard let status = filterStatus else { return }
+        if !status.enabled && status.filters.isEmpty {
+            let setUp = sidebarButton("Set up filters", symbol: "line.3.horizontal.decrease", action: #selector(setUpFiltersClicked))
+            setUp.toolTip = "Sort mail automatically on this Mac"
+            sidebarFilters.addArrangedSubview(setUp)
+            return
+        }
+        if !status.enabled {
+            sidebarFilters.addArrangedSubview(filterStatusRow("Sorting is off", symbol: "pause.circle"))
+        } else if status.downloading {
+            sidebarFilters.addArrangedSubview(filterStatusRow("Getting ready… \(status.percent)%", symbol: "arrow.down.circle", singleLine: true))
+        } else if !status.installed, status.downloadError != nil {
+            sidebarFilters.addArrangedSubview(filterStatusRow("Download failed – Retry", symbol: "exclamationmark.circle"))
+        } else if !status.installed {
+            sidebarFilters.addArrangedSubview(filterStatusRow("Download model to start sorting", symbol: "arrow.down.circle"))
+        }
+        for (index, filter) in status.filters.enumerated() {
+            let active = calendarWorkspace == nil && currentFilterID == filter.id
+            let button = sidebarButton(filter.name, symbol: filter.action.symbol, action: #selector(showFilterClicked(_:)), active: active)
+            button.tag = index
+            let count = filter.action == .ignore ? 0 : filter.unread
+            if count > 0 {
+                // Like the account rows: the name truncates before the count.
+                button.title = ""
+                let label = NSTextField(labelWithString: filter.name)
+                label.font = .systemFont(ofSize: 12.5, weight: active ? .semibold : .regular)
+                label.textColor = active ? EmailTheme.accent : EmailTheme.ink
+                label.lineBreakMode = .byTruncatingTail
+                let badge = NSTextField(labelWithString: count > 999 ? "999+" : String(count))
+                badge.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+                badge.textColor = EmailTheme.muted
+                badge.alignment = .right
+                for field in [label, badge] { field.translatesAutoresizingMaskIntoConstraints = false; button.addSubview(field) }
+                NSLayoutConstraint.activate([
+                    label.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 21),
+                    label.trailingAnchor.constraint(lessThanOrEqualTo: badge.leadingAnchor, constant: -5),
+                    label.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+                    badge.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -6),
+                    badge.centerYAnchor.constraint(equalTo: button.centerYAnchor)
+                ])
+                badge.setContentCompressionResistancePriority(.required, for: .horizontal)
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            }
+            button.setAccessibilityLabel(count > 0 ? "\(filter.name), \(count) unread" : filter.name)
+            button.toolTip = "\(filter.name) · \(filter.action.title)"
+            let menu = NSMenu()
+            for (title, action) in [("Edit filter…", #selector(editFilterMenuClicked(_:))), ("Delete filter…", #selector(deleteFilterMenuClicked(_:)))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                item.representedObject = filter.id
+                menu.addItem(item)
+            }
+            button.menu = menu
+            sidebarFilters.addArrangedSubview(button)
+        }
+        if status.enabled && status.filters.count < 8 {
+            sidebarFilters.addArrangedSubview(sidebarButton("New filter", symbol: "plus", action: #selector(newFilterClicked), primary: true))
+        }
+    }
+
+    /// A sidebar row about the model: its text wraps; it opens Filter settings.
+    private func filterStatusRow(_ text: String, symbol: String, singleLine: Bool = false) -> NSButton {
+        let button = sidebarButton("", symbol: nil, action: #selector(filterSettingsClicked))
+        button.constraints.filter { $0.firstAttribute == .height }.forEach { $0.isActive = false }
+        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 13, weight: .regular)) ?? NSImage())
+        icon.contentTintColor = EmailTheme.muted
+        let label = singleLine ? NSTextField(labelWithString: text) : NSTextField(wrappingLabelWithString: text)
+        // Progress stays on one line, a little smaller so the percent fits.
+        label.font = .systemFont(ofSize: singleLine ? 12 : 12.5)
+        label.textColor = EmailTheme.muted
+        label.isSelectable = false
+        label.alignment = .left
+        label.preferredMaxLayoutWidth = 113
+        for view in [icon, label] as [NSView] { view.translatesAutoresizingMaskIntoConstraints = false; button.addSubview(view) }
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 0),
+            icon.widthAnchor.constraint(equalToConstant: 17),
+            icon.firstBaselineAnchor.constraint(equalTo: label.firstBaselineAnchor),
+            label.leadingAnchor.constraint(equalTo: button.leadingAnchor, constant: 21),
+            singleLine ? label.widthAnchor.constraint(lessThanOrEqualToConstant: 115) : label.widthAnchor.constraint(equalToConstant: 113),
+            label.topAnchor.constraint(equalTo: button.topAnchor, constant: 6),
+            label.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: -6),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 29),
+        ])
+        button.setAccessibilityLabel(text)
+        button.toolTip = "Filter settings"
+        return button
+    }
+
+    @objc private func setUpFiltersClicked() { openFilterSetup() }
+    @objc private func filterSettingsClicked() { openFilterSettings() }
+    @objc private func newFilterClicked() { editFilter(nil) }
+    @objc private func editCurrentFilterClicked() { if let filter = currentFilter { editFilter(filter) } }
+    @objc private func showFilterClicked(_ sender: NSButton) {
+        guard let filters = filterStatus?.filters, filters.indices.contains(sender.tag) else { return }
+        showInbox(scope: .filter(filters[sender.tag].id))
+    }
+    @objc private func editFilterMenuClicked(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String, let filter = filterStatus?.filters.first(where: { $0.id == id }) else { return }
+        editFilter(filter)
+    }
+    @objc private func deleteFilterMenuClicked(_ sender: NSMenuItem) {
+        guard let core, let id = sender.representedObject as? String, let filter = filterStatus?.filters.first(where: { $0.id == id }) else { return }
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(filter.name)”?"
+        alert.informativeText = "Its conversations stay where they are. Nothing is deleted from your mail."
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Delete filter")
+        alert.beginSheetModal(for: self) { [weak self] response in
+            guard response == .alertSecondButtonReturn else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                Task { @MainActor in
+                    do {
+                        _ = try await core.callAsync(["op": "delete_filter", "id": id])
+                        if self.currentFilterID == id { self.showInbox(scope: .all) }
+                        await self.reloadFilterStatus()
+                        self.refreshInbox()
+                    } catch { self.showNotice(error.localizedDescription) }
+                }
+            }
+        }
+    }
+
+    /// Re-read `filters_status` (cheap) unless a read is already running.
+    private func refreshFilters() {
+        guard core != nil, !filterStatusInFlight else { return }
+        Task { @MainActor in await reloadFilterStatus() }
+    }
+
+    private func reloadFilterStatus() async {
+        guard let core else { return }
+        filterStatusInFlight = true
+        defer { filterStatusInFlight = false }
+        guard let status = FilterStatus(try? await core.callAsync(["op": "filters_status"])) else { return }
+        applyFilterStatus(status)
+    }
+
+    private func applyFilterStatus(_ status: FilterStatus) {
+        let first = filterStatus == nil
+        let changed = status != filterStatus
+        filterStatus = status
+        if changed {
+            refreshFilterSidebar()
+            filterSettings?.update(status)
+            if let id = currentFilterID {
+                if let filter = status.filters.first(where: { $0.id == id }) { inboxTitle?.stringValue = filter.name }
+                else { showInbox(scope: .all) }
+            }
+            if !filterReaderBar.isHidden, threads.indices.contains(selection) { updateFilterBar(threads[selection]) }
+        }
+        updateFilterSubtitle()
+        if status.downloading { startFilterPoll() } else if filterDownloadTask == nil { stopFilterPoll() }
+        if first, status.enabled, !status.installed, !status.downloading, status.downloadError == nil, status.downloadedBytes > 0 {
+            // A download interrupted by quitting resumes where it stopped.
+            startModelDownload()
+        }
+        if first { startSorting() }
+    }
+
+    /// "Skips your inbox · 12 this week" under a filter's title.
+    private func updateFilterSubtitle() {
+        guard let filter = currentFilter else { return }
+        syncStatus.stringValue = "\(filter.action.summary) · \(filter.lastWeek.formatted()) this week"
+        syncStatus.toolTip = filter.description
+    }
+
+    private func updateFilterBar(_ thread: MailThread?) {
+        let visible = folder == .inbox && thread?.filter != nil && thread?.id != nil
+        if visible, let thread { filterReaderBar.show(thread, filters: filterStatus?.filters ?? []) }
+        filterReaderBar.isHidden = !visible
+        filterBarHeight?.constant = visible ? 46 : 0
+    }
+
+    // MARK: Sheets
+
+    func openFilterSetup() {
+        guard let core, FilterSetupSheet.presented == nil, attachedSheet == nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let status = FilterStatus(try? await core.callAsync(["op": "filters_status"])) else { return }
+            applyFilterStatus(status)
+            // Set up once; afterwards the same entry points lead to settings.
+            if status.enabled || !status.filters.isEmpty { openFilterSettings(); return }
+            let sheet = FilterSetupSheet(status: status)
+            sheet.present(on: self) { [weak self] chosen in
+                guard let self else { return }
+                makeFirstResponder(table)
+                guard let chosen else { return }
+                Task { @MainActor in await self.setUpFilters(chosen) }
+            }
+        }
+    }
+
+    private func setUpFilters(_ chosen: [(starter: MailFilterStarter, action: MailFilterAction)]) async {
+        guard let core else { return }
+        do {
+            let created = FilterStatus(try await core.callAsync(["op": "filters_setup", "starter_keys": chosen.map(\.starter.key)]))
+            for choice in chosen where choice.action != choice.starter.action {
+                guard let filter = created?.filters.first(where: { $0.name == choice.starter.name }) else { continue }
+                _ = try await core.callAsync(["op": "upsert_filter", "id": filter.id, "name": filter.name, "description": filter.description, "action": choice.action.rawValue])
+            }
+            await reloadFilterStatus()
+            if filterStatus?.installed == true { startSorting() } else { startModelDownload() }
+        } catch {
+            showNotice(error.localizedDescription)
+            await reloadFilterStatus()
+        }
+    }
+
+    /// New filter (nil) or Edit filter, on the main window or on Filter settings.
+    func editFilter(_ filter: MailFilterInfo?, on parent: NSWindow? = nil) {
+        guard let core, FilterEditorSheet.presented == nil else { return }
+        let host = parent ?? self
+        guard host.attachedSheet == nil else { return }
+        let editor = FilterEditorSheet(core: core, existing: filter)
+        editor.present(on: host) { [weak self] savedID, deleted in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.reloadFilterStatus()
+                if deleted, let filter, self.currentFilterID == filter.id { self.showInbox(scope: .all) }
+                else if filter == nil, parent == nil, let savedID { self.showInbox(scope: .filter(savedID)) }
+                else if self.currentFilterID != nil { self.refreshInbox() }
+                if parent == nil { self.makeFirstResponder(self.table) }
+            }
+        }
+    }
+
+    func openFilterSettings() {
+        guard let core, FilterSettingsSheet.presented == nil, attachedSheet == nil else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let status = FilterStatus(try? await core.callAsync(["op": "filters_status"])) else { return }
+            applyFilterStatus(status)
+            guard FilterSettingsSheet.presented == nil, attachedSheet == nil else { return }
+            let sheet = FilterSettingsSheet(status: status)
+            sheet.onSetEnabled = { [weak self] enabled in self?.setFiltersEnabled(enabled) }
+            sheet.onDownload = { [weak self] in self?.startModelDownload() }
+            sheet.onCancelDownload = { [weak self] in
+                Task { @MainActor in
+                    _ = try? await core.callAsync(["op": "filters_cancel_download"])
+                    await self?.reloadFilterStatus()
+                }
+            }
+            sheet.onRemoveModel = { [weak self] in
+                Task { @MainActor in
+                    do { _ = try await core.callAsync(["op": "filters_remove_model"]) }
+                    catch { self?.showNotice(error.localizedDescription) }
+                    await self?.reloadFilterStatus()
+                }
+            }
+            sheet.onEdit = { [weak self, weak sheet] filter in
+                guard let self, let sheet else { return }
+                self.editFilter(filter, on: sheet.panel)
+            }
+            sheet.onClose = { [weak self] in
+                guard let self else { return }
+                filterSettings = nil
+                makeFirstResponder(table)
+            }
+            filterSettings = sheet
+            sheet.present(on: self)
+        }
+    }
+
+    private func setFiltersEnabled(_ enabled: Bool) {
+        guard let core else { return }
+        Task { @MainActor in
+            do {
+                if let status = FilterStatus(try await core.callAsync(["op": "filters_set_enabled", "enabled": enabled])) { applyFilterStatus(status) }
+                if enabled, let status = filterStatus {
+                    if status.installed { startSorting() } else if !status.downloading { startModelDownload() }
+                }
+            } catch {
+                showNotice(error.localizedDescription)
+                await reloadFilterStatus()
+            }
+        }
+    }
+
+    // MARK: Model download and sorting
+
+    /// Download the model on its own connection; the sidebar shows progress
+    /// from `filters_status` every half second. Sorting starts when it is in.
+    func startModelDownload() {
+        guard let core, filterDownloadTask == nil else { return }
+        startFilterPoll()
+        filterDownloadTask = Task { @MainActor [weak self] in
+            _ = try? await core.callAsync(["op": "filters_download_model"])
+            guard let self else { return }
+            filterDownloadTask = nil
+            stopFilterPoll()
+            await reloadFilterStatus()
+            startSorting()
+        }
+    }
+
+    private func startFilterPoll() {
+        guard filterPollTimer == nil else { return }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshFilters() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        filterPollTimer = timer
+    }
+
+    private func stopFilterPoll() {
+        filterPollTimer?.invalidate()
+        filterPollTimer = nil
+    }
+
+    /// Sort waiting mail in 20-second passes until none is left. One loop at
+    /// a time; a request while it runs makes it go round once more.
+    @discardableResult
+    private func startSorting() -> Task<Void, Never>? {
+        guard let core, let status = filterStatus, status.enabled, status.installed, !status.filters.isEmpty else { return nil }
+        if let sortTask { sortAgain = true; return sortTask }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            repeat {
+                sortAgain = false
+                for _ in 0..<100 {
+                    guard let result = try? await core.callAsync(["op": "filters_wake", "budget_ms": 20_000]) as? [String: Any] else { break }
+                    if (result["decisions"] as? [Any])?.isEmpty == false { refreshInbox() }
+                    let remaining = (result["remaining"] as? NSNumber)?.intValue ?? 0
+                    if result["busy"] as? Bool == true || result["error"] is String || result["model_missing"] as? Bool == true || remaining == 0 { break }
+                }
+            } while sortAgain
+            sortTask = nil
+            refreshInbox()
+            await reloadFilterStatus()
+        }
+        sortTask = task
+        return task
+    }
+
+    /// After a sync: sort what arrived before notifications are decided,
+    /// waiting at most 25 seconds (the first pass handles the newest mail).
+    private func sortBeforeNotifying() async {
+        if let status = FilterStatus(try? await core?.callAsync(["op": "filters_status"])) { applyFilterStatus(status) }
+        guard let task = startSorting() else { return }
+        let gate = FilterWaitGate()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            gate.continuation = continuation
+            Task { @MainActor in await task.value; gate.resume() }
+            Task { @MainActor in try? await Task.sleep(nanoseconds: 25_000_000_000); gate.resume() }
+        }
+    }
+
+    /// Move the selected conversation to a filter, or back to the inbox (nil).
+    private func moveSelectionToFilter(_ filterID: String?) {
+        guard let core, folder == .inbox, threads.indices.contains(selection), let threadID = threads[selection].id else { return }
+        let thread = threads[selection]
+        let target = filterID.flatMap { id in filterStatus?.filters.first { $0.id == id } }
+        var request: [String: Any] = ["op": "move_to_filter", "thread_id": threadID]
+        request["filter_id"] = filterID ?? NSNull() as Any
+        Task { @MainActor in
+            do {
+                _ = try await core.callAsync(request)
+                // The row leaves this list when it no longer belongs here.
+                let inboxView = [InboxScope.all, .unread].contains(inboxScope) || { if case .account = inboxScope { return true }; if case .split = inboxScope { return true }; return false }()
+                let leaves = currentFilterID != nil || (inboxView && target?.action.leavesInbox == true)
+                if leaves, threads.indices.contains(selection), threads[selection].id == threadID { removeSelectedThreadFromInbox() }
+                if currentFilterID == nil { syncStatus.stringValue = target.map { "Moved to \($0.name)" } ?? "Moved to inbox" }
+                refreshInbox()
+                await reloadFilterStatus()
+                if let accountID = thread.accountID, !accountID.hasPrefix("demo:"),
+                   let result = try? await core.callAsync(["op": "sync_account", "account_id": accountID]) {
+                    scheduleQueuedActionRetry(result)
+                }
+            } catch { showNotice(error.localizedDescription) }
+        }
     }
 }
 

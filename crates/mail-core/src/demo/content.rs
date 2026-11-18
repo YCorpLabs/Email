@@ -104,18 +104,17 @@ pub(crate) fn launch(c: &Clock) -> Demo {
     newsletters(c, &mut demo);
     promotions(c, &mut demo);
     support(c, &mut demo);
+    cold_outreach(c, &mut demo);
     sent(c, &mut demo);
     older(c, &mut demo);
     drafts(c, &mut demo);
     demo.splits = vec![
+        // Not Newsletters, Promotions or Notifications: those are filter
+        // starters, and the sidebar would list them twice.
         ("demo-split-team", "Team", "from:*@fernhill.example"),
-        (
-            "demo-split-notifications",
-            "Notifications",
-            "*@forgeyard.test, *@pingwell.test, *@quillboard.test",
-        ),
-        ("demo-split-newsletters", "Newsletters", "label:Newsletters"),
-        ("demo-split-promotions", "Promotions", "label:Promotions"),
+        ("demo-split-launch", "Launch", "label:Launch"),
+        ("demo-split-travel", "Travel", "label:Travel"),
+        ("demo-split-support", "Support", "label:Support"),
     ];
     demo.snippets = vec![
         (
@@ -1922,6 +1921,31 @@ fn promotions(c: &Clock, d: &mut Demo) {
             );
         }
     }
+}
+
+/// Sales pitches from strangers, for Filters. Kept few and plausible.
+fn cold_outreach(c: &Clock, d: &mut Demo) {
+    const RAFAEL: P = P("Rafael Mendes", "rafael@brightforge.example");
+    const DANA: P = P("Dana Whitaker", "dana@rankrocket.example");
+    const THEO: P = P("Theo Brandt", "theo@outboundlabs.example");
+    const LEAH: P = P("Leah from Stackhire", "leah@stackhire.example");
+    d.threads.push(
+        Thread::work("pitch-agency", "Quick question about Fernhill’s mobile app")
+            .msg(from(RAFAEL, c.ago(95), "Hi Alex,\n\nI saw Fernhill’s dispatch tool on Product Hunt, really slick. We’re a 40-person studio in Lisbon that has shipped mobile apps for logistics teams, and we could take the iOS and Android clients off your plate.\n\nOpen to a 15-minute call next week? Here’s my calendar: https://cal.brightforge.example/rafael\n\nRafael Mendes\nBrightforge Studio").unread()),
+    );
+    d.threads.push(
+        Thread::work("pitch-seo", "Fernhill isn’t ranking for “dispatch software”")
+            .msg(from(DANA, c.day(1, 9, 12), "Hey Alex,\n\nI ran a quick audit of fernhill.example and found 14 issues that are hurting your Google ranking for “dispatch software”. We can fix them in 30 days, guaranteed.\n\nWant me to send over the full report?\n\nDana\nRankRocket").unread()),
+    );
+    d.threads.push(
+        Thread::work("pitch-outbound", "Demos for Fernhill?")
+            .msg(from(THEO, c.day(4, 10, 3), "Hi Alex,\n\nWe help B2B founders book 20+ qualified demos a month without hiring SDRs. Teams like yours usually see results in the first two weeks.\n\nWorth a quick chat?\n\nTheo").read_if(true))
+            .msg(from(THEO, c.ago(40), "Hi Alex, just bumping this to the top of your inbox. Would Thursday work for a 10-minute call?\n\nTheo").unread()),
+    );
+    d.threads.push(
+        Thread::work("pitch-recruiter", "Senior iOS engineers, available now")
+            .msg(from(LEAH, c.day(2, 14, 41), "Hi Alex,\n\nCongrats on the growth at Fernhill! We have three vetted senior iOS engineers available for contract work from next month. Would you like to see their profiles?\n\nLeah\nStackhire").unread()),
+    );
 }
 
 fn support(c: &Clock, d: &mut Demo) {

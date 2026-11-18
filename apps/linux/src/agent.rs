@@ -318,6 +318,8 @@ pub(super) fn request_rows(ui: &Ui) -> Vec<Mail> {
             received: short_time(row["created_at_ms"].as_i64()),
             unread: false,
             labels: Vec::new(),
+            filter: None,
+            is_inbox: false,
         })
         .collect();
     REQUESTS.with(|slot| *slot.borrow_mut() = rows);

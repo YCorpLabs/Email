@@ -82,8 +82,9 @@ software company in Oslo: work (`alex@fernhill.example`) and personal
   dentist reminder, the library, a climbing gym and a coffee receipt with an
   inline logo.
 - **State:** labels (Work, Launch, Receipts, Travel, Newsletters, Promotions,
-  Notifications, Support, Family), splits (Team, Notifications, Newsletters,
-  Promotions), six favourites, five snoozed, two follow-ups, about 20 sent
+  Notifications, Support, Family), splits (Team, Launch, Travel, Support;
+  none named like a filter starter, so turning filters on lists nothing
+  twice), six favourites, five snoozed, two follow-ups, about 20 sent
   conversations, four drafts (one a reply), three scheduled sends, a work
   signature and three snippets.
 

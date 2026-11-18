@@ -29,6 +29,7 @@ mod agenda;
 mod agent;
 mod booking;
 mod cleanup;
+mod filters;
 mod parity;
 mod reader_links;
 mod recipient_completion;
@@ -250,6 +251,7 @@ fn appearance_css(dark: bool) -> String {
 .recipient-hint { font-size: 10px; color: @muted; padding: 6px; }
 "#);
     css.push_str(agent::CSS);
+    css.push_str(filters::CSS);
     css.push_str(
         r#"
 .cleanup-window { background: @canvas; color: @ink; }
@@ -472,6 +474,45 @@ fn mail_icon(name: &str) -> gtk::DrawingArea {
                     circle(12., y, 0.8);
                 }
             }
+            "filter-skip-symbolic" => {
+                // Tray with an arrow into it: mail that skips the inbox.
+                path(&[(3., 13.), (3., 20.), (21., 20.), (21., 13.)]);
+                path(&[(3., 13.), (8., 13.), (9.5, 16.), (14.5, 16.), (16., 13.), (21., 13.)]);
+                path(&[(12., 3.), (12., 11.)]);
+                path(&[(8.5, 7.5), (12., 11.), (15.5, 7.5)]);
+            }
+            "filter-ignore-symbolic" => {
+                // An eye, struck through.
+                cr.move_to(2.5, 12.);
+                cr.curve_to(5., 7., 8.5, 5.5, 12., 5.5);
+                cr.curve_to(15.5, 5.5, 19., 7., 21.5, 12.);
+                cr.curve_to(19., 17., 15.5, 18.5, 12., 18.5);
+                cr.curve_to(8.5, 18.5, 5., 17., 2.5, 12.);
+                cr.close_path();
+                let _ = cr.stroke();
+                circle(12., 12., 3.);
+                path(&[(4., 4.), (20., 20.)]);
+            }
+            // Filter status rows, like the macOS arrow.down.circle,
+            // exclamationmark.circle and pause.circle.
+            "filter-download-symbolic" => {
+                circle(12., 12., 9.);
+                path(&[(12., 7.), (12., 16.5)]);
+                path(&[(8.5, 13.), (12., 16.5), (15.5, 13.)]);
+            }
+            "filter-failed-symbolic" => {
+                circle(12., 12., 9.);
+                path(&[(12., 7.), (12., 13.)]);
+                circle(12., 16.5, 0.4);
+            }
+            "filter-paused-symbolic" => {
+                circle(12., 12., 9.);
+                path(&[(10., 8.5), (10., 15.5)]);
+                path(&[(14., 8.5), (14., 15.5)]);
+            }
+            "go-next-symbolic" => {
+                path(&[(9., 5.), (16., 12.), (9., 19.)]);
+            }
             "x-office-calendar-symbolic" => {
                 path(&[(4., 5.), (20., 5.), (20., 21.), (4., 21.), (4., 5.)]);
                 path(&[(4., 10.), (20., 10.)]);
@@ -614,6 +655,9 @@ struct Mail {
     received: String,
     unread: bool,
     labels: Vec<String>,
+    /// The filter this conversation was sorted into, if any.
+    filter: Option<mail_core::ThreadFilterTag>,
+    is_inbox: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -629,6 +673,8 @@ enum MailView {
     Drafts,
     Outbox,
     AgentRequests,
+    /// A filter's conversations (docs/filters.md).
+    Filter(String),
 }
 enum AttachmentEvent {
     Portrait {
@@ -1214,6 +1260,9 @@ impl Ui {
         self.list.selected_row()?.widget_name().parse().ok()
     }
     fn thread_summaries(&self, view: &MailView) -> Result<Vec<ThreadSummary>, String> {
+        if let MailView::Filter(id) = view {
+            return filters::threads(self, id);
+        }
         let key = self.search_scope_key();
         if let Some((cached_key, result)) = self.search_preview.borrow_mut().take() {
             if cached_key == key {
@@ -1246,7 +1295,7 @@ impl Ui {
         }
         // Agent requests hide the search field, so start them without a query
         // (before the generation bump below, which cancels that search).
-        if matches!(view, MailView::AgentRequests) && !self.search.text().is_empty() {
+        if matches!(view, MailView::AgentRequests | MailView::Filter(_)) && !self.search.text().is_empty() {
             self.search.set_text("");
         }
         self.search_generation
@@ -1254,8 +1303,8 @@ impl Ui {
         self.search_preview.borrow_mut().take();
         self.compact_navigation.set(false);
         self.compact_message.set(false);
-        // Agent requests have no inbox scopes, search field or filters.
-        let requests = matches!(view, MailView::AgentRequests);
+        // Agent requests and filters have no inbox scopes, search field or filters.
+        let requests = matches!(view, MailView::AgentRequests | MailView::Filter(_));
         for button in &self.filter_buttons {
             button.set_visible(!requests);
         }
@@ -1415,6 +1464,7 @@ impl Ui {
             invitations.connect_clicked(move |_| agenda::open(&ui));
         }
         self.views_box.append(&invitations);
+        filters::refresh_sidebar(self);
         while let Some(child) = self.splits_box.first_child() {
             self.splits_box.remove(&child);
         }
@@ -1499,8 +1549,12 @@ impl Ui {
                 .and_then(|v| serde_json::from_value::<Vec<SplitInbox>>(v).ok())
                 .and_then(|rows| rows.into_iter().find(|r| &r.id == id))
                 .map(|r| r.name),
+            MailView::Filter(_) => filters::update_header(self, &view),
             _ => None,
         };
+        if !matches!(view, MailView::Filter(_)) {
+            filters::update_header(self, &view);
+        }
         self.inbox_label
             .set_text(scope_name.as_deref().unwrap_or(match &view {
                 MailView::Inbox => "Inbox",
@@ -1513,6 +1567,7 @@ impl Ui {
                 MailView::Drafts => "Drafts",
                 MailView::Outbox => "Outbox",
                 MailView::AgentRequests => "Agent requests",
+                MailView::Filter(_) => "Filter",
                 MailView::Sent => "Sent",
             }));
         {
@@ -1545,6 +1600,7 @@ impl Ui {
             | MailView::Snoozed
             | MailView::Followups
             | MailView::Archive
+            | MailView::Filter(_)
             | MailView::Sent => Value::Null,
             MailView::Drafts => json!({"op":"list_drafts"}),
             MailView::Outbox => json!({"op":"list_outbox"}),
@@ -1583,6 +1639,8 @@ impl Ui {
                     received: "Draft".into(),
                     unread: false,
                     labels: Vec::new(),
+                    filter: None,
+                    is_inbox: false,
                 })
                 .collect::<Vec<_>>()
         } else if matches!(view, MailView::Outbox) {
@@ -1601,6 +1659,8 @@ impl Ui {
                     received: item.status,
                     unread: false,
                     labels: Vec::new(),
+                    filter: None,
+                    is_inbox: false,
                 })
                 .collect::<Vec<_>>()
         } else {
@@ -1642,6 +1702,8 @@ impl Ui {
                         received: message_time(thread.last_message_at),
                         unread: thread.unread_count > 0,
                         labels: thread.labels,
+                        filter: thread.filter,
+                        is_inbox: thread.is_inbox,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1656,6 +1718,7 @@ impl Ui {
                         account: accounts.iter().find(|a| a.id == message.account_id).map(|a| a.display_name.clone()).unwrap_or_else(|| message.account_id.clone()),
                         sender: message.sender.clone(), subject: message.subject.clone(), preview: message.body_plain.chars().take(240).collect(),
                         received: message_time(message.received_at), unread: false, labels: Vec::new(),
+                        filter: None, is_inbox: false,
                     });
                 }
             }
@@ -1752,11 +1815,7 @@ impl Ui {
             subject.set_xalign(0.0);
             subject.set_margin_start(14);
             subject.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            let preview = gtk::Label::new(Some(&format!(
-                "{}{}",
-                row_tags(&item.labels),
-                one_line(&item.preview)
-            )));
+            let preview = gtk::Label::new(Some(&filters::row_preview(&view, item)));
             preview.add_css_class("preview");
             preview.set_xalign(0.0);
             preview.set_margin_start(14);
@@ -1833,6 +1892,14 @@ impl Ui {
                 self.recipient_button.set_visible(false);
                 self.recipient_details.set_text("");
                 self.contact.root.set_visible(false);
+                filters::hide_bar();
+                if matches!(view, MailView::Filter(_)) {
+                    self.title.set_text("Nothing here yet.");
+                    self.meta.set_text("");
+                    self.show_plain("");
+                    self.update_selection_bar();
+                    return;
+                }
                 self.title.set_text(if matches!(view, MailView::Sent) { "No sent mail cached yet" } else { "Inbox zero" });
                 self.meta.set_text("Nothing matches your search.");
                 self.show_plain(if matches!(view, MailView::Sent) {
@@ -1859,6 +1926,7 @@ impl Ui {
         let Some(item) = items.get(i) else {
             return;
         };
+        filters::show_bar(self, item);
         self.reader_mode.set(false);
         self.set_shortcuts(false);
         self.title.set_text(&item.subject);
@@ -3204,7 +3272,7 @@ impl Ui {
             || self.items.borrow().is_empty()
             || matches!(
                 *self.view.borrow(),
-                MailView::Snoozed | MailView::Followups | MailView::Drafts | MailView::Outbox | MailView::AgentRequests
+                MailView::Snoozed | MailView::Followups | MailView::Drafts | MailView::Outbox | MailView::AgentRequests | MailView::Filter(_)
             )
         {
             return;
@@ -4269,7 +4337,11 @@ fn process_completed(ui: &Rc<Ui>, receiver: &Receiver<Result<Value, String>>) {
                     ui.status.set_text("Done.");
                 }
                 ui.refresh();
-                ui.notify_new_mail();
+                // Filters sort new mail first; notifications follow the sort,
+                // so mail a filter moves out of the inbox never alerts.
+                if !filters::wake(ui) {
+                    ui.notify_new_mail();
+                }
                 ui.notify_followups();
             }
             Err(error) => ui
@@ -4480,6 +4552,9 @@ fn build(app: &gtk::Application) {
     let splits_box = gtk::Box::new(Orientation::Vertical, 0);
     sidebar.insert_child_after(&splits_box, Some(&splits_heading));
     sidebar.reorder_child_after(&new_split, Some(&splits_box));
+    // FILTERS sits between the workspace items and SPLITS.
+    let filters_section = filters::section();
+    sidebar.insert_child_after(&filters_section, Some(&views_box));
     let add_account = navigation_button("list-add-symbolic", "Add account", "");
     add_account.add_css_class("action");
     let sync = icon_button("view-refresh-symbolic", "Refresh inbox · S");
@@ -4526,6 +4601,7 @@ fn build(app: &gtk::Application) {
     let inbox_heading = gtk::Box::new(Orientation::Horizontal, 8);
     label.set_hexpand(true);
     inbox_heading.append(&label);
+    inbox_heading.append(&filters::header_edit_button());
     inbox_heading.append(&sync);
     header.append(&inbox_heading);
     header.append(&hint);
@@ -4679,6 +4755,7 @@ fn build(app: &gtk::Application) {
         let menu = remote_images_menu.clone();
         remote_images.connect_destroy(move |_| menu.unparent());
     }
+    reading.append(&filters::reader_bar());
     reading.append(&reading_header);
     let reading_content = gtk::Box::new(Orientation::Vertical, 0);
     reading_content.set_vexpand(true);
@@ -4923,6 +5000,7 @@ fn build(app: &gtk::Application) {
         compose_button.clone().upcast(),
         workspace_heading.clone().upcast(),
         views_box.clone().upcast(),
+        filters_section.clone().upcast(),
         splits_heading.clone().upcast(),
         splits_box.clone().upcast(),
         new_split.clone().upcast(),
@@ -5761,8 +5839,10 @@ fn build(app: &gtk::Application) {
         });
     }
     ui.restore_triage_undo();
+    filters::connect_header(&ui);
     ui.refresh();
     window.present();
+    filters::start(&ui);
     ui.sync_inbox_if_configured();
     let weak = Rc::downgrade(&ui);
     let mut idle_ticks = 0u32;

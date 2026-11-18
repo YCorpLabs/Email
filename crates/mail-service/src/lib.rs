@@ -28,6 +28,7 @@ mod store_location;
 pub use store_location::{canonical_store_path, default_store_directory, is_default_store};
 mod calendar_view;
 mod cleanup;
+mod filters;
 #[cfg(feature = "test-fixture")]
 mod fixture_credentials;
 #[cfg(test)]
@@ -393,6 +394,42 @@ enum Request {
     LatestTriageUndo,
     UndoTriage {
         operation_id: String,
+    },
+    /// Filters (docs/filters.md). Sorting and the model download are for the
+    /// desktop shells; mail-mcp exposes only reading and editing filters.
+    FiltersStatus,
+    FiltersSetup {
+        starter_keys: Option<Vec<String>>,
+    },
+    FiltersSetEnabled {
+        enabled: bool,
+    },
+    UpsertFilter {
+        id: Option<String>,
+        name: String,
+        description: String,
+        action: mail_core::FilterAction,
+    },
+    DeleteFilter {
+        id: String,
+    },
+    ReorderFilters {
+        ids: Vec<String>,
+    },
+    FiltersDownloadModel,
+    FiltersCancelDownload,
+    FiltersRemoveModel,
+    FiltersWake {
+        budget_ms: Option<u64>,
+    },
+    ListFilterThreads {
+        filter_id: String,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    },
+    MoveToFilter {
+        thread_id: String,
+        filter_id: Option<String>,
     },
     ListAccounts,
     ListSendAs {
@@ -801,6 +838,9 @@ impl MailService {
             Err(error) => Err(json!({"ok": false, "error": error.to_string()})),
         };
         result.map_or_else(|envelope| envelope, |data| json!({"ok": true, "data": data}))
+    }
+    fn models_dir(&self) -> PathBuf {
+        filters::models_dir(&self.database_path)
     }
     fn value<T: Serialize>(&self, result: mail_core::Result<T>) -> Result<Value, String> {
         serde_json::to_value(result.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
@@ -1408,6 +1448,39 @@ impl MailService {
                 self.value(self.store.upsert_snippet(id.as_deref(), &name, &body))
             }
             Request::DeleteSnippet { id } => self.value(self.store.delete_snippet(&id)),
+            Request::FiltersStatus => filters::status(&self.store, &self.models_dir()),
+            Request::FiltersSetup { starter_keys } => {
+                self.store
+                    .set_filters_enabled(true, starter_keys.as_deref())
+                    .map_err(|e| e.to_string())?;
+                filters::status(&self.store, &self.models_dir())
+            }
+            Request::FiltersSetEnabled { enabled } => {
+                self.store.set_filters_enabled(enabled, None).map_err(|e| e.to_string())?;
+                filters::status(&self.store, &self.models_dir())
+            }
+            Request::UpsertFilter { id, name, description, action } => {
+                filters::upsert(&self.store, id.as_deref(), &name, &description, action)
+            }
+            Request::DeleteFilter { id } => {
+                self.store.delete_filter(&id).map_err(|e| e.to_string())?;
+                Ok(json!({"id":id}))
+            }
+            Request::ReorderFilters { ids } => {
+                self.store.reorder_filters(&ids).map_err(|e| e.to_string())?;
+                filters::status(&self.store, &self.models_dir())
+            }
+            Request::FiltersDownloadModel => filters::download_model(&self.models_dir()),
+            Request::FiltersCancelDownload => filters::cancel_download(),
+            Request::FiltersRemoveModel => filters::remove_model(&self.models_dir()),
+            Request::FiltersWake { budget_ms } => filters::wake(&self.store, &self.models_dir(), budget_ms),
+            Request::ListFilterThreads { filter_id, limit, offset } => self.value(
+                self.store
+                    .list_filter_threads(&filter_id, limit.unwrap_or(100), offset.unwrap_or(0)),
+            ),
+            Request::MoveToFilter { thread_id, filter_id } => {
+                filters::move_to(&self.store, &thread_id, filter_id.as_deref())
+            }
             Request::ListSplits => self.value(self.store.list_splits()),
             Request::PreviewSplit { query } => self.value(self.store.preview_split(&query, 500)),
             Request::UpsertSplit { id, name, query } => {

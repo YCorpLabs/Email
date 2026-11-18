@@ -33,6 +33,8 @@ mod agenda;
 pub use agenda::{AgendaAttendee, AgendaEvent, AvailabilitySlot, CalendarCollection};
 mod calendar;
 mod discarded_drafts;
+mod filters;
+pub use filters::{FilterAction, FilterCandidate, FilterCount, FilterDecision, FilterExample, FilterStarter, MailFilter, ThreadFilterTag, APPLY_CONFIDENCE, EVERYTHING_ELSE_DESCRIPTION, EVERYTHING_ELSE_NAME, starters as filter_starters};
 mod followups;
 pub use discarded_drafts::DiscardedDraft;
 mod signatures;
@@ -125,6 +127,9 @@ pub struct ThreadSummary {
     pub is_pinned: bool,
     #[serde(default)]
     pub snoozed_until_ms: Option<i64>,
+    /// The filter this conversation was sorted into, if any.
+    #[serde(default)]
+    pub filter: Option<ThreadFilterTag>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct LabelSummary {
@@ -353,6 +358,7 @@ impl MailStore {
         discarded_drafts::initialize(&connection)?;
         signatures::initialize(&connection)?;
         agent::initialize(&connection)?;
+        filters::initialize(&connection)?;
         let has_unsubscribe_header = connection
             .prepare("PRAGMA table_info(messages)")?
             .query_map([], |row| row.get::<_, String>(1))?
@@ -1720,96 +1726,9 @@ impl MailStore {
     pub fn apply_action(&self, operation_id: &str, action: MailAction) -> Result<ActionResult> {
         let mut db = self.lock()?;
         let tx = db.transaction()?;
-        if let Some(previous) = tx
-            .query_row(
-                "SELECT action_json FROM actions WHERE operation_id=?1",
-                [operation_id],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            if serde_json::from_str::<MailAction>(&previous)? != action {
-                return Err(MailError::InvalidAction(
-                    "operation ID reused for a different action".into(),
-                ));
-            }
-            return Ok(ActionResult {
-                operation_id: operation_id.into(),
-                applied: false,
-            });
-        }
-        match &action {
-            MailAction::Archive { thread_id } => {
-                check_thread(&tx, thread_id)?;
-                tx.execute(
-                    "UPDATE threads SET is_inbox=0,folder='Archive' WHERE id=?1",
-                    [thread_id],
-                )?;
-            }
-            MailAction::MarkRead { thread_id, read } => {
-                check_thread(&tx, thread_id)?;
-                tx.execute(
-                    "UPDATE messages SET is_read=?2 WHERE thread_id=?1",
-                    params![thread_id, read],
-                )?;
-                refresh_thread(&tx, thread_id)?;
-            }
-            MailAction::Move { thread_id, folder } => {
-                check_thread(&tx, thread_id)?;
-                if folder.trim().is_empty() {
-                    return Err(MailError::InvalidAction("folder is empty".into()));
-                }
-                tx.execute(
-                    "UPDATE threads SET folder=?2,is_inbox=?3 WHERE id=?1",
-                    params![thread_id, folder, folder.eq_ignore_ascii_case("inbox")],
-                )?;
-            }
-            MailAction::AddLabel { thread_id, label } => {
-                check_thread(&tx, thread_id)?;
-                if label.trim().is_empty()
-                    || label.len() > 100
-                    || label.chars().any(char::is_control)
-                {
-                    return Err(MailError::InvalidAction(
-                        "label must be 1–100 printable characters".into(),
-                    ));
-                }
-                tx.execute(
-                    "INSERT OR IGNORE INTO thread_labels(thread_id,label) VALUES(?1,?2)",
-                    params![thread_id, label],
-                )?;
-            }
-            MailAction::RemoveLabel { thread_id, label } => {
-                check_thread(&tx, thread_id)?;
-                tx.execute(
-                    "DELETE FROM thread_labels WHERE thread_id=?1 AND label=?2",
-                    params![thread_id, label],
-                )?;
-            }
-            MailAction::SendDraft { message_id } => {
-                let draft: Option<bool> = tx
-                    .query_row(
-                        "SELECT is_draft FROM messages WHERE id=?1",
-                        [message_id],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if draft != Some(true) {
-                    return Err(MailError::InvalidAction(format!(
-                        "not a draft: {message_id}"
-                    )));
-                }
-            }
-        }
-        tx.execute(
-            "INSERT INTO actions(operation_id,action_json,status,thread_id) VALUES(?1,?2,'pending',?3)",
-            params![operation_id, serde_json::to_string(&action)?, action_thread_id(&action)],
-        )?;
+        let result = apply_action_tx(&tx, operation_id, action)?;
         tx.commit()?;
-        Ok(ActionResult {
-            operation_id: operation_id.into(),
-            applied: true,
-        })
+        Ok(result)
     }
     /// Counts conversations across the downloaded inbox, independent of UI pagination.
     pub fn unread_counts(&self) -> Result<serde_json::Value> {
@@ -2292,6 +2211,103 @@ pub(crate) fn undo_triage_tx(tx: &Transaction<'_>, operation_id: &str) -> Result
     )?;
     Ok(serde_json::json!({"changed":inverse.len()}))
 }
+/// Queue an action inside an existing transaction (see [`MailStore::apply_action`]).
+pub(crate) fn apply_action_tx(
+    tx: &Transaction<'_>,
+    operation_id: &str,
+    action: MailAction,
+) -> Result<ActionResult> {
+        if let Some(previous) = tx
+            .query_row(
+                "SELECT action_json FROM actions WHERE operation_id=?1",
+                [operation_id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            if serde_json::from_str::<MailAction>(&previous)? != action {
+                return Err(MailError::InvalidAction(
+                    "operation ID reused for a different action".into(),
+                ));
+            }
+            return Ok(ActionResult {
+                operation_id: operation_id.into(),
+                applied: false,
+            });
+        }
+        match &action {
+            MailAction::Archive { thread_id } => {
+                check_thread(&tx, thread_id)?;
+                tx.execute(
+                    "UPDATE threads SET is_inbox=0,folder='Archive' WHERE id=?1",
+                    [thread_id],
+                )?;
+            }
+            MailAction::MarkRead { thread_id, read } => {
+                check_thread(&tx, thread_id)?;
+                tx.execute(
+                    "UPDATE messages SET is_read=?2 WHERE thread_id=?1",
+                    params![thread_id, read],
+                )?;
+                refresh_thread(&tx, thread_id)?;
+            }
+            MailAction::Move { thread_id, folder } => {
+                check_thread(&tx, thread_id)?;
+                if folder.trim().is_empty() {
+                    return Err(MailError::InvalidAction("folder is empty".into()));
+                }
+                tx.execute(
+                    "UPDATE threads SET folder=?2,is_inbox=?3 WHERE id=?1",
+                    params![thread_id, folder, folder.eq_ignore_ascii_case("inbox")],
+                )?;
+            }
+            MailAction::AddLabel { thread_id, label } => {
+                check_thread(&tx, thread_id)?;
+                if label.trim().is_empty()
+                    || label.len() > 100
+                    || label.chars().any(char::is_control)
+                {
+                    return Err(MailError::InvalidAction(
+                        "label must be 1–100 printable characters".into(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT OR IGNORE INTO thread_labels(thread_id,label) VALUES(?1,?2)",
+                    params![thread_id, label],
+                )?;
+            }
+            MailAction::RemoveLabel { thread_id, label } => {
+                check_thread(&tx, thread_id)?;
+                tx.execute(
+                    "DELETE FROM thread_labels WHERE thread_id=?1 AND label=?2",
+                    params![thread_id, label],
+                )?;
+            }
+            MailAction::SendDraft { message_id } => {
+                let draft: Option<bool> = tx
+                    .query_row(
+                        "SELECT is_draft FROM messages WHERE id=?1",
+                        [message_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if draft != Some(true) {
+                    return Err(MailError::InvalidAction(format!(
+                        "not a draft: {message_id}"
+                    )));
+                }
+            }
+        }
+        tx.execute(
+            "INSERT INTO actions(operation_id,action_json,status,thread_id) VALUES(?1,?2,'pending',?3)",
+            params![operation_id, serde_json::to_string(&action)?, action_thread_id(&action)],
+        )?;
+        Ok(ActionResult {
+            operation_id: operation_id.into(),
+            applied: true,
+        })
+}
+
 fn upsert_message_tx(tx: &Transaction<'_>, m: &Message) -> Result<()> {
     if tx
         .query_row(
@@ -2731,6 +2747,7 @@ fn thread_row(db: &Connection, r: &rusqlite::Row<'_>) -> Result<ThreadSummary> {
         labels,
         is_pinned,
         snoozed_until_ms,
+        filter: filters::thread_tag(db, &r.get::<_, String>(0)?)?,
     })
 }
 fn now_ms() -> i64 {

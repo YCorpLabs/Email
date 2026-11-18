@@ -21,6 +21,7 @@ distribution-profile = { path = "../distribution-profile" }
 test-fixture = ["mail-imap/test-fixture"]
 
 [dependencies]
+mail-ai = { path = "../mail-ai", version = "0.1.0" }
 mail-core = { path = "../mail-core", version = "0.1.0" }
 mail-imap = { path = "../mail-imap", version = "0.1.0" }
 mail-cloud = { path = "../mail-cloud", version = "0.1.0" }

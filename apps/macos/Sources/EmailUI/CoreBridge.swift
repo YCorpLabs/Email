@@ -165,6 +165,10 @@ final class CoreBridge: @unchecked Sendable {
     private lazy var outgoingBridge: CoreBridge? = CoreBridge()
     private lazy var aliasesBridge: CoreBridge? = CoreBridge()
     private lazy var bookingBridge: CoreBridge? = CoreBridge()
+    // Sorting holds its handle for up to the wake budget and the model
+    // download for minutes; neither may queue cached reads behind it.
+    private lazy var sortingBridge: CoreBridge? = CoreBridge()
+    private lazy var modelDownloadBridge: CoreBridge? = CoreBridge()
     @MainActor private var syncFlights: [String: Task<Data, Error>] = [:]
 
     private static func libraryCandidates() -> [String] {
@@ -348,6 +352,11 @@ final class CoreBridge: @unchecked Sendable {
         guard !requiresNetwork || dedicatedCalendar != nil || dedicatedInline != nil || dedicatedOutgoing != nil || dedicatedAliases != nil || dedicatedSync != nil || dedicatedAttachment != nil else {
             throw MailServiceError(message: "Background mail connection unavailable; cached mail remains readable.")
         }
+        let isSorting = operation == "filters_wake" || operation == "filters_remove_model"
+        let dedicatedSorting = isSorting ? sortingBridge : operation == "filters_download_model" ? modelDownloadBridge : nil
+        if (isSorting || operation == "filters_download_model") && dedicatedSorting == nil {
+            throw MailServiceError(message: "Could not open the mail engine for sorting.")
+        }
         let dedicatedPhoto = (operation == "google_photo_state" || operation == "google_contact_photo") ? photoBridge : nil
         let response = try await Task.detached(priority: .userInitiated) { [self] in
             if isPhotoOAuth {
@@ -385,6 +394,7 @@ final class CoreBridge: @unchecked Sendable {
                 return result
             }
             if let dedicatedBooking { return try dedicatedBooking.exchange(data) }
+            if let dedicatedSorting { return try dedicatedSorting.exchange(data) }
             if let dedicatedCalendar { return try dedicatedCalendar.exchange(data) }
             if let dedicatedSync { return try dedicatedSync.exchange(data) }
             if let dedicatedAttachment { return try dedicatedAttachment.exchange(data) }
@@ -479,6 +489,14 @@ final class CoreBridge: @unchecked Sendable {
         return mapThreads(summaries, accounts: try accountRecordsChecked())
     }
 
+    /// A filter's conversations, newest first, wherever they are now.
+    func filterThreadsChecked(filterID: String, limit: Int = 200) throws -> [MailThread] {
+        guard let rows = try request(["op": "list_filter_threads", "filter_id": filterID, "limit": limit, "offset": 0]) as? [[String: Any]] else {
+            throw MailServiceError(message: "Could not read this filter.")
+        }
+        return mapThreads(rows, accounts: try accountRecordsChecked())
+    }
+
     private func mapThreads(_ summaries: [[String: Any]], accounts accountRecords: [MailAccount]) -> [MailThread] {
         let accounts = Dictionary(uniqueKeysWithValues: accountRecords.map { ($0.id, $0.email) })
         return summaries.compactMap { item in
@@ -490,7 +508,10 @@ final class CoreBridge: @unchecked Sendable {
             let milliseconds = (item["last_message_at"] as? NSNumber)?.doubleValue ?? 0
             let date = Date(timeIntervalSince1970: milliseconds / 1000)
             let time = MailListTime.string(for: date)
-            return MailThread(id: id, accountID: accountID, account: accounts[accountID] ?? accountID, sender: sender, subject: subject, preview: preview, time: time, unread: ((item["unread_count"] as? NSNumber)?.intValue ?? 0) > 0, html: "", labels: item["labels"] as? [String] ?? [], pinned: item["is_pinned"] as? Bool ?? false, snoozedUntil: (item["snoozed_until_ms"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) })
+            var thread = MailThread(id: id, accountID: accountID, account: accounts[accountID] ?? accountID, sender: sender, subject: subject, preview: preview, time: time, unread: ((item["unread_count"] as? NSNumber)?.intValue ?? 0) > 0, html: "", labels: item["labels"] as? [String] ?? [], pinned: item["is_pinned"] as? Bool ?? false, snoozedUntil: (item["snoozed_until_ms"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) })
+            thread.filter = ThreadFilter(item["filter"])
+            thread.isInbox = item["is_inbox"] as? Bool ?? true
+            return thread
         }
     }
 

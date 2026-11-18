@@ -24,3 +24,9 @@ distribution-profile = { path = "../../crates/distribution-profile" }
 qa-fixture = ["mail-service/test-fixture"]
 
 [workspace]
+
+# gemm-f16 (candle, via mail-ai) only builds its aarch64 fp16 kernels with
+# optimisations; unoptimised builds fail with "instruction requires: fullfp16"
+# on aarch64 Linux. Release builds are unaffected.
+[profile.dev.package.gemm-f16]
+opt-level = 3

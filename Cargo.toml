@@ -1,4 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/distribution-profile", "crates/mail-core", "crates/mail-mcp", "crates/mail-imap", "crates/mail-cloud", "crates/mail-service"]
+members = ["crates/distribution-profile", "crates/mail-ai", "crates/mail-core", "crates/mail-mcp", "crates/mail-imap", "crates/mail-cloud", "crates/mail-service"]
 exclude = ["apps/linux"]
+
+# gemm-f16 (via candle in mail-ai) uses fp16 instructions that only assemble
+# with optimizations on aarch64 Linux; keep debug builds of it optimized.
+[profile.dev.package.gemm-f16]
+opt-level = 3

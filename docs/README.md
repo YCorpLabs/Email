@@ -80,5 +80,5 @@ Project policies live in the repository root:
   [desktop notifications](desktop-notifications.md),
   [discarding drafts](draft-discard.md), [draft navigation](draft-navigation.md),
   [follow-up reminders](followups.md), [message recipients](message-recipients.md),
-  [split inboxes](split-inboxes.md), [unread counts and sender cleanup](unread-cleanup.md)
+  [split inboxes](split-inboxes.md), [filters](filters.md), [unread counts and sender cleanup](unread-cleanup.md)
   and [connected calendar](connected-calendar.md).
