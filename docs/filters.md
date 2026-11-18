@@ -174,9 +174,19 @@ the app (Cold outreach 4, Promotions 5, Notifications 23), the setup sheet
 ("Downloads Email sorter (157 MB) once") and Filter settings; Linux shell
 unit tests pass in the container (`gigabytes` now shows MB below 1 GB, as on
 macOS). A real download through `filters_download_model` into an empty
-models directory finished and sorted the demo the same way. Not checked with
-the new sorter: the Linux shell visually, a sort inside the Linux app, and a
-download started from either app's UI.
+models directory finished and sorted the demo the same way.
+
+Linux shell with the Email sorter (18 Nov 2026, after merging main): the
+release build in an Ubuntu container (Xvfb, `email-linux-verify`, running
+executable checked against the built one) with the real model in
+`EMAIL_MODELS_DIR` and the launch demo. Set up filters from the palette, the
+setup sheet ("Turn on" when the model is present), and real sorting inside
+the app: Cold outreach 4, Newsletters 7, Notifications 23, Promotions 5,
+30 known contacts skipped, the same as macOS. Also checked: the sorted inbox
+(pitches gone, `#Notifications` tags), the Cold outreach view with the reader
+bar, and Filter settings ("Email sorter · 157 MB · runs on this computer").
+`sort_eval` built and run in the Linux container gives 24/30, the same as
+macOS. Not checked: a download started from either app's button.
 
 ### Linux shell (18 Nov 2026, previous Qwen3 4B engine)
 
