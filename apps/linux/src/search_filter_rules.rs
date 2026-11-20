@@ -1,7 +1,7 @@
 //! Pure visual-search filter rules. Raw terms remain raw; no silent broadening.
 use std::collections::HashMap;
 
-const FIELDS: [&str; 6] = ["from", "to", "cc", "subject", "after", "before"];
+const FIELDS: [&str; 7] = ["person", "from", "to", "cc", "subject", "after", "before"];
 
 #[derive(Debug, Default)]
 pub struct FilterDraft {
@@ -178,6 +178,12 @@ pub fn decompose(base: &str) -> FilterDraft {
     draft.remainder = remaining.join(" ");
     draft
 }
+pub(super) fn has_person(query: &str) -> bool {
+    tokens(query).is_ok_and(|terms| {
+        terms.iter().any(|token| pair(token).is_some_and(|(name, _)| name == "person"))
+    })
+}
+
 fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
@@ -211,7 +217,7 @@ pub fn query(
             continue;
         };
         if [
-            "from", "to", "cc", "subject", "after", "before", "is", "in", "has", "label",
+            "person", "from", "to", "cc", "subject", "after", "before", "is", "in", "has", "label",
         ]
         .contains(&name.as_str())
             && value.is_empty()

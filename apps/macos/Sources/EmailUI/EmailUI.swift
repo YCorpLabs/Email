@@ -1211,7 +1211,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         contactPane.onSearch = { [weak self] address in
             guard let self else { return }
             self.showInbox(scope: .all)
-            self.search.stringValue = "from:" + address
+            self.search.stringValue = SearchFilterRules.personQuery(address)
             self.refreshInbox()
         }
         contactPane.onOpenThread = { [weak self] id in
@@ -1221,7 +1221,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                 let address = ContactPane.address(from: self.sender.stringValue)
                 self.showInbox(scope: .all)
                 self.pendingContactThreadID = id
-                self.search.stringValue = "from:" + address
+                self.search.stringValue = SearchFilterRules.personQuery(address)
                 self.refreshInbox()
             }
         }
@@ -1530,7 +1530,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             items.append(paletteItem(.support, "Ask for support…", "HELP", aliases: ["help", "bug", "logs", "screenshot"]))
             items.append(paletteItem(.feedback, "Give feedback…", "HELP", aliases: ["suggestion", "idea", "request"]))
             items.append(paletteItem(.about, "About Email", "SETTINGS", detail: EmailBuildIdentity.value, aliases: ["version", "build", "updated"]))
-            items.append(paletteItem(.searchFilters, "Refine search…", "MAIL", aliases: ["filters", "advanced search", "from", "to", "cc", "dates", "attachments"]))
+            items.append(paletteItem(.searchFilters, "Refine search…", "MAIL", aliases: ["filters", "advanced search", "find a person", "contact", "from", "to", "cc", "dates", "attachments"]))
             items.append(paletteItem(.searchHelp, "Search syntax and coverage", "MAIL", aliases: ["from", "to", "cc", "label", "local", "cache", "operators"]))
             if calendarAvailable { items.append(paletteItem(.invitations, "Calendar invitations…", "CALENDAR", aliases: ["agenda", "meeting", "ics", "event"])) }
             items.append(paletteItem(.followup, "Follow up unless they reply…", "MAIL", aliases: ["waiting", "reminder", "followup"]))
@@ -2318,7 +2318,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
                         if case .filter(let filterID) = scope {
                             rows = try core.filterThreadsChecked(filterID: filterID, limit: max(200, requestedLimit))
                         } else {
-                            rows = try core.threadsChecked(query: query.isEmpty ? nil : query, limit: requestedLimit, accountID: accountID, splitID: splitID, unreadOnly: unreadOnly, snoozed: snoozed, pinned: pinned, followups: scope == .followups, label: label, archived: scope == .archived, sent: scope == .sent)
+                            rows = try core.threadsChecked(query: query.isEmpty ? nil : query, limit: requestedLimit, accountID: accountID, splitID: splitID, unreadOnly: unreadOnly, snoozed: snoozed, pinned: pinned, followups: scope == .followups, label: label, archived: scope == .archived, sent: scope == .sent, allMail: scope == .all && SearchFilterRules.hasPerson(query))
                         }
                         let raw = core.call(["op": "unread_counts"]) as? [String: Any] ?? [:]
                         var counts = (raw["accounts"] as? [String: Int]) ?? [:]
@@ -2531,7 +2531,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             self.showComposePane(core: core, accountID: account?.id, recipient: address)
         }, findMail: { [weak self] address in
             guard let self else { return }; self.closeCalendarWorkspace(); self.showInbox(scope:.all)
-            self.search.stringValue = "from:" + address; self.refreshInbox()
+            self.search.stringValue = SearchFilterRules.personQuery(address); self.refreshInbox()
         })
     }
     func showCalendarWorkspace() {
@@ -2615,7 +2615,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         }
         if case .filter = scope { updateFilterSubtitle() }
         else if leavingFilter { syncStatus.stringValue = ""; syncStatus.toolTip = nil }
-        search.placeholderString = "Search all mail  /"
+        search.placeholderString = "Search mail or person:  /"
         search.stringValue = ""
         canLoadOlder = true
         inboxLimit = 100
@@ -3472,10 +3472,10 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         guard let core, let selectedID = thread.id else { return }
         Task { @MainActor in
             let matches = (try? await Task.detached(priority: .utility) {
-                try core.threadsChecked(query: address, limit: 25)
+                try core.threadsChecked(query: SearchFilterRules.personQuery(address), limit: 25, allMail: true)
             }.value) ?? []
             guard displayedThreadID == selectedID else { return }
-            let history = matches.filter { $0.id != nil && ContactPane.address(from: $0.sender).lowercased() == address }
+            let history = matches.filter { $0.id != nil }
             if contactHistory.count > 100 { contactHistory.removeAll(keepingCapacity: true) }
             contactHistory[address] = history
             contactPane.show(sender: thread.sender, recent: Array(history.filter { $0.id != selectedID }.prefix(4)), googleAccountID: googleAccountID, core: core)
@@ -5268,7 +5268,7 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
         popover.show(relativeTo: search.bounds, of: search, preferredEdge: .maxY)
     }
 
-    private static let searchSyntaxHelp = "Search downloaded mail only; messages not synced yet are excluded. Current mailbox, account and filter stay active.\n\nfrom:person@example.com · to:team@example.com · cc:person@example.com\nsubject:\"project update\" · label:\"Customer Support\"\nis:unread · is:read · is:starred · has:attachment\nin:archive · before:2026-11-01 · after:2026-10-01\n\nUse Archive to search archived mail. Conflicting scopes return no matches. Esc clears search and returns to J/K navigation."
+    private static let searchSyntaxHelp = "Search downloaded mail only; messages not synced yet are excluded. Person searches from Inbox include sent and archived mail. Other views stay scoped.\n\nperson:\"Maya Chen\" · from:person@example.com · to:team@example.com · cc:person@example.com\nsubject:\"project update\" · label:\"Customer Support\"\nis:unread · is:read · is:starred · has:attachment\nin:archive · before:2026-11-01 · after:2026-10-01\n\nUse Archive to search archived mail. Conflicting scopes return no matches. Esc clears search and returns to J/K navigation."
 
     func controlTextDidBeginEditing(_ notification: Notification) {
         if notification.object as? NSSearchField === search {

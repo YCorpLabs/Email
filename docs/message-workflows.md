@@ -85,11 +85,12 @@ or navigation. Linux query work runs off the GTK thread. Search never makes
 provider requests on each keystroke and covers downloaded messages only.
 
 The field placeholder and **Search syntax and coverage** command explain this
-coverage and operators: `from:`, `to:`, `cc:`, `subject:`, quoted `label:`,
+coverage and operators: `person:`, `from:`, `to:`, `cc:`, `subject:`, quoted `label:`,
 `is:unread/read/starred`, `has:attachment`, `in:inbox/archive/spam/trash`,
 `before:YYYY-MM-DD` and `after:YYYY-MM-DD`. Query restrictions intersect the
-selected mailbox; conflicting restrictions return no matches. Open Archive to
-search archived messages. Contact Find mail uses `from:`; Linux label buttons select a dedicated exact label
+selected mailbox; conflicting restrictions return no matches. From the
+unfiltered Inbox, Person searches include sent and archived conversations.
+Contact Find mail uses the same search by address. Linux label buttons select a dedicated exact label
 scope, including names containing spaces. Typing keeps that label selected.
 Favorites in All Inboxes include downloaded archived favorites on both shells. Parse errors show their actual cause and keep the
 previous results visible. Escape clears the query and restores inbox keyboard

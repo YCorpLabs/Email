@@ -475,7 +475,7 @@ final class CoreBridge: @unchecked Sendable {
         (try? threadsChecked(query: query, limit: limit, accountID: accountID, splitID: splitID, unreadOnly: unreadOnly, snoozed: snoozed, pinned: pinned, followups: followups, label: label, archived: archived)) ?? []
     }
 
-    func threadsChecked(query: String? = nil, limit: Int = 100, accountID: String? = nil, splitID: String? = nil, unreadOnly: Bool = false, snoozed: Bool = false, pinned: Bool = false, followups: Bool = false, label: String? = nil, archived: Bool = false, sent: Bool = false) throws -> [MailThread] {
+    func threadsChecked(query: String? = nil, limit: Int = 100, accountID: String? = nil, splitID: String? = nil, unreadOnly: Bool = false, snoozed: Bool = false, pinned: Bool = false, followups: Bool = false, label: String? = nil, archived: Bool = false, sent: Bool = false, allMail: Bool = false) throws -> [MailThread] {
         var summaries: [[String: Any]] = []
         while summaries.count < limit {
             let pageSize = min(500, limit - summaries.count)
@@ -485,7 +485,7 @@ final class CoreBridge: @unchecked Sendable {
             if let label { payload["label"] = label }
             if sent { payload["folder"] = "sent" }
             else if archived { payload["folder"] = "archive" }
-            else if !snoozed && !pinned && !followups && label == nil { payload["is_inbox"] = true }
+            else if !allMail && !snoozed && !pinned && !followups && label == nil { payload["is_inbox"] = true }
             guard let page = try request(payload) as? [[String: Any]] else { throw MailServiceError(message: "Could not search downloaded mail.") }
             summaries.append(contentsOf: page)
             if page.count < pageSize { break }

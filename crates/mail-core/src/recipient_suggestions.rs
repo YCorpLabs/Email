@@ -29,6 +29,16 @@ impl MailStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<RecipientSuggestion>> {
+        self.cached_recipients(account_id, query, limit, true)
+    }
+
+    pub(crate) fn cached_recipients(
+        &self,
+        account_id: &str,
+        query: &str,
+        limit: usize,
+        include_drafts: bool,
+    ) -> Result<Vec<RecipientSuggestion>> {
         if query.len() > 128 || query.chars().any(char::is_control) {
             return Err(MailError::InvalidAction(
                 "Recipient query must be at most 128 bytes and contain no control characters"
@@ -49,8 +59,8 @@ impl MailStore {
         if query.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let mut statement = db.prepare("SELECT sender,to_json,recipient_headers_json,(is_draft AND id LIKE 'local:%'),received_at FROM messages WHERE account_id=?1 ORDER BY received_at DESC,id LIMIT ?2")?;
-        let mut rows = statement.query(params![account_id, RECENT_MESSAGES])?;
+        let mut statement = db.prepare("SELECT sender,to_json,recipient_headers_json,(is_draft AND id LIKE 'local:%'),received_at FROM messages WHERE account_id=?1 AND (?3 OR is_draft=0) ORDER BY received_at DESC,id LIMIT ?2")?;
+        let mut rows = statement.query(params![account_id, RECENT_MESSAGES, include_drafts])?;
         let mut candidates: HashMap<String, Candidate> = HashMap::new();
         let mut matched_records = 0;
         while let Some(row) = rows.next()? {
@@ -67,7 +77,7 @@ impl MailStore {
                 if let Ok(headers) = serde_json::from_str::<RecipientHeaders>(&raw) {
                     addresses.extend(headers.cc);
                     // Only explicitly saved local draft Bcc is eligible.
-                    if is_draft {
+                    if include_drafts && is_draft {
                         addresses.extend(headers.bcc);
                     }
                 }

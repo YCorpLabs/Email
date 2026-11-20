@@ -624,8 +624,9 @@ impl Panel {
                 let ui = self.ui.clone();
                 let window = self.window.clone();
                 view.connect_clicked(move |_| {
+                    ui.inbox_filter.set(0);
                     ui.search.set_text(&format!(
-                        "from:{}",
+                        "person:{}",
                         parity::quote_search_value(&guest_email)
                     ));
                     ui.set_view(MailView::Inbox);
