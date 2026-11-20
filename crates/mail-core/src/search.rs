@@ -91,6 +91,17 @@ fn contains(column: &str, value: &str, values: &mut Vec<Value>) -> String {
     let param = bind(values, value.to_owned());
     format!("instr(lower({column}),lower({param}))>0")
 }
+fn person_match(column: &str, value: &str, addresses: &str, values: &mut Vec<Value>) -> String {
+    let direct = contains(column, value, values);
+    let mailbox = format!(
+        "lower(trim(CASE WHEN instr({column},'<')>0 AND instr({column},'>')>instr({column},'<')
+         THEN substr({column},instr({column},'<')+1,instr({column},'>')-instr({column},'<')-1)
+         ELSE {column} END))"
+    );
+    format!(
+        "({direct} OR EXISTS(SELECT 1 FROM json_each({addresses}) account, json_each(account.value) a WHERE account.key=m.account_id AND a.value={mailbox}))"
+    )
+}
 fn starred() -> &'static str {
     "(EXISTS(SELECT 1 FROM pinned_threads p WHERE p.thread_id=t.id) OR EXISTS(SELECT 1 FROM thread_labels l WHERE l.thread_id=t.id AND upper(l.label)='STARRED'))"
 }
@@ -183,6 +194,26 @@ impl MailStore {
         })
     }
 
+    fn person_addresses(
+        &self,
+        value: &str,
+        scope: &SearchScope,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>> {
+        let mut addresses = std::collections::HashMap::new();
+        // An address can match directly. Resolve display names against recent
+        // headers so older messages with address-only recipients also match.
+        if value.contains('@') || value.len() > 128 || value.chars().any(char::is_control) {
+            return Ok(addresses);
+        }
+        for account in self.list_accounts()?.into_iter().filter(|account| {
+            scope.account_ids.as_ref().is_none_or(|ids| ids.contains(&account.id))
+        }) {
+            let recipients = self.cached_recipients(&account.id, value, 20, false)?;
+            addresses.insert(account.id, recipients.into_iter().map(|contact| contact.email).collect());
+        }
+        Ok(addresses)
+    }
+
     /// Parses the search and builds its predicates, then hands them to `run`
     /// under the store lock.
     fn with_filters<T>(
@@ -215,6 +246,7 @@ impl MailStore {
                     "from"
                         | "to"
                         | "cc"
+                        | "person"
                         | "subject"
                         | "is"
                         | "in"
@@ -233,6 +265,17 @@ impl MailStore {
             }
             let predicate = match field.to_ascii_lowercase().as_str() {
                 "from" => contains("m.sender", value, &mut values),
+                "person" => {
+                    let aliases = self.person_addresses(value, scope)?;
+                    let addresses = bind(&mut values, serde_json::to_string(&aliases)?);
+                    let sender = person_match("m.sender", value, &addresses, &mut values);
+                    let recipient = person_match("j.value", value, &addresses, &mut values);
+                    format!(
+                        "(m.is_draft=0 AND ({sender}
+                         OR EXISTS(SELECT 1 FROM json_each(m.to_json) j WHERE {recipient})
+                         OR EXISTS(SELECT 1 FROM json_each(coalesce(json_extract(m.recipient_headers_json,'$.cc'),'[]')) j WHERE {recipient})))"
+                    )
+                }
                 "subject" => contains("m.subject", value, &mut values),
                 "to" => {
                     let p = contains("j.value", value, &mut values);
@@ -279,7 +322,7 @@ impl MailStore {
             };
             if matches!(
                 field.to_ascii_lowercase().as_str(),
-                "from" | "to" | "cc" | "subject" | "has" | "before" | "after"
+                "from" | "to" | "cc" | "person" | "subject" | "has" | "before" | "after"
             ) {
                 message_predicates.push(predicate);
             } else {
@@ -769,6 +812,32 @@ mod tests {
         assert!(date_ms("2024-02-29").is_ok());
         assert!(date_ms("2026-13-01").is_err());
     }
+    #[test]
+    fn person_finds_sent_mail_with_address_only_and_respects_account_scope() {
+        let store = MailStore::open_in_memory().unwrap();
+        store.seed_demo().unwrap();
+        let received = store.get_message("demo:1").unwrap().unwrap();
+        let mut sent = received.clone();
+        sent.id = "test:sent-to-maya".into();
+        sent.thread_id = sent.id.clone();
+        sent.sender = "me@example.org".into();
+        sent.to = vec!["maya@example.org".into()];
+        sent.recipient_headers = None;
+        sent.is_sent = true;
+        store.upsert_message(&sent).unwrap();
+        store.lock().unwrap().execute(
+            "UPDATE messages SET sender='Maya Chen <maya@example.org>' WHERE id='demo:1'",
+            [],
+        ).unwrap();
+
+        let query = r#"person:"Maya Chen""#;
+        let results = store.search(query, 100).unwrap();
+        assert!(results.iter().any(|thread| thread.id == received.thread_id));
+        assert!(results.iter().any(|thread| thread.id == sent.thread_id));
+        let scope = SearchScope { account_ids: Some(vec![]), ..Default::default() };
+        assert!(store.search_scoped(query, 100, 0, &scope).unwrap().is_empty());
+    }
+
     #[test]
     fn lexer_preserves_phrases() {
         assert_eq!(

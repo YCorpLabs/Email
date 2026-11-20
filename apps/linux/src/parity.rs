@@ -216,7 +216,7 @@ pub(super) fn draft_recipient_summary(to: &str, cc: &str, bcc: &str) -> String {
     "No recipient".into()
 }
 
-pub(super) const SEARCH_HELP: &str = "Search downloaded mail only; unsynced messages are excluded. Current mailbox, account and filter stay active.\n\nfrom:person@example.com · to:team@example.com · cc:person@example.com\nsubject:\"project update\" · label:\"Customer Support\"\nis:unread · is:read · is:starred · has:attachment\nin:archive · before:2026-11-01 · after:2026-10-01\n\nUse Archive to search archived mail. Conflicting scopes return no matches. Esc clears search and returns to J/K navigation.";
+pub(super) const SEARCH_HELP: &str = "Search downloaded mail only; unsynced messages are excluded. Person searches from Inbox include sent and archived mail. Other views stay scoped.\n\nperson:\"Maya Chen\" · from:person@example.com · to:team@example.com · cc:person@example.com\nsubject:\"project update\" · label:\"Customer Support\"\nis:unread · is:read · is:starred · has:attachment\nin:archive · before:2026-11-01 · after:2026-10-01\n\nUse Archive to search archived mail. Conflicting scopes return no matches. Esc clears search and returns to J/K navigation.";
 
 pub(super) fn quote_search_value(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
@@ -241,7 +241,7 @@ pub(super) fn thread_search_request(
             request["is_inbox"] = json!(true);
         }
         MailView::Label(name) => request["label"] = json!(name),
-        MailView::Inbox if filter == 2 => {}
+        MailView::Inbox if filter == 2 || (filter == 0 && search_filter_rules::has_person(query)) => {}
         MailView::Archive => request["folder"] = json!("archive"),
         MailView::Sent => request["folder"] = json!("sent"),
         MailView::Snoozed => request["snoozed_only"] = json!(true),
@@ -366,7 +366,7 @@ impl Ui {
         heading.add_css_class("section-title");
         content.append(&heading);
         let hint = gtk::Label::new(Some(
-            "Downloaded mail in your current view. Existing filters are filled in; other search terms stay unchanged.",
+            "Use Person to find sent and received mail. Start from Inbox to include Archive and Sent.",
         ));
         hint.set_wrap(true);
         hint.set_xalign(0.0);
@@ -377,7 +377,8 @@ impl Ui {
         grid.set_column_spacing(12);
         let mut entries = Vec::new();
         for (index, (key, title, placeholder)) in [
-            ("from", "From", "Name or email"),
+            ("person", "Person", "Name or email"),
+            ("from", "From", "Sender name or email"),
             ("to", "To", "Recipient or alias"),
             ("cc", "Cc", "Copied recipient"),
             ("subject", "Subject", "Words or phrase"),
@@ -772,7 +773,7 @@ impl Ui {
                     "search filters",
                     "Refine search…",
                     "Ctrl Shift F",
-                    "filters advanced search from to cc dates attachments",
+                    "filters advanced search find a person contact from to cc dates attachments",
                 ));
                 items.push(Command::new(
                     "search help",
@@ -1762,8 +1763,9 @@ impl ContactPane {
                     .as_ref()
                     .map(|m| address(&m.sender));
                 if let Some(sender) = sender {
+                    ui.inbox_filter.set(0);
                     ui.search
-                        .set_text(&format!("from:{}", quote_search_value(&sender)));
+                        .set_text(&format!("person:{}", quote_search_value(&sender)));
                     ui.set_view(MailView::Inbox);
                 }
             }
@@ -1829,7 +1831,7 @@ impl ContactPane {
             self.recent.remove(&child);
         }
         if let Ok(value) =
-            ui.request(json!({"op":"search","query":format!("from:{email}"),"limit":8}))
+            ui.request(json!({"op":"search","query":format!("person:{}", quote_search_value(&email)),"limit":8}))
         {
             for thread in serde_json::from_value::<Vec<ThreadSummary>>(value)
                 .unwrap_or_default()

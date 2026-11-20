@@ -27,9 +27,9 @@ final class SearchFilterPanel: NSViewController, NSTextFieldDelegate {
         content.translatesAutoresizingMaskIntoConstraints = false
         let heading = NSTextField(labelWithString: "Refine search"); heading.font = .systemFont(ofSize: 17, weight: .semibold); heading.textColor = EmailTheme.ink
         content.addArrangedSubview(heading)
-        let hint = NSTextField(wrappingLabelWithString: "Downloaded mail in your current view. Existing filters are filled in; other search terms stay unchanged.")
+        let hint = NSTextField(wrappingLabelWithString: "Use Person to find sent and received mail. Start from Inbox to include Archive and Sent.")
         hint.font = .systemFont(ofSize: 12); hint.textColor = EmailTheme.muted; content.addArrangedSubview(hint)
-        for (key, title, placeholder) in [("from", "From", "Name or email"), ("to", "To", "Recipient or alias"), ("cc", "Cc", "Copied recipient"), ("subject", "Subject", "Words or phrase"), ("after", "On or after", "YYYY-MM-DD"), ("before", "Before", "YYYY-MM-DD")] {
+        for (key, title, placeholder) in [("person", "Person", "Name or email"), ("from", "From", "Sender name or email"), ("to", "To", "Recipient or alias"), ("cc", "Cc", "Copied recipient"), ("subject", "Subject", "Words or phrase"), ("after", "On or after", "YYYY-MM-DD"), ("before", "Before", "YYYY-MM-DD")] {
             let row = NSStackView(); row.spacing = 12; row.alignment = .centerY
             let label = NSTextField(labelWithString: title); label.font = .systemFont(ofSize: 12); label.textColor = EmailTheme.muted
             label.widthAnchor.constraint(equalToConstant: 76).isActive = true
@@ -56,7 +56,7 @@ final class SearchFilterPanel: NSViewController, NSTextFieldDelegate {
         NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20), content.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20), content.topAnchor.constraint(equalTo: root.topAnchor, constant: 20), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20)])
         view = root; update(); preferredContentSize = NSSize(width: 430, height: root.fittingSize.height)
     }
-    override func viewDidAppear() { super.viewDidAppear(); view.window?.makeFirstResponder(fields["from"]) }
+    override func viewDidAppear() { super.viewDidAppear(); view.window?.makeFirstResponder(fields["person"]) }
     func controlTextDidChange(_ notification: Notification) { update() }
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
         if commandSelector == #selector(NSResponder.insertNewline(_:)) { submit(); return true }

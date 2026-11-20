@@ -4733,7 +4733,7 @@ fn build(app: &gtk::Application) {
     let search = gtk::SearchEntry::new();
     search.add_css_class("search");
     search.set_search_delay(0);
-    search.set_placeholder_text(Some("Search downloaded mail   /"));
+    search.set_placeholder_text(Some("Search mail or person:   /"));
     search.set_tooltip_text(Some(parity::SEARCH_HELP));
     let inbox_heading = gtk::Box::new(Orientation::Horizontal, 8);
     label.set_hexpand(true);

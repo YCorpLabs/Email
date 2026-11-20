@@ -14,6 +14,7 @@ containing spaces. Examples:
 
 ```text
 invoice "design review"
+person:"Maya Chen"
 from:maya@example.org to:alex@example.com
 cc:"Casey Copy" subject:"Design review"
 label:"Work Invoices" is:unread has:attachment
@@ -25,6 +26,7 @@ is:starred
 | --- | --- |
 | Plain words | Literal FTS tokens in subject, sender, or plain-text body. All words must match the same cached message. |
 | `"quoted phrase"` | Contiguous FTS phrase, using the cache tokenizer. |
+| `person:value` | Sender, To, or Cc name or address contains the value on a non-draft message. |
 | `from:value` | Sender display name/address contains the value. |
 | `to:value` | Any cached To recipient contains the value. |
 | `cc:value` | Any cached Cc recipient contains the value; Bcc is excluded. |
@@ -52,6 +54,18 @@ not broaden the query. Unclosed quotes and invalid calendar dates also return
 errors. Queries are bounded to 4,096 UTF-8 bytes and 64 terms. Backslash escapes
 the following character inside quotes. Every SQL value is parameter bound;
 FTS words/phrases are quoted rather than exposing raw FTS expression syntax.
+
+## Finding a person's mail
+
+On macOS and Linux, open Refine search and enter a name or email address in
+Person. You can also press `/` and type `person:"Maya Chen"`. From the
+unfiltered Inbox this searches all downloaded mail, including Sent and Archive.
+From other views the selected scope still applies. The contact pane's Find mail
+button opens the same search by email address. For name searches, recent
+downloaded headers can connect a display name to its address in the same
+account. This lets older messages with address-only recipients match too.
+The lookup uses up to 5,000 recent messages and 20 matching addresses per
+account. Use the email address when an old name or alias does not match.
 
 ## Scope and pagination
 
@@ -118,3 +132,12 @@ that field's constraint while retaining the other terms.
 
 Coverage remains downloaded mail in the active view/account/split, with no
 provider search.
+
+### Person search verification
+
+The engine regression test uses demo data to verify that a cached display
+name finds an incoming message and a separate sent message with an
+address-only recipient. It also checks that an empty account allowlist
+returns no results. The macOS smoke test and Swift harnesses passed. Visual
+parity, initial keyboard focus, Escape dismissal, and narrow layouts were
+not checked in running desktop windows.
