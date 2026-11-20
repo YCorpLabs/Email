@@ -15,7 +15,7 @@ an artifact-specific redistribution review, including any modifications to depen
 ## Source identity
 
 - `Cargo.lock`: `31cfbb9449012dc096a973c452114dcd8289cee78003b692d231315a418bb4c9`
-- `apps/linux/Cargo.lock`: `df81555a4a29f7a328f2bf7c43835ebffbfee1d11fb55b59beb94c1eee207cc2`
+- `apps/linux/Cargo.lock`: `cb079ca6ea5cbdd21a23760c0e4d738871ba3a53cc5d222cfa6acc203ea0ea73`
 - `apps/macos/Package.resolved`: `85314a4fe908f03a2e32abc40f0ea54fe1e12204c6e740c79922218f9cf82b3d`
 
 Regenerate with `python3 scripts/generate-third-party-notices.py`; check lock identities with `--check`.
