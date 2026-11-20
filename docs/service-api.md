@@ -45,6 +45,7 @@ The desktop app keeps one `mail-service` library handle open. `mail_service_open
 - `{"op":"dispatch_due"}` → atomically claim and dispatch due items; a timer or the desktop UI calls this.
 - `{"op":"snooze_thread","thread_id":"...","wake_at_ms":...}` and `{"op":"unsnooze_thread","thread_id":"..."}` → locally hide/restore a thread.
 - `{"op":"upsert_split","id":null,"name":"...","query":"..."}` and `{"op":"delete_split","id":"..."}` → manage saved inbox searches.
+- Filters (`filters_status`, `filters_setup`, `filters_set_enabled`, `upsert_filter`, `delete_filter`, `reorder_filters`, `filters_download_model`, `filters_cancel_download`, `filters_remove_model`, `filters_wake`, `list_filter_threads`, `move_to_filter`) → see [filters.md](filters.md#service-api). Thread summaries carry `filter` (`{id,name,action,reason,source}` or null).
 - `{"op":"apply_action","operation_id":"...","action":{...}}` → local queued action (existing `mail-core` action schema).
 
 Agent access operations are for the desktop shells only. `mail-mcp` has no

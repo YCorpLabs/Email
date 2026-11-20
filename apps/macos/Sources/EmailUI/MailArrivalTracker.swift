@@ -24,6 +24,13 @@ struct MailArrivalTracker {
     func hasBaseline(accountID: String) -> Bool { seen[accountID] != nil }
     mutating func resume(at time: Int64) { enabledSince = max(enabledSince, time) }
 
+    /// Mail a filter took out of the inbox (Skip inbox or Ignore) is never announced.
+    static func filteredOut(_ row: [String: Any]) -> Bool {
+        if row["is_inbox"] as? Bool == false { return true }
+        let action = (row["filter"] as? [String: Any])?["action"] as? String
+        return action == "skip_inbox" || action == "ignore"
+    }
+
     mutating func consume(accountID: String, rows: [[String: Any]]) -> [MailArrival] {
         let wasInitialized = seen[accountID] != nil
         var versions = seen[accountID] ?? [:]
@@ -34,7 +41,7 @@ struct MailArrivalTracker {
             let previous = versions[id] ?? 0
             versions[id] = max(previous, received)
             guard wasInitialized, received >= max(sessionStartedAt, enabledSince), received > previous,
-                  ((row["unread_count"] as? NSNumber)?.intValue ?? 0) > 0 else { continue }
+                  ((row["unread_count"] as? NSNumber)?.intValue ?? 0) > 0, !Self.filteredOut(row) else { continue }
             arrivals.append(MailArrival(accountID: accountID, threadID: id,
                                         sender: row["sender"] as? String ?? "",
                                         subject: row["subject"] as? String ?? "New email",

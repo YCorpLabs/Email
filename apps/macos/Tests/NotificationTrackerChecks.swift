@@ -23,6 +23,10 @@ import Foundation
         _ = tracker.consume(accountID: "a", rows: [])
         precondition(tracker.consume(accountID: "a", rows: [row("thread", 1400)]).isEmpty, "Reappearing threads must not notify twice")
         precondition(tracker.consume(accountID: "a", rows: [["id": "bad"], ["last_message_at": 1500]]).isEmpty, "Malformed metadata must be ignored")
+        var skipped = row("pitch", 1600); skipped["filter"] = ["id": "f", "name": "Cold outreach", "action": "ignore"]
+        var archived = row("promo", 1600); archived["is_inbox"] = false
+        var tagged = row("receipt", 1600); tagged["filter"] = ["id": "n", "name": "Notifications", "action": "inbox"]
+        precondition(tracker.consume(accountID: "a", rows: [skipped, archived, tagged]).map(\.threadID) == ["receipt"], "Mail a filter moved out of the inbox must be quiet")
         var primed = MailArrivalTracker(sessionStartedAt: 1000)
         _ = primed.consume(accountID: "a", rows: [row("cached", 900)])
         precondition(primed.hasBaseline(accountID: "a"))

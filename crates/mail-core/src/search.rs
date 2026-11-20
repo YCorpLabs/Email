@@ -1089,12 +1089,8 @@ mod plan_tests {
     #[test]
     fn a_walk_through_a_scope_without_matches_switches_to_lookups() {
         let store = corpus(20_000);
-        let promotions = store
-            .list_splits()
-            .unwrap()
-            .into_iter()
-            .find(|s| s.name == "Promotions")
-            .unwrap();
+        // A narrow split of the test's own, independent of the demo's splits.
+        let promotions = store.upsert_split(None, "Promotions", "label:Promotions").unwrap();
         let split = SearchScope {
             split_id: Some(promotions.id),
             is_inbox: Some(true),

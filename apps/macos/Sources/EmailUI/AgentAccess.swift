@@ -862,7 +862,7 @@ final class AgentLinkButton: NSButton {
 
 /// The account popup; runs `handler` when the choice changes.
 @MainActor
-private final class AgentPopUp: NSPopUpButton {
+final class AgentPopUp: NSPopUpButton {
     var handler: () -> Void = {}
     init() {
         super.init(frame: .zero, pullsDown: false)
@@ -877,7 +877,7 @@ private final class AgentPopUp: NSPopUpButton {
 
 /// A rounded group of rows with hairlines between them.
 @MainActor
-private final class AgentGroup: NSView {
+final class AgentGroup: NSView {
     private let stack = NSStackView()
     private let tint: NSColor?
     init(tint: NSColor?) {

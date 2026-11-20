@@ -92,7 +92,7 @@ check = r'''
         appearance = NSAppearance(named: .aqua); applyTheme()
         wait("the launch demo inbox loads") { threads.count >= 60 }
         expect(knownAccounts.count == 2, "two demo accounts")
-        expect(Set(splits.map(\.name)) == ["Team", "Notifications", "Newsletters", "Promotions"], "four demo splits")
+        expect(Set(splits.map(\.name)) == ["Team", "Launch", "Travel", "Support"], "four demo splits")
         expect(threads.first?.subject == "Intro call next week?", "the newest conversation is the meeting request")
         expect(threads.prefix(12).filter(\.unread).count >= 5, "the top of the inbox has unread mail")
         expect(threads.prefix(8).allSatisfy { $0.sender != "Alex Morgan" && !$0.subject.hasPrefix("Accepted:") }, "the top of the inbox shows other people's mail, not drafts or RSVPs")
@@ -149,10 +149,10 @@ check = r'''
         search.stringValue = ""
         refreshInbox()
 
-        if let split = splits.first(where: { $0.name == "Newsletters" }) {
+        if let split = splits.first(where: { $0.name == "Travel" }) {
             showInbox(scope: .split(split.id))
-            wait("the Newsletters split lists newsletters") { !threads.isEmpty && threads.allSatisfy { $0.labels.contains("Newsletters") } }
-            snapshot("10-split-newsletters")
+            wait("the Travel split lists travel mail") { !threads.isEmpty && threads.allSatisfy { $0.labels.contains("Travel") } }
+            snapshot("10-split-travel")
         }
         showInbox(scope: .pinned)
         wait("favorites list the starred demo threads") { threads.count >= 5 }

@@ -1,6 +1,6 @@
 # Local MCP server
 
-`mail-mcp` is an stdio MCP server backed by the same SQLite cache and `mail-service` provider configuration as the desktop apps. It exposes accounts, threads and complete conversations, search, sanitized message rendering, attachments, labels, saved inbox splits, snoozed mail, drafts, and the scheduled outbox. Mutating tools cover provider sync, triage, labels, draft editing and attachments, scheduling, cancellation, and explicit sending. AI stays outside the desktop app; an MCP host can use these tools when you connect it.
+`mail-mcp` is an stdio MCP server backed by the same SQLite cache and `mail-service` provider configuration as the desktop apps. It exposes accounts, threads and complete conversations, search, sanitized message rendering, attachments, labels, saved inbox splits, filters, snoozed mail, drafts, and the scheduled outbox. Mutating tools cover provider sync, triage, labels, draft editing and attachments, scheduling, cancellation, and explicit sending. AI stays outside the desktop app; an MCP host can use these tools when you connect it.
 
 ## Agent access and approvals
 
@@ -152,7 +152,7 @@ Write operations are disabled by default. Grant independent capabilities with th
 | --- | --- |
 | No grant flags | Read cached accounts/messages, rendered bodies, attachments and status for accounts with agent access. Attachment reads can fetch bytes from the provider. |
 | `--allow-draft` | Create/edit/discard local drafts and attachments (discards restorable for 7 days); manage local snippets. Cannot queue, schedule, or send mail. |
-| `--allow-triage` | Archive, mark read/unread, batch triage/undo, snooze, and manage saved splits. Queues provider changes locally. |
+| `--allow-triage` | Archive, mark read/unread, batch triage/undo, snooze, manage saved splits and filters, and move conversations between filters. Queues provider changes locally. |
 | `--allow-sync` | Refresh provider state and flush **already queued triage changes**, including changes made by another app/process. Cannot dispatch the outbox. |
 | `--allow-send` | Request sending, queuing or scheduling existing drafts (each waits for approval in the app), cancel pending sends, and dispatch mail already approved or scheduled by you. Does not grant draft editing. |
 | `--allow-write` | Grant all four capabilities for compatibility. |

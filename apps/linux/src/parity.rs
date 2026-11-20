@@ -926,6 +926,7 @@ impl Ui {
                         command
                     });
                 }
+                items.extend(filters::commands(self));
                 if let Ok(value) = self.request(json!({"op":"list_splits"})) {
                     for split in
                         serde_json::from_value::<Vec<SplitInbox>>(value).unwrap_or_default()
@@ -1039,6 +1040,9 @@ impl Ui {
             if let Some(calendar) = calendar {
                 calendar.execute_command(id);
             }
+            return;
+        }
+        if filters::execute(self, id) {
             return;
         }
         match id {
@@ -2412,12 +2416,16 @@ impl Ui {
     }
 
     pub(super) fn notify_new_mail(&self) {
+        // Sorting comes first; it calls this again when it is done.
+        if filters::holds_notifications(self) { return; }
         let Ok(value) = self.request(json!({"op":"list_threads","unread_only":true,"limit":100})) else { return };
         let Ok(threads)=serde_json::from_value::<Vec<ThreadSummary>>(value) else { return };
         let arrivals:Vec<_>=threads.into_iter().filter_map(|mut thread| {
             let key=json!([thread.account_id,thread.id]).to_string();
             let fresh=consume_mail_arrival(&mut self.notified.borrow_mut(),key,thread.last_message_at,self.started_at);
             if !fresh || !self.notifications.get() { return None; }
+            // Mail a filter moved out of the inbox never alerts.
+            if thread.filter.as_ref().is_some_and(|f| f.action != mail_core::FilterAction::Inbox) { return None; }
             let message = self.request(json!({"op":"get_latest_message_for_thread","thread_id":thread.id})).ok()?;
             if !incoming_notification_message(&message,&thread.account_id,&thread.id) { return None; }
             thread.sender = message["sender"].as_str().unwrap_or(&thread.sender).to_owned();
