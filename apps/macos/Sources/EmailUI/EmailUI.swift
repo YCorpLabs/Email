@@ -3936,15 +3936,18 @@ final class MailWindow: NSWindow, NSWindowDelegate, WKNavigationDelegate, NSTabl
             button.contentTintColor = color
         }
         agentRequestReader.isHidden = !requestsActive
-        // No search or filters in Agent requests; they come back on leaving.
-        let searchHidden = folder == .agentRequests || filterView
+        // No search or filters in Agent requests or a filter view; they come
+        // back on leaving.
+        let requestsView = folder == .agentRequests
+        let searchHidden = requestsView || filterView
         filterEditButton.isHidden = !filterView
         search.isHidden = searchHidden
         searchFiltersButton.isHidden = searchHidden
         // The subtitle follows the destination: the waiting count in Agent
-        // requests, the mail status everywhere else.
-        syncStatus.isHidden = searchHidden
-        agentRequestsStatus.isHidden = !searchHidden
+        // requests, the filter's summary in a filter view, the mail status
+        // everywhere else.
+        syncStatus.isHidden = requestsView
+        agentRequestsStatus.isHidden = !requestsView
         controlsBelowStatus?.isActive = false
         controlsBelowSearch?.isActive = !searchHidden
         controlsBelowStatus?.isActive = searchHidden
