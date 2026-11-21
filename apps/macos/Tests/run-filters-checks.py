@@ -220,7 +220,14 @@ check = r'''
         wait("the filter view lists its mail") { threads.count >= 3 && threads.allSatisfy { $0.filter?.id == cold.id } }
         expect(inboxTitle?.stringValue == "Cold outreach", "title is the filter name")
         expect(syncStatus.stringValue.hasPrefix("Ignored · ") && syncStatus.stringValue.hasSuffix(" this week"), "subtitle: \(syncStatus.stringValue)")
+        expect(!syncStatus.isHiddenOrHasHiddenAncestor && agentRequestsStatus.isHidden, "the subtitle shows under the filter's title")
         expect(search.isHidden && searchFiltersButton.isHidden && scopeTabs.isHidden && !filterEditButton.isHidden, "no search or tabs; Edit shows")
+        // Agent requests have their own subtitle; coming back shows the filter's summary again.
+        showAgentRequests()
+        expect(syncStatus.isHidden && !agentRequestsStatus.isHidden, "Agent requests show their own subtitle")
+        showInbox(scope: .filter(cold.id))
+        wait("the filter view lists its mail again") { threads.count >= 3 && threads.allSatisfy { $0.filter?.id == cold.id } }
+        expect(!syncStatus.isHidden && agentRequestsStatus.isHidden && syncStatus.stringValue.hasSuffix(" this week"), "leaving Agent requests shows the filter's summary again: \(syncStatus.stringValue)")
         let pitch = threads.firstIndex { $0.subject.contains("mobile app") } ?? 0
         // The sorter records no reason, so rows keep their preview; a
         // recorded reason (older stores) takes the preview's place.

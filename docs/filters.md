@@ -247,3 +247,14 @@ list after each sheet; notifications skip mail a filter moved out of the inbox
 model download (the sidebar rows were checked from a set status), Remove model, the delete
 confirmations, right-click menus and the menu of Move to (its choices are
 checked, the popup itself is not opened).
+
+### macOS filter subtitle, 21 Nov 2026
+
+The 18 Nov merge of Agent requests into Filters hid the subtitle under a
+filter's title ("Ignored · 4 this week"): the main window hid the mail status
+line whenever search was hidden, which includes filter views. It now hides it
+only in Agent requests. `run-filters-checks.py` (both runs, with the Email
+sorter and a `filters_demo` store) checks that the subtitle is visible in a
+filter view and comes back after a visit to Agent requests; the new check
+fails on the old code. Linux was not affected: `filters::update_header` shows
+its subtitle in every filter view (read, not rerun).
